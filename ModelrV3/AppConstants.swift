@@ -236,6 +236,9 @@ struct AppConstants {
     /// Name of Hunyuan3D directory
     static let hunyuanDirectoryName = "Hunyuan3D"
     
+    /// Name of SF3D directory
+    static let sf3dDirectoryName = "SF3D"
+    
     /// Name of checkpoints directory
     static let checkpointsDirectoryName = "checkpoints"
     
@@ -265,11 +268,17 @@ struct AppConstants {
     /// Name of Hunyuan wrapper script
     static let hunyuanWrapperFileName = "hunyuan_wrapper.py"
     
+    /// Name of SF3D wrapper script
+    static let sf3dWrapperFileName = "sf3d_wrapper.py"
+    
     /// Name of SAM pyproject file
     static let samPyprojectFileName = "pyproject.toml"
     
     /// Name of Hunyuan pyproject file
     static let hunyuanPyprojectFileName = "pyproject_hunyuan.toml"
+    
+    /// Name of SF3D pyproject file
+    static let sf3dPyprojectFileName = "pyproject_sf3d.toml"
     
     /// Name of self-test image file
     static let selfTestImageFileName = "self_test.jpg"
@@ -293,4 +302,7 @@ struct AppConstants {
     
     /// Python version for Hunyuan3D
     static let hunyuanPythonVersion = "3.10"
+    
+    /// Python version for SF3D
+    static let sf3dPythonVersion = "3.10"
 }

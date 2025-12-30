@@ -48,7 +48,7 @@ final class ModelsTests: XCTestCase {
         let point2 = SAMPoint(normalizedCoords: CGPoint(x: 0.5, y: 0.5))
         
         XCTAssertEqual(point1, point2, "Equal points should be equal")
-        XCTAssertTrue(point1.id == point2.id, "UUID should be unique per instance")
+        XCTAssertNotEqual(point1.id, point2.id, "UUID should be unique per instance")
     }
     
     // MARK: - SAMBox Tests

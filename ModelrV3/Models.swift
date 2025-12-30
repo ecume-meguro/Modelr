@@ -28,10 +28,20 @@ enum ModelError: Error, LocalizedError {
 }
 
 // MARK: - Point Model (Positive points only)
-struct SAMPoint: Hashable, Identifiable {
+struct SAMPoint: Hashable, Identifiable, Equatable {
     let id = UUID()
     let normalizedCoords: CGPoint  // 0-1 range, relative to image
     let dateAdded = Date()
+
+    static func == (lhs: SAMPoint, rhs: SAMPoint) -> Bool {
+        lhs.normalizedCoords.x == rhs.normalizedCoords.x &&
+        lhs.normalizedCoords.y == rhs.normalizedCoords.y
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(normalizedCoords.x)
+        hasher.combine(normalizedCoords.y)
+    }
 
     /// Convert normalized coords to pixel coords for Python backend
     func pixelCoords(for imageSize: CGSize) -> (x: Int, y: Int) {
@@ -43,11 +53,25 @@ struct SAMPoint: Hashable, Identifiable {
 }
 
 // MARK: - Bounding Box Model
-struct SAMBox: Hashable, Identifiable {
+struct SAMBox: Hashable, Identifiable, Equatable {
     let id = UUID()
     var startPoint: CGPoint  // Normalized 0-1
     var endPoint: CGPoint    // Normalized 0-1
     let dateAdded = Date()
+
+    static func == (lhs: SAMBox, rhs: SAMBox) -> Bool {
+        lhs.startPoint.x == rhs.startPoint.x &&
+        lhs.startPoint.y == rhs.startPoint.y &&
+        lhs.endPoint.x == rhs.endPoint.x &&
+        lhs.endPoint.y == rhs.endPoint.y
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(startPoint.x)
+        hasher.combine(startPoint.y)
+        hasher.combine(endPoint.x)
+        hasher.combine(endPoint.y)
+    }
 
     /// Normalized rectangle (handles inverted drag directions)
     var normalizedRect: CGRect {
@@ -69,10 +93,10 @@ struct SAMBox: Hashable, Identifiable {
         ]
     }
 
-    /// Check if box has meaningful size (> 1% of image in both dimensions)
+    /// Check if box has meaningful size (> 5% of image in both dimensions)
     var isValid: Bool {
         let rect = normalizedRect
-        return rect.width > 0.01 && rect.height > 0.01
+        return rect.width > 0.05 && rect.height > 0.05
     }
 }
 

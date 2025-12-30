@@ -338,8 +338,8 @@ class ImageCanvasView: NSView {
         guard bounds.width > 0, bounds.height > 0 else { return .zero }
 
         return CGPoint(
-            x: max(0, min(1, point.x / bounds.width)),
-            y: max(0, min(1, point.y / bounds.height))
+            x: point.x / bounds.width,
+            y: point.y / bounds.height
         )
     }
 }

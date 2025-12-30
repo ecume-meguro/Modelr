@@ -220,18 +220,32 @@ struct ModelViewer: NSViewRepresentable {
         var currentModelURL: URL?
     }
 
-    /// Apply a neutral gray material to geometry nodes for better visibility
+    /// Apply a neutral gray material to geometry nodes only if they have no valid materials/textures
     private func applyDefaultMaterial(to node: SCNNode) {
         if let geometry = node.geometry {
-            // Check if geometry has no materials or only white/default materials
-            let needsMaterial = geometry.materials.isEmpty ||
-                geometry.materials.allSatisfy { mat in
-                    guard let diffuse = mat.diffuse.contents as? NSColor else { return true }
-                    // Check if it's close to white (brightness > 0.9)
-                    return diffuse.brightnessComponent > 0.9
+            // Check if geometry has existing textures or valid PBR materials
+            let hasValidMaterial = geometry.materials.contains { mat in
+                // Check for any texture content (diffuse, normal, roughness, metalness, etc.)
+                // NSImage or any non-nil texture maps indicate valid materials
+                if mat.diffuse.contents is NSImage ||
+                   mat.normal.contents != nil ||
+                   mat.metalness.contents != nil ||
+                   mat.roughness.contents != nil ||
+                   mat.emission.contents != nil {
+                    return true
                 }
-
-            if needsMaterial {
+                // Check for non-white colors (actual colored materials)
+                if let diffuse = mat.diffuse.contents as? NSColor {
+                    return diffuse.brightnessComponent < 0.9
+                }
+                return false
+            }
+            
+            // Only apply default material if no valid textures/materials exist
+            if !hasValidMaterial && (geometry.materials.isEmpty || geometry.materials.allSatisfy { mat in
+                guard let diffuse = mat.diffuse.contents as? NSColor else { return true }
+                return diffuse.brightnessComponent > 0.9
+            }) {
                 // Use cached material if available
                 let cacheKey = "default_neutral_gray"
                 if let cachedMaterial = ModelCache.shared.getCachedSCNMaterial(for: cacheKey) {

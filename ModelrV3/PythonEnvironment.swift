@@ -1,6 +1,26 @@
 import Foundation
 import AppKit
 
+/// Available 3D model generators
+enum GeneratorModel: String, CaseIterable, Identifiable {
+    case hunyuan = "Hunyuan3D-2"
+    case sf3d = "SF3D"
+    case both = "Both"
+    
+    var id: String { rawValue }
+    
+    var description: String {
+        switch self {
+        case .hunyuan:
+            return "Tencent's Hunyuan3D-2 (shape only, fast)"
+        case .sf3d:
+            return "Stability AI's SF3D (with textures)"
+        case .both:
+            return "Test both generators"
+        }
+    }
+}
+
 class PythonEnvironment: ObservableObject {
     @Published var isSetup = false
     @Published var status = "Welcome to Modelr V3"
@@ -20,10 +40,14 @@ class PythonEnvironment: ObservableObject {
     @Published var selfTestAwaitingClick = false
     @Published var selfTestAttempts = 0
     @Published var referenceMaskCoverage: Double = 0  // Expected mask coverage %
+    
+    // Generator selection
+    @Published var selectedGenerator: GeneratorModel = .hunyuan
 
     private let appSupportDir: URL
     private let venvDir: URL
     private let hunyuanVenvDir: URL
+    private let sf3dVenvDir: URL
     private let pythonWorkingDir: URL
 
     private let fileManager = FileManager.default
@@ -55,6 +79,7 @@ class PythonEnvironment: ObservableObject {
         appSupportDir = appSupport.appendingPathComponent("ModelrV3")
         venvDir = appSupportDir.appendingPathComponent(".venv")
         hunyuanVenvDir = appSupportDir.appendingPathComponent(".venv_hunyuan")
+        sf3dVenvDir = appSupportDir.appendingPathComponent("SF3D/.venv")
         pythonWorkingDir = appSupportDir
 
         do {
@@ -136,7 +161,7 @@ class PythonEnvironment: ObservableObject {
         // 0. Copy script resources to App Support
         await MainActor.run { status = "Syncing assets..." }
         let fm = FileManager.default
-        let resources = ["sam_wrapper.py", "pyproject.toml", "self_test.jpg", "hunyuan_wrapper.py", "pyproject_hunyuan.toml", "correct_self_test_mask.png"]
+        let resources = ["sam_wrapper.py", "pyproject.toml", "self_test.jpg", "hunyuan_wrapper.py", "pyproject_hunyuan.toml", "correct_self_test_mask.png", "sf3d_wrapper.py", "pyproject_sf3d.toml"]
         for res in resources {
             let targetPath = appSupportDir.appendingPathComponent(res)
             var sourcePath: String?
@@ -377,6 +402,7 @@ class PythonEnvironment: ObservableObject {
 
     private var cachedUvPath: String?
     private var hunyuanVenvReady = false
+    private var sf3dVenvReady = false
 
     private func runSelfTest(finalUvPath: String) async {
         cachedUvPath = finalUvPath
@@ -410,23 +436,44 @@ class PythonEnvironment: ObservableObject {
             return
         }
 
-        // Step 2: Setup Hunyuan3D environment and download model
-        await MainActor.run { status = "Setting up Hunyuan3D environment..." }
-        await setupHunyuanEnvironment(finalUvPath: finalUvPath)
+        // Step 2: Setup 3D generators based on selection
+        let generator = await MainActor.run { selectedGenerator }
+        
+        if generator == .hunyuan || generator == .both {
+            // Setup Hunyuan3D environment and download model
+            await MainActor.run { status = "Setting up Hunyuan3D environment..." }
+            await setupHunyuanEnvironment(finalUvPath: finalUvPath)
 
-        // Step 3: Download Hunyuan model (warmup run)
-        await MainActor.run { status = "Downloading Hunyuan3D model..." }
+            await MainActor.run { status = "Downloading Hunyuan3D model..." }
 
-        // Monitor Hunyuan model downloads
-        let hunyuanCacheDir = appSupportDir.appendingPathComponent("Hunyuan3D/hf_cache")
-        try? FileManager.default.createDirectory(at: hunyuanCacheDir, withIntermediateDirectories: true)
-        startThroughputMonitor(directory: hunyuanCacheDir, statusPrefix: "Downloading Hunyuan3D model")
+            // Monitor Hunyuan model downloads
+            let hunyuanCacheDir = appSupportDir.appendingPathComponent("Hunyuan3D/hf_cache")
+            try? FileManager.default.createDirectory(at: hunyuanCacheDir, withIntermediateDirectories: true)
+            startThroughputMonitor(directory: hunyuanCacheDir, statusPrefix: "Downloading Hunyuan3D model")
 
-        await downloadHunyuanModel(finalUvPath: finalUvPath)
+            await downloadHunyuanModel(finalUvPath: finalUvPath)
 
-        stopThroughputMonitor()
+            stopThroughputMonitor()
+        }
+        
+        if generator == .sf3d || generator == .both {
+            // Setup SF3D environment and download model
+            await MainActor.run { status = "Setting up SF3D environment..." }
+            await setupSF3DEnvironment(finalUvPath: finalUvPath)
 
-        // Step 4: Now ready for user interaction - show click screen
+            await MainActor.run { status = "Downloading SF3D model..." }
+
+            // Monitor SF3D model downloads
+            let sf3dCacheDir = appSupportDir.appendingPathComponent("SF3D/hf_cache")
+            try? FileManager.default.createDirectory(at: sf3dCacheDir, withIntermediateDirectories: true)
+            startThroughputMonitor(directory: sf3dCacheDir, statusPrefix: "Downloading SF3D model")
+
+            await downloadSF3DModel(finalUvPath: finalUvPath)
+
+            stopThroughputMonitor()
+        }
+
+        // Step 3: Now ready for user interaction - show click screen
         await MainActor.run {
             selfTestAwaitingClick = true
             selfTestPrompt = "Click on the center of the alpaca's body"
@@ -492,6 +539,122 @@ class PythonEnvironment: ObservableObject {
         )
     }
 
+    /// Setup SF3D virtual environment (without generating a model)
+    private func setupSF3DEnvironment(finalUvPath: String) async {
+        let sf3dPyprojectSource = appSupportDir.appendingPathComponent("pyproject_sf3d.toml")
+        let sf3dDir = appSupportDir.appendingPathComponent("SF3D")
+        let sf3dPyprojectTarget = sf3dDir.appendingPathComponent("pyproject.toml")
+
+        let fm = FileManager.default
+        try? fm.createDirectory(at: sf3dDir, withIntermediateDirectories: true)
+        try? fm.removeItem(at: sf3dPyprojectTarget)
+        try? fm.copyItem(at: sf3dPyprojectSource, to: sf3dPyprojectTarget)
+
+        // Copy wrapper script
+        let wrapperSource = appSupportDir.appendingPathComponent("sf3d_wrapper.py")
+        let wrapperTarget = sf3dDir.appendingPathComponent("sf3d_wrapper.py")
+        try? fm.removeItem(at: wrapperTarget)
+        try? fm.copyItem(at: wrapperSource, to: wrapperTarget)
+        
+        // Clone stable-fast-3d repository for sf3d module access
+        let sf3dRepoTarget = sf3dDir.appendingPathComponent("stable-fast-3d")
+        if !fm.fileExists(atPath: sf3dRepoTarget.path) {
+            await MainActor.run { status = "Cloning SF3D repository..." }
+            // Clone the SF3D repository
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            process.arguments = ["clone", "--depth", "1", "https://github.com/Stability-AI/stable-fast-3d.git", sf3dRepoTarget.path]
+            process.currentDirectoryURL = sf3dDir
+            try? process.run()
+            process.waitUntilExit()
+        }
+
+        // Sync SF3D environment (Python 3.10 for compatibility)
+        // texture_baker and uv_unwrapper are installed from git subdirectories via pyproject.toml
+        let sf3dVenv = sf3dDir.appendingPathComponent(".venv")
+        let syncSuccess = await execute(
+            executable: finalUvPath,
+            arguments: ["sync", "--python", AppConstants.sf3dPythonVersion],
+            environment: [
+                "UV_PROJECT_ENVIRONMENT": sf3dVenv.path,
+                "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
+                "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
+                "UV_PYTHON_PREFERENCE": "only-managed",
+                "PYTHONUNBUFFERED": "1",
+                "PYTORCH_ENABLE_MPS_FALLBACK": "1"
+            ],
+            workingDirectory: sf3dDir
+        )
+        
+        guard syncSuccess else {
+            sf3dVenvReady = false
+            return
+        }
+        
+        // Install texture_baker and uv_unwrapper from cloned repo with --no-build-isolation
+        // These need setuptools which is now in the venv from uv sync
+        await MainActor.run { status = "Installing SF3D texture baker..." }
+        let textureBakerPath = sf3dRepoTarget.appendingPathComponent("texture_baker").path
+        _ = await execute(
+            executable: finalUvPath,
+            arguments: ["pip", "install", "--no-build-isolation", textureBakerPath],
+            environment: [
+                "UV_PROJECT_ENVIRONMENT": sf3dVenv.path,
+                "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
+                "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
+                "UV_PYTHON_PREFERENCE": "only-managed",
+                "PYTHONUNBUFFERED": "1",
+                "PYTORCH_ENABLE_MPS_FALLBACK": "1"
+            ],
+            workingDirectory: sf3dDir
+        )
+        
+        await MainActor.run { status = "Installing SF3D UV unwrapper..." }
+        let uvUnwrapperPath = sf3dRepoTarget.appendingPathComponent("uv_unwrapper").path
+        _ = await execute(
+            executable: finalUvPath,
+            arguments: ["pip", "install", "--no-build-isolation", uvUnwrapperPath],
+            environment: [
+                "UV_PROJECT_ENVIRONMENT": sf3dVenv.path,
+                "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
+                "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
+                "UV_PYTHON_PREFERENCE": "only-managed",
+                "PYTHONUNBUFFERED": "1",
+                "PYTORCH_ENABLE_MPS_FALLBACK": "1"
+            ],
+            workingDirectory: sf3dDir
+        )
+
+        sf3dVenvReady = syncSuccess
+    }
+
+    /// Pre-download SF3D model by running a warmup command
+    private func downloadSF3DModel(finalUvPath: String) async {
+        guard sf3dVenvReady else { return }
+
+        let sf3dDir = appSupportDir.appendingPathComponent("SF3D")
+        let sf3dVenv = sf3dDir.appendingPathComponent(".venv")
+        let sf3dScript = sf3dDir.appendingPathComponent("sf3d_wrapper.py").path
+        let sf3dRepoPath = sf3dDir.appendingPathComponent("stable-fast-3d").path
+
+        // Run with --warmup flag to just download model without generating
+        // PYTHONPATH includes cloned repo for sf3d module access
+        _ = await execute(
+            executable: finalUvPath,
+            arguments: ["run", sf3dScript, "--warmup"],
+            environment: [
+                "UV_PROJECT_ENVIRONMENT": sf3dVenv.path,
+                "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
+                "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
+                "UV_PYTHON_PREFERENCE": "only-managed",
+                "PYTHONUNBUFFERED": "1",
+                "PYTORCH_ENABLE_MPS_FALLBACK": "1",
+                "PYTHONPATH": sf3dRepoPath
+            ],
+            workingDirectory: sf3dDir
+        )
+    }
+
     /// Called from SplashScreenView when user clicks on the test image
     func runSelfTestWithClick(normalizedPoint: CGPoint) async {
         guard let uvPath = cachedUvPath else { return }
@@ -538,8 +701,18 @@ class PythonEnvironment: ObservableObject {
                 status = "Segmentation successful!"
             }
 
-            // Continue to Hunyuan3D
-            await runHunyuanSelfTest(finalUvPath: uvPath, maskPath: maskURL.path, imagePath: testImgPath)
+            // Continue to 3D generation based on selected generator
+            let generator = await MainActor.run { selectedGenerator }
+            switch generator {
+            case .hunyuan:
+                await runHunyuanSelfTest(finalUvPath: uvPath, maskPath: maskURL.path, imagePath: testImgPath)
+            case .sf3d:
+                await runSF3DSelfTest(finalUvPath: uvPath, maskPath: maskURL.path, imagePath: testImgPath)
+            case .both:
+                // Run Hunyuan first, then SF3D
+                await runHunyuanSelfTest(finalUvPath: uvPath, maskPath: maskURL.path, imagePath: testImgPath)
+                await runSF3DSelfTest(finalUvPath: uvPath, maskPath: maskURL.path, imagePath: testImgPath)
+            }
 
         } catch {
             await MainActor.run {
@@ -660,6 +833,56 @@ class PythonEnvironment: ObservableObject {
                 status = "Ready - Click 'Open Editor' to continue"
             } else {
                 // Still allow proceeding if SAM2 worked but Hunyuan failed
+                self.canProceed = true
+                status = "Ready - Click 'Open Editor' to continue"
+            }
+        }
+    }
+
+    /// Run SF3D self-test to generate 3D model
+    private func runSF3DSelfTest(finalUvPath: String, maskPath: String, imagePath: String) async {
+        guard sf3dVenvReady else {
+            await MainActor.run {
+                self.canProceed = true
+                status = "Ready - Click 'Open Editor' to continue"
+            }
+            return
+        }
+
+        await MainActor.run { status = "Generating 3D model with SF3D..." }
+
+        let sf3dDir = appSupportDir.appendingPathComponent("SF3D")
+        let sf3dVenv = sf3dDir.appendingPathComponent(".venv")
+        let sf3dScript = sf3dDir.appendingPathComponent("sf3d_wrapper.py").path
+        let sf3dRepoPath = sf3dDir.appendingPathComponent("stable-fast-3d").path
+        let fm = FileManager.default
+
+        // Run SF3D self-test (model already downloaded during warmup)
+        let modelSuccess = await execute(
+            executable: finalUvPath,
+            arguments: ["run", sf3dScript, "--test", maskPath, imagePath, "--output-dir", sf3dDir.path],
+            environment: [
+                "UV_PROJECT_ENVIRONMENT": sf3dVenv.path,
+                "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
+                "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
+                "UV_PYTHON_PREFERENCE": "only-managed",
+                "PYTHONUNBUFFERED": "1",
+                "PYTORCH_ENABLE_MPS_FALLBACK": "1",
+                "PYTHONPATH": sf3dRepoPath
+            ],
+            workingDirectory: sf3dDir
+        )
+
+        // SF3D outputs OBJ format with MTL and texture files
+        let modelURL = sf3dDir.appendingPathComponent("self_test_model_sf3d.obj")
+
+        await MainActor.run {
+            if modelSuccess && fm.fileExists(atPath: modelURL.path) {
+                self.selfTest3DModelURL = modelURL
+                self.canProceed = true
+                status = "Ready - Click 'Open Editor' to continue"
+            } else {
+                // Still allow proceeding if SAM2 worked but SF3D failed
                 self.canProceed = true
                 status = "Ready - Click 'Open Editor' to continue"
             }

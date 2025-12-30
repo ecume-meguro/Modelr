@@ -42,6 +42,26 @@ try:
 except ImportError:
     logger = None
 
+def get_device() -> str:
+    """Fallback if device_utils is not available."""
+    if torch.backends.mps.is_available():
+        return "mps"
+    elif torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+def check_gpu_available() -> bool:
+    """Fallback if device_utils is not available."""
+    return torch.backends.mps.is_available() or torch.cuda.is_available()
+
+def health_check() -> Dict[str, Any]:
+    """Fallback if device_utils is not available."""
+    return {
+        "status": "healthy",
+        "device": get_device(),
+        "gpu_available": check_gpu_available()
+    }
+
 
 class ModelLoadError(Exception):
     pass
@@ -154,36 +174,37 @@ def validate_coordinates(
     image_height: int,
     normalized: bool = False,
 ) -> None:
+    max_x = 1.0 if normalized else image_width
+    max_y = 1.0 if normalized else image_height
+
     if points:
         if len(points) > 100:
             raise ImageValidationError(
                 f"Too many points: {len(points)}. Maximum is 100"
             )
 
-        max_x = 1.0 if normalized else image_width
-        max_y = 1.0 if normalized else image_height
-
-        for x, y in points:
-            if not (0 <= x <= max_x) or not (0 <= y <= max_y):
-                raise ImageValidationError(f"Coordinate out of bounds: ({x}, {y})")
+        # Clamp points to [0, max]
+        for i in range(len(points)):
+            x, y = points[i]
+            points[i] = [max(0, min(max_x, x)), max(0, min(max_y, y))]
 
     if box:
         if len(box) != 4:
             raise ImageValidationError(f"Box must have 4 coordinates, got {len(box)}")
 
+        # Clamp box to [0, max] and ensure valid dimensions
         x1, y1, x2, y2 = box
-        max_val = 1.0 if normalized else max(image_width, image_height)
+        x1 = max(0, min(max_x, x1))
+        y1 = max(0, min(max_y, y1))
+        x2 = max(0, min(max_x, x2))
+        y2 = max(0, min(max_y, y2))
 
-        if (
-            not (0 <= x1 <= max_val)
-            or not (0 <= y1 <= max_val)
-            or not (0 <= x2 <= max_val)
-            or not (0 <= y2 <= max_val)
-        ):
-            raise ImageValidationError(f"Box coordinates out of bounds: {box}")
-
-        if x1 >= x2 or y1 >= y2:
-            raise ImageValidationError(f"Invalid box dimensions: {box}")
+        # Re-sort if needed to ensure x1 < x2 and y1 < y2
+        nx1, nx2 = min(x1, x2), max(x1, x2)
+        ny1, ny2 = min(y1, y2), max(y1, y2)
+        
+        # In-place update
+        box[0], box[1], box[2], box[3] = nx1, ny1, nx2, ny2
 
 
 def validate_image_dimensions(image_path: str) -> Tuple[int, int]:

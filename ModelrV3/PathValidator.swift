@@ -24,12 +24,18 @@ class PathValidator {
 
         if let appSupport = appSupport {
             allowedDirectories.insert(appSupport)
+            allowedDirectories.insert(appSupport.resolvingSymlinksInPath())
             allowedDirectories.insert(appSupport.appendingPathComponent("Hunyuan3D", isDirectory: true))
             allowedDirectories.insert(appSupport.appendingPathComponent("checkpoints", isDirectory: true))
         }
 
         let tempDir = fileManager.temporaryDirectory
         allowedDirectories.insert(tempDir)
+        allowedDirectories.insert(tempDir.resolvingSymlinksInPath())
+        
+        // Also explicitly allow common temp paths to be robust
+        allowedDirectories.insert(URL(fileURLWithPath: "/tmp", isDirectory: true))
+        allowedDirectories.insert(URL(fileURLWithPath: "/private/tmp", isDirectory: true))
     }
 
     func validatePath(_ path: String) throws -> URL {
@@ -38,6 +44,8 @@ class PathValidator {
         guard path.count <= maxPathLength else {
             throw ValidationError.invalidPath("Path too long")
         }
+
+        // We check for traversal after standardization to see if it escapes
 
         let filename = url.lastPathComponent
         guard filename.count <= maxFilenameLength else {
@@ -65,14 +73,14 @@ class PathValidator {
 
     private func resolveAndValidateURL(_ url: URL) throws -> URL {
         let resolvedURL = url.resolvingSymlinksInPath()
-        let standardizedPath = resolvedURL.standardized.path
+        let standardizedURL = resolvedURL.standardized
+        let standardizedPath = standardizedURL.path
 
-        guard !standardizedPath.contains("../") else {
-            throw ValidationError.pathTraversalAttempt(standardizedPath)
-        }
-
-        guard !standardizedPath.contains("..\\") else {
-            throw ValidationError.pathTraversalAttempt(standardizedPath)
+        // Check for traversal attempt by comparing with original path
+        if url.path.contains("..") {
+            if !isPathAllowed(standardizedURL) {
+                throw ValidationError.pathTraversalAttempt(url.path)
+            }
         }
 
         for component in standardizedPath.components(separatedBy: "/") {

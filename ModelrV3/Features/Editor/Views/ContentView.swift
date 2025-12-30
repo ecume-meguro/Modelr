@@ -1489,12 +1489,23 @@ struct ContentView: View {
               let ciImage = CIImage(data: tiffData) else { return }
         
         let rect = crop.normalizedRect
-        let cropRectPixels = CGRect(
+        var cropRectPixels = CGRect(
             x: rect.minX * pixelW,
             y: (1.0 - rect.maxY) * pixelH,
             width: rect.width * pixelW,
             height: rect.height * pixelH
         )
+        
+        // Intersect with image bounds to handle out-of-bounds selections
+        let imageBounds = CGRect(x: 0, y: 0, width: pixelW, height: pixelH)
+        cropRectPixels = cropRectPixels.intersection(imageBounds)
+        
+        // Ensure the intersection is valid (not empty)
+        guard cropRectPixels.width > 0 && cropRectPixels.height > 0 else {
+            cropRect = nil
+            env.status = "Error: Selection outside image"
+            return
+        }
 
         let croppedCI = ciImage.cropped(to: cropRectPixels)
         let context = CIContext(options: nil)

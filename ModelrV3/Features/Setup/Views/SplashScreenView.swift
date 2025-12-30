@@ -164,6 +164,22 @@ struct SplashScreenView: View {
                     .buttonStyle(.plain)
                     .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .opacity))
                 } else if !env.setupStarted {
+                    // Generator selector
+                    VStack(spacing: 4) {
+                        Text("3D Model Generator")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        Picker("", selection: $env.selectedGenerator) {
+                            ForEach(GeneratorModel.allCases) { model in
+                                Text(model.rawValue).tag(model)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 280)
+                    }
+                    .padding(.bottom, 8)
+                    
                     // Show "Begin Setup" button before setup starts
                     Button(action: {
                         Task {
