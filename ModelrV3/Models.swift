@@ -1,6 +1,32 @@
 import Foundation
 import SwiftUI
 
+enum ModelError: Error, LocalizedError {
+    case invalidCommand(String)
+    case missingRequiredField(String)
+    case invalidPointValue
+    case invalidBoxValue
+    case versionMismatch(String)
+    case unexpectedResponse(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidCommand(let cmd):
+            return "Invalid command: \(cmd)"
+        case .missingRequiredField(let field):
+            return "Missing required field: \(field)"
+        case .invalidPointValue:
+            return "Invalid point value"
+        case .invalidBoxValue:
+            return "Invalid box value"
+        case .versionMismatch(let expected):
+            return "Version mismatch: \(expected)"
+        case .unexpectedResponse(let msg):
+            return "Unexpected response: \(msg)"
+        }
+    }
+}
+
 // MARK: - Point Model (Positive points only)
 struct SAMPoint: Hashable, Identifiable {
     let id = UUID()
@@ -85,7 +111,7 @@ enum PreprocessTool: String, CaseIterable, Identifiable {
 }
 
 // MARK: - Lasso Selection Model
-struct LassoSelection: Identifiable {
+struct LassoSelection: Equatable, Identifiable {
     let id = UUID()
     var points: [CGPoint]  // Normalized 0-1 coordinates
     let dateAdded = Date()
@@ -111,10 +137,18 @@ struct LassoSelection: Identifiable {
     /// Get bounding box of the lasso selection (for SAM2)
     var boundingBox: SAMBox? {
         guard points.count >= 3 else { return nil }
-        let xs = points.map { $0.x }
-        let ys = points.map { $0.y }
-        guard let minX = xs.min(), let maxX = xs.max(),
-              let minY = ys.min(), let maxY = ys.max() else { return nil }
+        var minX = CGFloat.greatestFiniteMagnitude
+        var maxX = -CGFloat.greatestFiniteMagnitude
+        var minY = CGFloat.greatestFiniteMagnitude
+        var maxY = -CGFloat.greatestFiniteMagnitude
+
+        for point in points {
+            minX = min(minX, point.x)
+            maxX = max(maxX, point.x)
+            minY = min(minY, point.y)
+            maxY = max(maxY, point.y)
+        }
+
         return SAMBox(startPoint: CGPoint(x: minX, y: minY),
                       endPoint: CGPoint(x: maxX, y: maxY))
     }
@@ -126,7 +160,7 @@ struct LassoSelection: Identifiable {
 }
 
 // MARK: - Paint Stroke Model
-struct PaintStroke: Identifiable {
+struct PaintStroke: Equatable, Identifiable {
     let id = UUID()
     var points: [CGPoint]  // Normalized 0-1 coordinates
     let brushSize: CGFloat  // Normalized brush size (relative to image width)
@@ -157,6 +191,11 @@ struct PaintStroke: Identifiable {
 // MARK: - Python Communication Protocol
 
 struct SAMRequest: Codable {
+    static let version = "1.0"
+    static let maxPoints = 100
+
+    let messageId: String
+    let version: String
     let command: String  // "set_image", "predict", "reset"
     let imagePath: String?
     let points: [[Int]]?  // [[x, y], [x, y], ...]
@@ -164,21 +203,85 @@ struct SAMRequest: Codable {
     let model: String?
 
     init(command: String, imagePath: String? = nil, points: [[Int]]? = nil, box: [Int]? = nil, model: String? = nil) {
+        self.messageId = UUID().uuidString
+        self.version = Self.version
         self.command = command
         self.imagePath = imagePath
         self.points = points
         self.box = box
         self.model = model
     }
+
+    func validate() throws {
+        let validCommands = ["set_image", "predict", "reset"]
+        guard validCommands.contains(command) else {
+            throw ModelError.invalidCommand(command)
+        }
+
+        switch command {
+        case "set_image":
+            guard imagePath != nil && !imagePath!.isEmpty else {
+                throw ModelError.missingRequiredField("imagePath")
+            }
+
+        case "predict":
+            guard points != nil || box != nil else {
+                throw ModelError.missingRequiredField("points or box")
+            }
+
+            if let points = points {
+                guard points.count <= Self.maxPoints else {
+                    throw ModelError.invalidPointValue
+                }
+
+                for point in points {
+                    guard point.count == 2 else {
+                        throw ModelError.invalidPointValue
+                    }
+                    guard point[0] >= 0 && point[1] >= 0 else {
+                        throw ModelError.invalidPointValue
+                    }
+                }
+            }
+
+            if let box = box {
+                guard box.count == 4 else {
+                    throw ModelError.invalidBoxValue
+                }
+                guard box[0] >= 0 && box[1] >= 0 && box[2] > box[0] && box[3] > box[1] else {
+                    throw ModelError.invalidBoxValue
+                }
+            }
+
+        case "reset":
+            break
+        default:
+            break
+        }
+    }
 }
 
 struct SAMResponse: Codable {
+    let messageId: String?
+    let version: String?
     let success: Bool
     let maskPath: String?
     let error: String?
     let inferenceTimeMs: Int?
     let ready: Bool?
     let score: Double?
+
+    func validate() throws {
+        if version != nil && version != SAMRequest.version {
+            throw ModelError.versionMismatch(SAMRequest.version)
+        }
+
+        if !success {
+            guard error != nil && !error!.isEmpty else {
+                throw ModelError.unexpectedResponse("Error message required on failure")
+            }
+        }
+    }
 }
 
 // MARK: - Coordinate Extensions

@@ -130,6 +130,7 @@ struct ZoomableImageView<Content: View>: NSViewRepresentable {
 
         // Update tool mode and callbacks
         coordinator.canvasView.toolMode = toolMode
+        coordinator.canvasView.magnification = magnification
         coordinator.canvasView.onTap = onTap
         coordinator.canvasView.onDragStart = onDragStart
         coordinator.canvasView.onDragChange = onDragChange
@@ -216,6 +217,7 @@ struct ZoomableImageView<Content: View>: NSViewRepresentable {
 /// Sits between NSScrollView and NSHostingView to handle gestures in AppKit.
 class ImageCanvasView: NSView {
     var toolMode: SAMTool = .point
+    var magnification: CGFloat = 1.0  // Track magnification from NSScrollView
 
     var onTap: ((CGPoint) -> Void)?
     var onDragStart: ((CGPoint) -> Void)?
@@ -334,6 +336,7 @@ class ImageCanvasView: NSView {
 
     private func normalizePoint(_ point: CGPoint) -> CGPoint {
         guard bounds.width > 0, bounds.height > 0 else { return .zero }
+
         return CGPoint(
             x: max(0, min(1, point.x / bounds.width)),
             y: max(0, min(1, point.y / bounds.height))

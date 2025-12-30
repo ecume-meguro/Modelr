@@ -1,0 +1,86 @@
+import Foundation
+@testable import ModelrV3
+
+class MockPythonService: PythonServiceProtocol {
+    var isProcessing: Bool = false
+    var status: String = "Mock ready"
+    
+    var shouldThrowError: Bool = false
+    var errorToThrow: Error?
+    var mockMaskURL: URL?
+    var mock3DModelURL: URL?
+    var delayMs: UInt64 = 0
+    
+    func setup() async {
+        try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
+        status = "Mock setup complete"
+    }
+    
+    func setImage(path: String) async throws -> CGSize {
+        try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
+        
+        if shouldThrowError, let error = errorToThrow {
+            throw error
+        }
+        
+        return CGSize(width: 100, height: 100)
+    }
+    
+    func predict(points: [SAMPoint], box: SAMBox?, imageSize: CGSize) async throws -> URL {
+        isProcessing = true
+        status = "Mock predicting..."
+        
+        try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
+        
+        if shouldThrowError, let error = errorToThrow {
+            isProcessing = false
+            status = "Mock error"
+            throw error
+        }
+        
+        isProcessing = false
+        status = "Mock ready"
+        
+        return mockMaskURL ?? URL(fileURLWithPath: "/tmp/mock_mask.png")
+    }
+    
+    func resetPredictor() async throws {
+        try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
+        status = "Mock reset complete"
+    }
+    
+    func generate3DModel(
+        imagePath: String,
+        maskPath: String,
+        steps: Int,
+        resolution: Int,
+        progress: @escaping (String) -> Void,
+        completion: @escaping (Result<URL, Error>) -> Void
+    ) async {
+        isProcessing = true
+        status = "Mock generating..."
+        
+        progress("Starting mock generation")
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        
+        progress("Mock step 1/10")
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        
+        progress("Mock step 5/10")
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        
+        progress("Mock step 10/10")
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        
+        if shouldThrowError, let error = errorToThrow {
+            isProcessing = false
+            status = "Mock generation failed"
+            completion(.failure(error))
+            return
+        }
+        
+        isProcessing = false
+        status = "Mock generation complete"
+        completion(.success(mock3DModelURL ?? URL(fileURLWithPath: "/tmp/mock_model.obj")))
+    }
+}

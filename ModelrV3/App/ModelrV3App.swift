@@ -6,6 +6,5 @@ struct ModelrV3App: App {
         WindowGroup {
             ContentView()
         }
-        .windowStyle(.hiddenTitleBar)
     }
 }

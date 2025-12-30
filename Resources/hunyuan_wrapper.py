@@ -11,162 +11,406 @@ import os
 import sys
 import argparse
 import time
+import gc
+from typing import Optional, Callable
+from pathlib import Path
 
-# Isolate all model downloads to Application Support
-APP_SUPPORT_DIR = os.path.expanduser("~/Library/Application Support/ModelrV3")
-HUNYUAN_CACHE_DIR = os.path.join(APP_SUPPORT_DIR, "Hunyuan3D")
+import torch
+import numpy as np
+from PIL import Image
 
-os.makedirs(HUNYUAN_CACHE_DIR, exist_ok=True)
-os.environ["HY3DGEN_MODELS"] = HUNYUAN_CACHE_DIR
-os.environ["HF_HOME"] = os.path.join(HUNYUAN_CACHE_DIR, "hf_home")
-os.environ["HUGGINGFACE_HUB_CACHE"] = os.path.join(HUNYUAN_CACHE_DIR, "hf_cache")
-os.environ["TORCH_HOME"] = os.path.join(HUNYUAN_CACHE_DIR, "torch_home")
+try:
+    from config import ModelConfig, PerformanceConfig, metrics
+    from device_utils import get_device, check_gpu_available, health_check
+    from logging_config import get_logger
+
+    logger = get_logger("hunyuan_wrapper")
+
+    APP_SUPPORT_DIR = str(ModelConfig.get_checkpoint_dir().parent)
+    HUNYUAN_CACHE_DIR = ModelConfig.get_hunyuan_cache_dir()
+except ImportError:
+    logger = None
+    APP_SUPPORT_DIR = os.path.expanduser("~/Library/Application Support/ModelrV3")
+    HUNYUAN_CACHE_DIR = Path(os.path.join(APP_SUPPORT_DIR, "Hunyuan3D"))
+
+HUNYUAN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+os.environ["HY3DGEN_MODELS"] = str(HUNYUAN_CACHE_DIR)
+os.environ["HF_HOME"] = str(HUNYUAN_CACHE_DIR / "hf_home")
+os.environ["HUGGINGFACE_HUB_CACHE"] = str(HUNYUAN_CACHE_DIR / "hf_cache")
+os.environ["TORCH_HOME"] = str(HUNYUAN_CACHE_DIR / "torch_home")
 
 
-def load_pipeline(model_variant="mini", device="mps"):
+class ModelLoadError(Exception):
+    pass
+
+
+class ImageValidationError(Exception):
+    pass
+
+
+class GenerationError(Exception):
+    pass
+
+
+class OutOfMemoryError(Exception):
+    pass
+
+
+def log_info(message: str) -> None:
+    if logger:
+        logger.info(message)
+    else:
+        print(message, file=sys.stderr)
+
+
+def log_error(message: str) -> None:
+    if logger:
+        logger.error(message)
+    else:
+        print(f"ERROR: {message}", file=sys.stderr)
+
+
+def log_debug(message: str) -> None:
+    if logger:
+        logger.debug(message)
+
+
+def log_warning(message: str) -> None:
+    if logger:
+        logger.warning(message)
+    else:
+        print(f"WARNING: {message}", file=sys.stderr)
+
+
+def validate_image_path(image_path: str) -> None:
+    if not image_path:
+        raise ImageValidationError("Image path cannot be empty")
+
+    path = Path(image_path)
+    if not path.exists():
+        raise ImageValidationError(f"Image file not found: {image_path}")
+
+    if not path.is_file():
+        raise ImageValidationError(f"Path is not a file: {image_path}")
+
+    valid_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
+    if path.suffix.lower() not in valid_extensions:
+        raise ImageValidationError(f"Invalid image format: {path.suffix}")
+
+
+def validate_output_dir(output_dir: str) -> None:
+    path = Path(output_dir)
+    if not path.exists():
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            raise ImageValidationError(f"Failed to create output directory: {e}")
+
+    if not path.is_dir():
+        raise ImageValidationError(f"Output path is not a directory: {output_dir}")
+
+
+def validate_mask_compatibility(image_path: str, mask_path: str) -> None:
+    try:
+        with Image.open(image_path) as img, Image.open(mask_path) as mask:
+            img_size = img.size
+            mask_size = mask.size
+
+            if (
+                abs(img_size[0] - mask_size[0]) > 10
+                or abs(img_size[1] - mask_size[1]) > 10
+            ):
+                log_warning(
+                    f"Image size {img_size} and mask size {mask_size} differ significantly"
+                )
+    except Exception as e:
+        raise ImageValidationError(f"Failed to validate mask compatibility: {e}")
+
+
+def load_pipeline(model_variant: str = "mini", device: str = "mps"):
     """Load the Hunyuan3D shape generation pipeline."""
-    from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
+    try:
+        from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
 
-    repo_map = {
-        "mini": ("tencent/Hunyuan3D-2mini", "hunyuan3d-dit-v2-mini"),
-        "std": ("tencent/Hunyuan3D-2", "hunyuan3d-dit-v2-0"),
-    }
+        repo_map = {
+            "mini": ("tencent/Hunyuan3D-2mini", "hunyuan3d-dit-v2-mini"),
+            "std": ("tencent/Hunyuan3D-2", "hunyuan3d-dit-v2-0"),
+        }
 
-    repo_id, subfolder = repo_map.get(model_variant, repo_map["mini"])
+        repo_id, subfolder = repo_map.get(model_variant, repo_map["mini"])
 
-    print(f"Loading Hunyuan3D pipeline: {repo_id}/{subfolder}", file=sys.stderr)
+        log_info(f"Loading Hunyuan3D pipeline: {repo_id}/{subfolder}")
 
-    pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-        repo_id,
-        subfolder=subfolder,
-        device=device,
-        use_safetensors=True,
-        cache_dir=HUNYUAN_CACHE_DIR,
-    )
+        pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+            repo_id,
+            subfolder=subfolder,
+            device=device,
+            use_safetensors=True,
+            cache_dir=str(HUNYUAN_CACHE_DIR),
+        )
 
-    return pipeline
+        log_info(f"Pipeline loaded successfully on {device}")
+        return pipeline
+
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            raise OutOfMemoryError(f"GPU memory exhausted: {e}")
+        raise ModelLoadError(f"Failed to load pipeline: {e}")
+    except Exception as e:
+        raise ModelLoadError(f"Unexpected error loading pipeline: {e}")
 
 
-def extract_foreground_with_mask(image_path, mask_path, output_dir=None):
+def extract_foreground_with_mask(
+    image_path: str, mask_path: str, output_dir: Optional[str] = None
+) -> Image.Image:
     """
     Extract foreground from image using a SAM2 mask.
     SAM2 mask is RGBA where the alpha channel contains the actual mask (0-255).
     RGB channels are just a constant color tint for visualization.
     """
-    from PIL import Image
-    import numpy as np
+    try:
+        validate_image_path(image_path)
+        validate_image_path(mask_path)
+        validate_mask_compatibility(image_path, mask_path)
 
-    image = Image.open(image_path).convert("RGBA")
-    mask_img = Image.open(mask_path).convert("RGBA")
+        log_debug(f"Extracting foreground from {image_path} using mask {mask_path}")
 
-    # Resize mask to match image if needed
-    if mask_img.size != image.size:
-        mask_img = mask_img.resize(image.size, Image.Resampling.LANCZOS)
+        image = Image.open(image_path).convert("RGBA")
+        mask_img = Image.open(mask_path).convert("RGBA")
 
-    image_array = np.array(image)
-    mask_array = np.array(mask_img)
+        # Resize mask to match image if needed
+        if mask_img.size != image.size:
+            log_debug(f"Resizing mask from {mask_img.size} to {image.size}")
+            mask_img = mask_img.resize(image.size, Image.Resampling.LANCZOS)
 
-    # SAM2 mask: alpha channel IS the mask (0=background, 255=foreground)
-    alpha_mask = mask_array[:, :, 3]
+        image_array = np.array(image)
+        mask_array = np.array(mask_img)
 
-    # Apply mask as alpha channel to original image
-    image_array[:, :, 3] = alpha_mask
+        # SAM2 mask: alpha channel IS the mask (0=background, 255=foreground)
+        alpha_mask = mask_array[:, :, 3]
 
-    result = Image.fromarray(image_array, "RGBA")
+        # Apply mask as alpha channel to original image
+        image_array[:, :, 3] = alpha_mask
 
-    # Save composite for debugging
-    if output_dir:
-        composite_path = os.path.join(output_dir, "self_test_composite.png")
-        result.save(composite_path)
-        print(f"Saved composite to: {composite_path}", file=sys.stderr)
+        result = Image.fromarray(image_array, "RGBA")
 
-    return result
+        # Save composite for debugging
+        if output_dir:
+            validate_output_dir(output_dir)
+            composite_path = os.path.join(output_dir, "self_test_composite.png")
+            result.save(composite_path)
+            log_debug(f"Saved composite to: {composite_path}")
+
+        return result
+
+    except Exception as e:
+        raise ImageValidationError(f"Failed to extract foreground: {e}")
 
 
-def generate_3d_model(image, output_path, model_variant="mini", device="mps",
-                      num_steps=30, octree_resolution=256):
+def generate_3d_model(
+    image: Image.Image,
+    output_path: str,
+    model_variant: str = "mini",
+    device: Optional[str] = None,
+    num_steps: int = 30,
+    octree_resolution: int = 256,
+    progress_callback: Optional[Callable[[str, float], None]] = None,
+) -> str:
     """Generate a 3D model from an RGBA image (shape only, no texture)."""
-    import torch
+    try:
+        if device is None:
+            device = get_device() if logger else "mps"
 
-    start_time = time.time()
+        validate_output_dir(os.path.dirname(output_path) or ".")
 
-    # Load shape generation pipeline
-    pipeline = load_pipeline(model_variant, device)
+        start_time = time.time()
 
-    print(f"Generating 3D shape (steps={num_steps}, resolution={octree_resolution})...", file=sys.stderr)
-    with torch.inference_mode():
-        mesh = pipeline(
-            image=image,
-            octree_resolution=octree_resolution,
-            num_inference_steps=num_steps,
-        )[0]
+        if progress_callback:
+            progress_callback("Loading model", 0.0)
 
-    shape_time = time.time() - start_time
-    print(f"Shape generation took {shape_time:.1f}s", file=sys.stderr)
+        # Load shape generation pipeline
+        pipeline = load_pipeline(model_variant, device)
 
-    # Export to GLB
-    mesh.export(output_path)
+        if progress_callback:
+            progress_callback("Generating 3D shape", 0.2)
 
-    print(f"Total generation time: {shape_time:.1f}s", file=sys.stderr)
-    print(f"Model saved to: {output_path}", file=sys.stderr)
+        log_info(
+            f"Generating 3D shape (steps={num_steps}, resolution={octree_resolution})..."
+        )
+        with torch.inference_mode():
+            mesh = pipeline(
+                image=image,
+                octree_resolution=octree_resolution,
+                num_inference_steps=num_steps,
+            )[0]
 
-    return output_path
+        shape_time = time.time() - start_time
+
+        if progress_callback:
+            progress_callback("Exporting model", 0.9)
+
+        # Export to GLB
+        mesh.export(output_path)
+
+        if progress_callback:
+            progress_callback("Complete", 1.0)
+
+        log_info(f"Shape generation took {shape_time:.1f}s")
+        log_info(f"Model saved to: {output_path}")
+
+        # Track metrics if available
+        if (
+            logger
+            and hasattr(PerformanceConfig, "ENABLE_METRICS")
+            and PerformanceConfig.ENABLE_METRICS
+        ):
+            if "generation_times" in metrics:
+                metrics["generation_times"].append(shape_time)
+
+        return output_path
+
+    except Exception as e:
+        raise GenerationError(f"Failed to generate 3D model: {e}")
 
 
-def run_self_test(mask_path, original_image_path, output_dir, model_variant="mini"):
+def run_self_test(
+    mask_path: str,
+    original_image_path: str,
+    output_dir: str,
+    model_variant: str = "mini",
+) -> str:
     """
     Run self-test: generate 3D model from masked self-test image.
     """
-    import torch
-    from PIL import Image
+    try:
+        validate_image_path(mask_path)
+        validate_image_path(original_image_path)
+        validate_output_dir(output_dir)
 
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
-    print(f"Self-test using device: {device}", file=sys.stderr)
+        device = (
+            get_device()
+            if logger
+            else ("mps" if torch.backends.mps.is_available() else "cpu")
+        )
+        log_info(f"Self-test using device: {device}")
 
-    # Use .obj format for SceneKit compatibility (GLB not supported by ModelIO)
-    output_path = os.path.join(output_dir, "self_test_model.obj")
+        # Use .obj format for SceneKit compatibility (GLB not supported by ModelIO)
+        output_path = os.path.join(output_dir, "self_test_model.obj")
 
-    # Extract foreground using SAM2 mask (saves composite for debugging)
-    print("Extracting foreground with mask...", file=sys.stderr)
-    foreground = extract_foreground_with_mask(original_image_path, mask_path, output_dir=output_dir)
+        # Extract foreground using SAM2 mask (saves composite for debugging)
+        log_info("Extracting foreground with mask...")
+        foreground = extract_foreground_with_mask(
+            original_image_path, mask_path, output_dir=output_dir
+        )
 
-    # Generate 3D model (shape only, reduced quality for faster self-test)
-    generate_3d_model(
-        image=foreground,
-        output_path=output_path,
-        model_variant=model_variant,
-        device=device,
-        num_steps=35,           # High feature quality
-        octree_resolution=150,  # Lower mesh resolution for faster generation
-    )
+        # Generate 3D model (shape only, reduced quality for faster self-test)
+        generate_3d_model(
+            image=foreground,
+            output_path=output_path,
+            model_variant=model_variant,
+            device=device,
+            num_steps=35,  # High feature quality
+            octree_resolution=150,  # Lower mesh resolution for faster generation
+        )
 
-    print(f"SELF_TEST_MODEL_PATH:{output_path}", flush=True)
-    return output_path
+        print(f"SELF_TEST_MODEL_PATH:{output_path}", flush=True)
+        log_info(f"Self-test complete: {output_path}")
+        return output_path
+
+    except Exception as e:
+        log_error(f"Self-test failed: {e}")
+        raise
 
 
-def warmup_model(model_variant="mini"):
+def warmup_model(model_variant: str = "mini") -> None:
     """Pre-download and load the model to warm up the cache."""
-    print("Warming up Hunyuan3D model (downloading if needed)...", file=sys.stderr)
-    _ = load_pipeline(model_variant, device="mps")
-    print("Model warmup complete!", file=sys.stderr)
+    try:
+        log_info("Warming up Hunyuan3D model (downloading if needed)...")
+        device = get_device() if logger else "mps"
+        _ = load_pipeline(model_variant, device=device)
+        log_info("Model warmup complete!")
+    except Exception as e:
+        log_error(f"Model warmup failed: {e}")
+        raise
+
+
+class HunyuanModelManager:
+    def __init__(self, model_variant: str = "mini"):
+        self.model_variant = model_variant
+        self.pipeline = None
+        self.device = None
+
+    def load(self):
+        try:
+            self.device = get_device() if logger else "mps"
+            self.pipeline = load_pipeline(self.model_variant, self.device)
+            return self.pipeline
+        except Exception as e:
+            raise ModelLoadError(f"Failed to load Hunyuan3D model: {e}")
+
+    def cleanup(self):
+        if self.pipeline is not None:
+            try:
+                del self.pipeline
+                self.pipeline = None
+            except Exception as e:
+                log_warning(f"Error during pipeline cleanup: {e}")
+
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.empty_cache()
+            except Exception as e:
+                log_warning(f"Error clearing CUDA cache: {e}")
+
+        gc.collect()
+        log_debug("Hunyuan3D model cleanup complete")
+
+    def __enter__(self):
+        self.load()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.cleanup()
 
 
 def main():
     parser = argparse.ArgumentParser(description="Hunyuan3D-2 Shape Generation Wrapper")
-    parser.add_argument("--test", nargs=2, metavar=("MASK", "IMAGE"),
-                        help="Run self-test with mask and original image paths")
-    parser.add_argument("--warmup", action="store_true",
-                        help="Pre-download model without generating anything")
-    parser.add_argument("--output-dir", default=APP_SUPPORT_DIR,
-                        help="Directory for output files")
-    parser.add_argument("--model", default="mini", choices=["mini", "std"],
-                        help="Model variant: mini (faster) or std (higher quality)")
+    parser.add_argument(
+        "--test",
+        nargs=2,
+        metavar=("MASK", "IMAGE"),
+        help="Run self-test with mask and original image paths",
+    )
+    parser.add_argument(
+        "--warmup",
+        action="store_true",
+        help="Pre-download model without generating anything",
+    )
+    parser.add_argument(
+        "--output-dir", default=APP_SUPPORT_DIR, help="Directory for output files"
+    )
+    parser.add_argument(
+        "--model",
+        default="mini",
+        choices=["mini", "std"],
+        help="Model variant: mini (faster) or std (higher quality)",
+    )
     parser.add_argument("--image", help="Input image path for generation")
     parser.add_argument("--mask", help="Mask image path (white=foreground)")
     parser.add_argument("--output", help="Output GLB path")
-    parser.add_argument("--steps", type=int, default=50, help="Number of diffusion steps (default: 50)")
-    parser.add_argument("--resolution", type=int, default=512, help="Octree mesh resolution (default: 512)")
-    parser.add_argument("--no_texture", action="store_true", help="(ignored, texture not supported)")
+    parser.add_argument(
+        "--steps", type=int, default=50, help="Number of diffusion steps (default: 50)"
+    )
+    parser.add_argument(
+        "--resolution",
+        type=int,
+        default=512,
+        help="Octree mesh resolution (default: 512)",
+    )
+    parser.add_argument(
+        "--no_texture", action="store_true", help="(ignored, texture not supported)"
+    )
 
     args = parser.parse_args()
 
@@ -184,7 +428,9 @@ def main():
         device = "mps" if torch.backends.mps.is_available() else "cpu"
 
         if args.mask:
-            image = extract_foreground_with_mask(args.image, args.mask, output_dir=args.output_dir)
+            image = extract_foreground_with_mask(
+                args.image, args.mask, output_dir=args.output_dir
+            )
         else:
             image = Image.open(args.image).convert("RGBA")
 

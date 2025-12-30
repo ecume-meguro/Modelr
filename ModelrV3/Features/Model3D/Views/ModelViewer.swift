@@ -3,6 +3,44 @@ import SceneKit
 import ModelIO
 import SceneKit.ModelIO
 
+// Model cache for efficient reuse
+class ModelCache {
+    static let shared = ModelCache()
+    private let cache = NSCache<NSString, MDLAsset>()
+    private let materialCache = NSCache<NSString, SCNMaterial>()
+
+    init() {
+        cache.countLimit = 5
+        cache.totalCostLimit = 500 * 1024 * 1024 // 500MB
+        materialCache.countLimit = 20
+        materialCache.totalCostLimit = 10 * 1024 * 1024 // 10MB
+    }
+
+    func getAsset(for url: URL) -> MDLAsset? {
+        let key = url.path as NSString
+        if let asset = cache.object(forKey: key) {
+            return asset
+        }
+        let asset = MDLAsset(url: url)
+        asset.loadTextures()
+        cache.setObject(asset, forKey: key)
+        return asset
+    }
+
+    func getCachedSCNMaterial(for key: String) -> SCNMaterial? {
+        return materialCache.object(forKey: key as NSString)
+    }
+
+    func setCachedSCNMaterial(_ material: SCNMaterial, for key: String) {
+        materialCache.setObject(material, forKey: key as NSString)
+    }
+
+    func clear() {
+        cache.removeAllObjects()
+        materialCache.removeAllObjects()
+    }
+}
+
 /// Interactive 3D model viewer using SceneKit with improved camera controls
 struct ModelViewer: NSViewRepresentable {
     let modelURL: URL?
@@ -10,15 +48,15 @@ struct ModelViewer: NSViewRepresentable {
     func makeNSView(context: Context) -> SCNView {
         let scnView = SCNView()
         scnView.allowsCameraControl = true
-        scnView.autoenablesDefaultLighting = false  // We use custom lights
+        scnView.autoenablesDefaultLighting = false
         scnView.backgroundColor = NSColor(calibratedWhite: 0.15, alpha: 1.0)
         scnView.antialiasingMode = .multisampling4X
 
         // Configure camera control behavior for smoother interaction
         scnView.defaultCameraController.interactionMode = .orbitTurntable
         scnView.defaultCameraController.inertiaEnabled = true
-        scnView.defaultCameraController.inertiaFriction = 0.9  // Higher = less floaty
-        scnView.defaultCameraController.maximumVerticalAngle = 89  // Prevent gimbal lock
+        scnView.defaultCameraController.inertiaFriction = 0.9
+        scnView.defaultCameraController.maximumVerticalAngle = 89
         scnView.defaultCameraController.minimumVerticalAngle = -89
 
         // Create scene
@@ -82,8 +120,8 @@ struct ModelViewer: NSViewRepresentable {
         print("Loading 3D model from: \(url.path)")
 
         DispatchQueue.global(qos: .userInitiated).async {
-            // Try loading with MDLAsset
-            let asset = MDLAsset(url: url)
+            // Try loading from cache first
+            let asset = ModelCache.shared.getAsset(for: url) ?? MDLAsset(url: url)
             asset.loadTextures()
 
             guard asset.count > 0 else {
@@ -194,15 +232,23 @@ struct ModelViewer: NSViewRepresentable {
                 }
 
             if needsMaterial {
-                let material = SCNMaterial()
-                // Neutral clay-like gray for good shape visibility
-                material.diffuse.contents = NSColor(calibratedRed: 0.6, green: 0.6, blue: 0.65, alpha: 1.0)
-                material.specular.contents = NSColor(calibratedWhite: 0.3, alpha: 1.0)
-                material.shininess = 0.2
-                material.lightingModel = .physicallyBased
-                material.roughness.contents = 0.7
-                material.metalness.contents = 0.0
-                geometry.materials = [material]
+                // Use cached material if available
+                let cacheKey = "default_neutral_gray"
+                if let cachedMaterial = ModelCache.shared.getCachedSCNMaterial(for: cacheKey) {
+                    geometry.materials = [cachedMaterial]
+                } else {
+                    // Create new material and cache it
+                    let material = SCNMaterial()
+                    // Neutral clay-like gray for good shape visibility
+                    material.diffuse.contents = NSColor(calibratedRed: 0.6, green: 0.6, blue: 0.65, alpha: 1.0)
+                    material.specular.contents = NSColor(calibratedWhite: 0.3, alpha: 1.0)
+                    material.shininess = 0.2
+                    material.lightingModel = .physicallyBased
+                    material.roughness.contents = 0.7
+                    material.metalness.contents = 0.0
+                    geometry.materials = [material]
+                    ModelCache.shared.setCachedSCNMaterial(material, for: cacheKey)
+                }
             }
         }
 

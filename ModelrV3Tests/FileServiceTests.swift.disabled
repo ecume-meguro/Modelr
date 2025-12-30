@@ -1,0 +1,224 @@
+import XCTest
+import AppKit
+@testable import ModelrV3
+
+final class FileServiceTests: XCTestCase {
+    
+    var fileService: FileService!
+    var tempDirectory: URL!
+    
+    override func setUpWithError() throws {
+        fileService = FileService()
+        tempDirectory = try TestHelpers.createTempDirectory()
+    }
+    
+    override func tearDownWithError() throws {
+        TestHelpers.cleanupTempDirectory(at: tempDirectory)
+    }
+    
+    // MARK: - File Loading Tests
+    
+    func testLoadImageSuccess() throws {
+        let testImage = MockFileSystem.createTestImage(width: 100, height: 100)
+        let imageURL = tempDirectory.appendingPathComponent("test_load.png")
+        try MockFileSystem.saveTestImage(testImage, to: imageURL)
+        
+        let loadedImage = fileService.loadImage(from: imageURL)
+        
+        XCTAssertNotNil(loadedImage, "Should load image successfully")
+        XCTAssertEqual(loadedImage?.size.width, 100, accuracy: 1)
+        XCTAssertEqual(loadedImage?.size.height, 100, accuracy: 1)
+    }
+    
+    func testLoadImageDoesNotExist() throws {
+        let nonExistentURL = tempDirectory.appendingPathComponent("does_not_exist.png")
+        
+        let loadedImage = fileService.loadImage(from: nonExistentURL)
+        
+        XCTAssertNil(loadedImage, "Should return nil for non-existent file")
+    }
+    
+    func testLoadImageDifferentFormats() throws {
+        let testImage = MockFileSystem.createTestImage(width: 50, height: 50)
+        
+        let pngURL = tempDirectory.appendingPathComponent("test.png")
+        try MockFileSystem.saveTestImage(testImage, to: pngURL)
+        
+        let loadedPNG = fileService.loadImage(from: pngURL)
+        XCTAssertNotNil(loadedPNG, "Should load PNG")
+        
+        let jpgURL = tempDirectory.appendingPathComponent("test.jpg")
+        try MockFileSystem.saveTestImage(testImage, to: jpgURL)
+        
+        let loadedJPG = fileService.loadImage(from: jpgURL)
+        XCTAssertNotNil(loadedJPG, "Should load JPG")
+    }
+    
+    // MARK: - File Saving Tests
+    
+    func testSaveImageSuccess() throws {
+        let testImage = MockFileSystem.createTestImage(width: 100, height: 100, color: .red)
+        let saveURL = tempDirectory.appendingPathComponent("test_save.png")
+        
+        XCTAssertFalse(FileManager.default.fileExists(atPath: saveURL.path))
+        
+        try fileService.saveImage(testImage, to: saveURL)
+        
+        XCTAssertTrue(FileManager.default.fileExists(atPath: saveURL.path), "Should create file")
+        
+        let loadedImage = fileService.loadImage(from: saveURL)
+        XCTAssertNotNil(loadedImage, "Should be able to reload saved image")
+    }
+    
+    func testSaveImageOverwrite() throws {
+        let testImage1 = MockFileSystem.createTestImage(width: 50, height: 50, color: .red)
+        let testImage2 = MockFileSystem.createTestImage(width: 100, height: 100, color: .blue)
+        let saveURL = tempDirectory.appendingPathComponent("test_overwrite.png")
+        
+        try fileService.saveImage(testImage1, to: saveURL)
+        try fileService.saveImage(testImage2, to: saveURL)
+        
+        let loadedImage = fileService.loadImage(from: saveURL)
+        XCTAssertEqual(loadedImage?.size.width, 100, accuracy: 1, "Should overwrite with new image")
+    }
+    
+    func testSaveImageInValidLocation() throws {
+        let testImage = MockFileSystem.createTestImage(width: 50, height: 50)
+        let deepURL = tempDirectory.appendingPathComponent("level1/level2/test.png")
+        
+        try FileManager.default.createDirectory(at: deepURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fileService.saveImage(testImage, to: deepURL)
+        
+        XCTAssertTrue(FileManager.default.fileExists(atPath: deepURL.path))
+    }
+    
+    // MARK: - Mask Path Tests
+    
+    func testGetMaskPathWhenNoneExists() {
+        let maskPath = fileService.getMaskPath()
+        
+        XCTAssertNil(maskPath, "Should return nil when no mask exists")
+    }
+    
+    func testGetMaskPathWhenExists() throws {
+        let testImage = MockFileSystem.createTestImage(width: 100, height: 100)
+        let appSupportDir = fileService.getAppSupportDirectory()
+        let maskURL = appSupportDir.appendingPathComponent("mask.png")
+        
+        try MockFileSystem.saveTestImage(testImage, to: maskURL)
+        
+        let retrievedMaskPath = fileService.getMaskPath()
+        
+        XCTAssertNotNil(retrievedMaskPath, "Should find existing mask")
+        XCTAssertEqual(retrievedMaskPath?.path, maskURL.path)
+    }
+    
+    // MARK: - App Support Directory Tests
+    
+    func testGetAppSupportDirectory() {
+        let appSupportDir = fileService.getAppSupportDirectory()
+        
+        XCTAssertTrue(appSupportDir.path.contains("ModelrV3"), "Path should contain app name")
+        XCTAssertTrue(appSupportDir.path.contains("Application Support"), "Path should be in Application Support")
+        
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: appSupportDir.path, isDirectory: &isDirectory), "Directory should exist")
+        XCTAssertTrue(isDirectory.boolValue, "Should be a directory")
+    }
+    
+    func testAppSupportDirectoryPersistence() {
+        let dir1 = fileService.getAppSupportDirectory()
+        let dir2 = fileService.getAppSupportDirectory()
+        
+        XCTAssertEqual(dir1.path, dir2.path, "Should return consistent path")
+    }
+    
+    // MARK: - Format Conversion Tests
+    
+    func testImageToPNGConversion() throws {
+        let testImage = MockFileSystem.createTestImage(width: 100, height: 100, color: .blue)
+        let saveURL = tempDirectory.appendingPathComponent("converted.png")
+        
+        try fileService.saveImage(testImage, to: saveURL)
+        
+        let attributes = try FileManager.default.attributesOfItem(atPath: saveURL.path)
+        if let fileType = attributes[.type] as? FileAttributeType {
+            XCTAssertEqual(fileType, .typeRegular, "Should be a regular file")
+        }
+    }
+    
+    // MARK: - Security Tests
+    
+    func testLoadImageFromInvalidURL() {
+        let invalidURL = URL(string: "not://a/valid/url")!
+        
+        let loadedImage = fileService.loadImage(from: invalidURL)
+        
+        XCTAssertNil(loadedImage, "Should return nil for invalid URL")
+    }
+    
+    func testSaveImageToInvalidPath() throws {
+        let testImage = MockFileSystem.createTestImage(width: 50, height: 50)
+        let invalidURL = URL(string: "not://a/valid/path.png")!
+        
+        XCTAssertThrowsError(try fileService.saveImage(testImage, to: invalidURL)) { error in
+            XCTAssertNotNil(error, "Should throw error for invalid path")
+        }
+    }
+    
+    func testSaveImageToNonWritableDirectory() throws {
+        let testImage = MockFileSystem.createTestImage(width: 50, height: 50)
+        let rootURL = URL(fileURLWithPath: "/test_unwritable.png")
+        
+        XCTAssertThrowsError(try fileService.saveImage(testImage, to: rootURL)) { error in
+            XCTAssertNotNil(error, "Should throw error for non-writable location")
+        }
+    }
+    
+    // MARK: - Large Image Tests
+    
+    func testLoadLargeImage() throws {
+        let testImage = MockFileSystem.createTestImage(width: 2000, height: 2000)
+        let imageURL = tempDirectory.appendingPathComponent("large.png")
+        try MockFileSystem.saveTestImage(testImage, to: imageURL)
+        
+        let loadedImage = fileService.loadImage(from: imageURL)
+        
+        XCTAssertNotNil(loadedImage, "Should load large image")
+        XCTAssertEqual(loadedImage?.size.width, 2000, accuracy: 10)
+        XCTAssertEqual(loadedImage?.size.height, 2000, accuracy: 10)
+    }
+    
+    func testSaveLargeImage() throws {
+        let testImage = MockFileSystem.createTestImage(width: 1500, height: 1500)
+        let saveURL = tempDirectory.appendingPathComponent("large_save.png")
+        
+        try fileService.saveImage(testImage, to: saveURL)
+        
+        let loadedImage = fileService.loadImage(from: saveURL)
+        XCTAssertNotNil(loadedImage)
+        XCTAssertEqual(loadedImage?.size.width, 1500, accuracy: 10)
+    }
+    
+    // MARK: - Edge Cases
+    
+    func testEmptyImage() throws {
+        let emptyImage = NSImage(size: .zero)
+        let saveURL = tempDirectory.appendingPathComponent("empty.png")
+        
+        try fileService.saveImage(emptyImage, to: saveURL)
+        
+        let loadedImage = fileService.loadImage(from: saveURL)
+        XCTAssertNotNil(loadedImage, "Should handle empty image")
+    }
+    
+    func testOnePixelImage() throws {
+        let onePixelImage = MockFileSystem.createTestImage(width: 1, height: 1)
+        let saveURL = tempDirectory.appendingPathComponent("one_pixel.png")
+        
+        try fileService.saveImage(onePixelImage, to: saveURL)
+        
+        let loadedImage = fileService.loadImage(from: saveURL)
+        XCTAssertNotNil(loadedImage, "Should handle 1x1 image")
+    }
+}

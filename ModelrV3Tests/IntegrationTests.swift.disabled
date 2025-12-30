@@ -1,0 +1,365 @@
+import XCTest
+import AppKit
+@testable import ModelrV3
+
+final class IntegrationTests: XCTestCase {
+    
+    var mockPythonService: MockPythonService!
+    var fileService: FileService!
+    var imageProcessingService: ImageProcessingService!
+    var tempDirectory: URL!
+    
+    override func setUpWithError() throws {
+        mockPythonService = MockPythonService()
+        fileService = FileService()
+        imageProcessingService = ImageProcessingService()
+        tempDirectory = try TestHelpers.createTempDirectory()
+    }
+    
+    override func tearDownWithError() throws {
+        TestHelpers.cleanupTempDirectory(at: tempDirectory)
+    }
+    
+    // MARK: - End-to-End Image Loading Pipeline
+    
+    func testLoadImagePipeline() async throws {
+        let testImage = MockFileSystem.createTestImage(width: 512, height: 512, color: .blue)
+        let imageURL = tempDirectory.appendingPathComponent("test_pipeline.png")
+        try MockFileSystem.saveTestImage(testImage, to: imageURL)
+        
+        let loadedImage = fileService.loadImage(from: imageURL)
+        XCTAssertNotNil(loadedImage, "Should load image")
+        
+        let pixelSize = CGSize(width: 512, height: 512)
+        XCTAssertEqual(loadedImage?.size.width, pixelSize.width, accuracy: 1)
+        XCTAssertEqual(loadedImage?.size.height, pixelSize.height, accuracy: 1)
+        
+        let mockMaskURL = tempDirectory.appendingPathComponent("mock_mask.png")
+        MockFileSystem.saveTestImage(testImage, to: mockMaskURL)
+        mockPythonService.mockMaskURL = mockMaskURL
+        
+        _ = try await mockPythonService.setImage(path: imageURL.path)
+        let maskURL = try await mockPythonService.predict(
+            points: [SAMPoint(normalizedCoords: CGPoint(x: 0.5, y: 0.5))],
+            box: nil,
+            imageSize: pixelSize
+        )
+        
+        let maskImage = fileService.loadImage(from: maskURL)
+        XCTAssertNotNil(maskImage, "Should load generated mask")
+    }
+    
+    func testMultipleImageFormats() async throws {
+        let formats = [(name: "test.png", color: NSColor.red), (name: "test.jpg", color: NSColor.green)]
+        
+        for (name, color) in formats {
+            let testImage = MockFileSystem.createTestImage(width: 256, height: 256, color: color)
+            let imageURL = tempDirectory.appendingPathComponent(name)
+            try MockFileSystem.saveTestImage(testImage, to: imageURL)
+            
+            let loadedImage = fileService.loadImage(from: imageURL)
+            XCTAssertNotNil(loadedImage, "Should load \(name)")
+        }
+    }
+    
+    // MARK: - Annotation and Inference Workflow
+    
+    func testPointAnnotationWorkflow() async throws {
+        let testImage = MockFileSystem.createTestImage(width: 300, height: 300, color: .orange)
+        let imageURL = tempDirectory.appendingPathComponent("workflow_test.png")
+        try MockFileSystem.saveTestImage(testImage, to: imageURL)
+        
+        let mockMaskURL = tempDirectory.appendingPathComponent("mask.png")
+        MockFileSystem.saveTestImage(testImage, to: mockMaskURL)
+        mockPythonService.mockMaskURL = mockMaskURL
+        
+        let pixelSize = CGSize(width: 300, height: 300)
+        _ = try await mockPythonService.setImage(path: imageURL.path)
+        
+        let point1 = SAMPoint(normalizedCoords: CGPoint(x: 0.3, y: 0.5))
+        let point2 = SAMPoint(normalizedCoords: CGPoint(x: 0.7, y: 0.5))
+        
+        let maskURL1 = try await mockPythonService.predict(points: [point1], box: nil, imageSize: pixelSize)
+        let maskURL2 = try await mockPythonService.predict(points: [point1, point2], box: nil, imageSize: pixelSize)
+        
+        XCTAssertNotNil(maskURL1, "First prediction should succeed")
+        XCTAssertNotNil(maskURL2, "Second prediction should succeed")
+    }
+    
+    func testBoxAnnotationWorkflow() async throws {
+        let testImage = MockFileSystem.createTestImage(width: 400, height: 400, color: .cyan)
+        let imageURL = tempDirectory.appendingPathComponent("box_workflow.png")
+        try MockFileSystem.saveTestImage(testImage, to: imageURL)
+        
+        let mockMaskURL = tempDirectory.appendingPathComponent("box_mask.png")
+        MockFileSystem.saveTestImage(testImage, to: mockMaskURL)
+        mockPythonService.mockMaskURL = mockMaskURL
+        
+        let pixelSize = CGSize(width: 400, height: 400)
+        _ = try await mockPythonService.setImage(path: imageURL.path)
+        
+        let box = SAMBox(startPoint: CGPoint(x: 0.2, y: 0.2), endPoint: CGPoint(x: 0.8, y: 0.8))
+        let maskURL = try await mockPythonService.predict(points: [], box: box, imageSize: pixelSize)
+        
+        XCTAssertNotNil(maskURL, "Box prediction should succeed")
+    }
+    
+    func testCombinedAnnotationWorkflow() async throws {
+        let testImage = MockFileSystem.createTestImage(width: 500, height: 500, color: .magenta)
+        let imageURL = tempDirectory.appendingPathComponent("combined_workflow.png")
+        try MockFileSystem.saveTestImage(testImage, to: imageURL)
+        
+        let mockMaskURL = tempDirectory.appendingPathComponent("combined_mask.png")
+        MockFileSystem.saveTestImage(testImage, to: mockMaskURL)
+        mockPythonService.mockMaskURL = mockMaskURL
+        
+        let pixelSize = CGSize(width: 500, height: 500)
+        _ = try await mockPythonService.setImage(path: imageURL.path)
+        
+        let point = SAMPoint(normalizedCoords: CGPoint(x: 0.5, y: 0.5))
+        let box = SAMBox(startPoint: CGPoint(x: 0.3, y: 0.3), endPoint: CGPoint(x: 0.7, y: 0.7))
+        let maskURL = try await mockPythonService.predict(points: [point], box: box, imageSize: pixelSize)
+        
+        XCTAssertNotNil(maskURL, "Combined prediction should succeed")
+    }
+    
+    // MARK: - Paint Stroke and Mask Editing Workflow
+    
+    func testPaintStrokeWorkflow() async throws {
+        let maskImage = MockFileSystem.createTestMask(width: 200, height: 200, opaqueRegion: CGRect(x: 50, y: 50, width: 100, height: 100))
+        
+        let strokes = [
+            PaintStroke(startPoint: CGPoint(x: 0.3, y: 0.5), brushSize: 0.1, isErasing: false),
+            PaintStroke(startPoint: CGPoint(x: 0.5, y: 0.5), brushSize: 0.1, isErasing: true),
+            PaintStroke(startPoint: CGPoint(x: 0.7, y: 0.5), brushSize: 0.1, isErasing: false)
+        ]
+        
+        let resultMask = imageProcessingService.applyStrokesToMask(maskImage, strokes: strokes)
+        
+        XCTAssertNotNil(resultMask, "Should apply paint strokes")
+        XCTAssertEqual(resultMask?.size.width, 200, accuracy: 1)
+    }
+    
+    func testCropAndEditWorkflow() async throws {
+        let testImage = MockFileSystem.createTestImage(width: 400, height: 400, color: .brown)
+        
+        let cropRect = CGRect(x: 100, y: 100, width: 200, height: 200)
+        let croppedImage = imageProcessingService.cropImage(testImage, to: cropRect)
+        
+        XCTAssertNotNil(croppedImage, "Should crop image")
+        XCTAssertEqual(croppedImage?.size.width, 200, accuracy: 1)
+        
+        let strokes = [PaintStroke(startPoint: CGPoint(x: 0.5, y: 0.5), brushSize: 0.1, isErasing: false)]
+        let editedMask = imageProcessingService.applyStrokesToMask(croppedImage!, strokes: strokes)
+        
+        XCTAssertNotNil(editedMask, "Should edit cropped image")
+    }
+    
+    func testLassoDeleteWorkflow() async throws {
+        let testImage = MockFileSystem.createTestImage(width: 300, height: 300, color: .white)
+        
+        let points = [
+            CGPoint(x: 0.3, y: 0.3),
+            CGPoint(x: 0.7, y: 0.3),
+            CGPoint(x: 0.7, y: 0.7),
+            CGPoint(x: 0.3, y: 0.7)
+        ]
+        var lasso = LassoSelection(startPoint: points[0])
+        for point in points.dropFirst() {
+            lasso.addPoint(point)
+        }
+        
+        let deletedImage = imageProcessingService.deleteInsideLasso(testImage, lasso: lasso)
+        
+        XCTAssertNotNil(deletedImage, "Should delete inside lasso")
+        XCTAssertEqual(deletedImage?.size.width, 300, accuracy: 1)
+    }
+    
+    // MARK: - 3D Generation Pipeline
+    
+    func test3DGenerationPipeline() async throws {
+        let testImage = MockFileSystem.createTestImage(width: 512, height: 512, color: .blue)
+        let maskImage = MockFileSystem.createTestMask(width: 512, height: 512, opaqueRegion: CGRect(x: 128, y: 128, width: 256, height: 256))
+        
+        let imageURL = tempDirectory.appendingPathComponent("gen_image.png")
+        let maskURL = tempDirectory.appendingPathComponent("gen_mask.png")
+        try MockFileSystem.saveTestImage(testImage, to: imageURL)
+        try MockFileSystem.saveTestImage(maskImage, to: maskURL)
+        
+        let modelURL = tempDirectory.appendingPathComponent("generated_model.obj")
+        MockFileSystem.saveTestImage(testImage, to: modelURL)
+        mockPythonService.mock3DModelURL = modelURL
+        
+        var progressUpdates: [String] = []
+        var finalResult: Result<URL, Error>?
+        
+        mockPythonService.generate3DModel(
+            imagePath: imageURL.path,
+            maskPath: maskURL.path,
+            steps: 10,
+            resolution: 128
+        ) { progress in
+            progressUpdates.append(progress)
+        } completion: { result in
+            finalResult = result
+        }
+        
+        try await Task.sleep(nanoseconds: 600_000_000)
+        
+        XCTAssertNotNil(finalResult, "Should complete generation")
+        
+        switch finalResult {
+        case .success(let url):
+            XCTAssertTrue(url.path.contains("model.obj"))
+        case .failure:
+            XCTFail("Should succeed")
+        case .none:
+            XCTFail("Should have result")
+        }
+        
+        XCTAssertFalse(progressUpdates.isEmpty, "Should have progress updates")
+    }
+    
+    func test3DGenerationErrorHandling() async throws {
+        let testImage = MockFileSystem.createTestImage(width: 256, height: 256, color: .red)
+        let maskImage = MockFileSystem.createTestMask(width: 256, height: 256, opaqueRegion: .zero)
+        
+        let imageURL = tempDirectory.appendingPathComponent("error_image.png")
+        let maskURL = tempDirectory.appendingPathComponent("error_mask.png")
+        try MockFileSystem.saveTestImage(testImage, to: imageURL)
+        try MockFileSystem.saveTestImage(maskImage, to: maskURL)
+        
+        mockPythonService.shouldThrowError = true
+        mockPythonService.errorToThrow = PythonError.predictionFailed("Test error")
+        
+        var finalResult: Result<URL, Error>?
+        
+        mockPythonService.generate3DModel(
+            imagePath: imageURL.path,
+            maskPath: maskURL.path,
+            steps: 10,
+            resolution: 128
+        ) { _ in } completion: { result in
+            finalResult = result
+        }
+        
+        try await Task.sleep(nanoseconds: 600_000_000)
+        
+        switch finalResult {
+        case .success:
+            XCTFail("Should fail")
+        case .failure(let error):
+            XCTAssertTrue(error is PythonError)
+        case .none:
+            XCTFail("Should have result")
+        }
+    }
+    
+    // MARK: - Python Service Integration
+    
+    func testPythonServiceFullLifecycle() async throws {
+        let testImage = MockFileSystem.createTestImage(width: 300, height: 300, color: .yellow)
+        let imageURL = tempDirectory.appendingPathComponent("lifecycle_test.png")
+        try MockFileSystem.saveTestImage(testImage, to: imageURL)
+        
+        let mockMaskURL = tempDirectory.appendingPathComponent("lifecycle_mask.png")
+        MockFileSystem.saveTestImage(testImage, to: mockMaskURL)
+        mockPythonService.mockMaskURL = mockMaskURL
+        
+        await mockPythonService.setup()
+        XCTAssertEqual(mockPythonService.status, "Mock setup complete")
+        
+        let size = try await mockPythonService.setImage(path: imageURL.path)
+        XCTAssertEqual(size.width, 100)
+        
+        let point = SAMPoint(normalizedCoords: CGPoint(x: 0.5, y: 0.5))
+        let maskURL = try await mockPythonService.predict(points: [point], box: nil, imageSize: size)
+        XCTAssertTrue(maskURL.path.contains("mask.png"))
+        
+        try await mockPythonService.resetPredictor()
+        XCTAssertEqual(mockPythonService.status, "Mock reset complete")
+    }
+    
+    // MARK: - Error Recovery Tests
+    
+    func testRecoverFromPredictionError() async throws {
+        let testImage = MockFileSystem.createTestImage(width: 200, height: 200, color: .purple)
+        let imageURL = tempDirectory.appendingPathComponent("recovery_test.png")
+        try MockFileSystem.saveTestImage(testImage, to: imageURL)
+        
+        let mockMaskURL = tempDirectory.appendingPathComponent("recovery_mask.png")
+        MockFileSystem.saveTestImage(testImage, to: mockMaskURL)
+        
+        mockPythonService.shouldThrowError = true
+        mockPythonService.errorToThrow = PythonError.timeout
+        
+        do {
+            _ = try await mockPythonService.setImage(path: imageURL.path)
+            XCTFail("Should throw timeout error")
+        } catch {
+            XCTAssertTrue(error is PythonError)
+        }
+        
+        mockPythonService.shouldThrowError = false
+        mockPythonService.mockMaskURL = mockMaskURL
+        
+        let size = try await mockPythonService.setImage(path: imageURL.path)
+        XCTAssertEqual(size.width, 100)
+        
+        let point = SAMPoint(normalizedCoords: CGPoint(x: 0.5, y: 0.5))
+        let maskURL = try await mockPythonService.predict(points: [point], box: nil, imageSize: size)
+        XCTAssertTrue(maskURL.path.contains("mask.png"))
+    }
+    
+    // MARK: - Performance Tests (Marked as long running)
+    
+    func testLargeImageProcessingPerformance() throws {
+        let largeImage = MockFileSystem.createTestImage(width: 2000, height: 2000, color: .black)
+        
+        measure {
+            let cropRect = CGRect(x: 500, y: 500, width: 1000, height: 1000)
+            _ = imageProcessingService.cropImage(largeImage, to: cropRect)
+        }
+    }
+    
+    func testMultiplePredictionsPerformance() async throws {
+        let testImage = MockFileSystem.createTestImage(width: 300, height: 300, color: .teal)
+        let imageURL = tempDirectory.appendingPathComponent("perf_test.png")
+        try MockFileSystem.saveTestImage(testImage, to: imageURL)
+        
+        let mockMaskURL = tempDirectory.appendingPathComponent("perf_mask.png")
+        MockFileSystem.saveTestImage(testImage, to: mockMaskURL)
+        mockPythonService.mockMaskURL = mockMaskURL
+        mockPythonService.delayMs = 10
+        
+        measure {
+            Task {
+                for _ in 0..<10 {
+                    let point = SAMPoint(normalizedCoords: CGPoint(x: 0.5, y: 0.5))
+                    _ = try? await mockPythonService.predict(points: [point], box: nil, imageSize: CGSize(width: 300, height: 300))
+                }
+            }
+        }
+    }
+    
+    // MARK: - Data Integrity Tests
+    
+    func testDataIntegrityRoundTrip() async throws {
+        let originalImage = MockFileSystem.createTestImage(width: 256, height: 256, color: .indigo)
+        let imageURL = tempDirectory.appendingPathComponent("integrity_test.png")
+        try MockFileSystem.saveTestImage(originalImage, to: imageURL)
+        
+        let loadedImage = fileService.loadImage(from: imageURL)
+        XCTAssertNotNil(loadedImage)
+        
+        let croppedImage = imageProcessingService.cropImage(loadedImage!, to: CGRect(x: 50, y: 50, width: 150, height: 150))
+        XCTAssertNotNil(croppedImage)
+        
+        let croppedURL = tempDirectory.appendingPathComponent("cropped.png")
+        try fileService.saveImage(croppedImage!, to: croppedURL)
+        
+        let reloadedImage = fileService.loadImage(from: croppedURL)
+        XCTAssertNotNil(reloadedImage)
+        XCTAssertEqual(reloadedImage?.size.width, 150, accuracy: 1)
+    }
+}

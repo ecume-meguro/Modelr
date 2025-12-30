@@ -5,6 +5,7 @@ struct SplashScreenView: View {
     @State private var animate = false
     @State private var progress: Double = 0
     @State private var imageDisplaySize: CGSize = .zero
+    @State private var progressTimer: Timer?
 
     var body: some View {
         ZStack {
@@ -216,11 +217,15 @@ struct SplashScreenView: View {
             withAnimation(.spring()) {
                 animate = true
             }
-            Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { timer in
+            progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { timer in
                 if progress < 0.95 {
                     progress += 0.002
                 }
             }
+        }
+        .onDisappear {
+            progressTimer?.invalidate()
+            progressTimer = nil
         }
     }
 }

@@ -26,6 +26,9 @@ class PythonEnvironment: ObservableObject {
     private let hunyuanVenvDir: URL
     private let pythonWorkingDir: URL
 
+    private let fileManager = FileManager.default
+    private let logger = SecureLogger.shared
+
     /// Used for dependency injection during unit tests
     var resourcePathOverride: String?
 
@@ -54,7 +57,11 @@ class PythonEnvironment: ObservableObject {
         hunyuanVenvDir = appSupportDir.appendingPathComponent(".venv_hunyuan")
         pythonWorkingDir = appSupportDir
 
-        try? fileManager.createDirectory(at: appSupportDir, withIntermediateDirectories: true)
+        do {
+            try fileManager.createDirectory(at: appSupportDir, withIntermediateDirectories: true)
+        } catch {
+            print("ERROR: Failed to create directory: \(error.localizedDescription)")
+        }
         // Setup is started manually when user clicks "Begin Setup"
         checkExistingSetup()
     }
@@ -145,8 +152,16 @@ class PythonEnvironment: ObservableObject {
 
             if let finalSource = sourcePath {
                 print(">>> COPY: \(res) to \(targetPath.path)")
-                try? fm.removeItem(at: targetPath)
-                try? fm.copyItem(atPath: finalSource, toPath: targetPath.path)
+                do {
+                    try fm.removeItem(at: targetPath)
+                } catch {
+                    print("ERROR: Failed to remove file at \(targetPath.path): \(error.localizedDescription)")
+                }
+                do {
+                    try fm.copyItem(atPath: finalSource, toPath: targetPath.path)
+                } catch {
+                    print("ERROR: Failed to copy file from \(finalSource) to \(targetPath.path): \(error.localizedDescription)")
+                }
             }
         }
 
@@ -536,7 +551,30 @@ class PythonEnvironment: ObservableObject {
         }
     }
 
-    /// Compare two masks and return similarity (0-1, where 1 = identical)
+    /// Compare two masks using Jaccard similarity (Intersection over Union).
+    ///
+    /// Algorithm:
+    /// - Loads both mask images as RGBA bitmaps
+    /// - Iterates over all pixels in the overlapping area
+    /// - For each pixel, determines if it has content (alpha > 0.1)
+    /// - Calculates:
+    ///   - Intersection: Pixels where both masks agree (both have content or both empty)
+    ///   - Union: Pixels where at least one mask has content
+    /// - Returns: Intersection / Union (0.0 to 1.0)
+    ///
+    /// Similarity Interpretation:
+    /// - 1.0 (100%): Masks are identical
+    /// - 0.9 (90%): Minor differences (threshold for self-test pass)
+    /// - 0.5 (50%): Half of the pixels disagree
+    /// - 0.0 (0%): Completely different masks
+    ///
+    /// Time Complexity: O(w * h) where w=width, h=height
+    /// Space Complexity: O(1)
+    ///
+    /// - Parameters:
+    ///   - maskURL: URL to generated mask
+    ///   - referenceURL: URL to reference (expected) mask
+    /// - Returns: Jaccard similarity (0.0 to 1.0)
     private func compareMasks(maskURL: URL, referenceURL: URL) -> Double {
         guard let maskImage = NSImage(contentsOf: maskURL),
               let refImage = NSImage(contentsOf: referenceURL),
@@ -559,13 +597,15 @@ class PythonEnvironment: ObservableObject {
                 let maskAlpha = maskBitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0
                 let refAlpha = refBitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0
 
+                // Pixel is considered to have content if alpha > 0.1
+                // This threshold filters out near-transparent pixels
                 let maskHasContent = maskAlpha > 0.1
                 let refHasContent = refAlpha > 0.1
 
                 // Count pixels where either mask has content (union)
                 if maskHasContent || refHasContent {
                     totalMaskPixels += 1
-                    // Count where both agree
+                    // Count where both agree (intersection)
                     if maskHasContent == refHasContent {
                         matchingPixels += 1
                     }
@@ -575,6 +615,7 @@ class PythonEnvironment: ObservableObject {
 
         guard totalMaskPixels > 0 else { return 0 }
 
+        // Jaccard similarity = Intersection / Union
         let similarity = Double(matchingPixels) / Double(totalMaskPixels)
         print("Mask comparison: \(matchingPixels)/\(totalMaskPixels) pixels match (\(String(format: "%.1f", similarity * 100))%)")
         return similarity
@@ -976,33 +1017,60 @@ class PythonEnvironment: ObservableObject {
         }
     }
 
-    /// Parse tqdm-style progress bar output into a structured string
-    /// Input: "Diffusion Sampling::  50%|█████     | 15/30 [00:06<00:06,  2.26it/s]"
-    /// Output: "Diffusion Sampling: 50% (15/30) [2.26 it/s]"
+    /// Parse tqdm-style progress bar output into a structured string.
+    ///
+    /// Algorithm:
+    /// - Uses a single regex with multiple capture groups to extract:
+    ///   1. Percentage: \d+% (e.g., "50%")
+    ///   2. Current step: \d+ (e.g., "15")
+    ///   3. Total steps: \d+ (e.g., "30")
+    ///   4. Speed value: \d+\.?\d* (e.g., "2.26")
+    ///   5. Speed unit: it/s or s/it
+    /// - Formats extracted data into human-readable string
+    ///
+    /// Input Example:
+    /// "Diffusion Sampling::  50%|█████     | 15/30 [00:06<00:06,  2.26it/s]"
+    ///
+    /// Output Example:
+    /// "Diffusion Sampling: 50% (15/30) [2.26 it/s]"
+    ///
+    /// Regex Breakdown:
+    /// - #"(\d+)%                    # Capture group 1: Percentage (50%)
+    /// - .*?\|                         # Skip to progress bar separator
+    /// - \s*(\d+)/(\d+)            # Capture groups 2-3: Current/Total steps (15/30)
+    /// - .*?(\d+\.?\d*)             # Capture group 4: Speed value (2.26)
+    /// - \s*(it/s|s/it)"#           # Capture group 5: Speed unit (it/s or s/it)
+    ///
+    /// Time Complexity: O(n) where n = length of input string (regex matching)
+    /// Space Complexity: O(m) where m = length of output string
+    ///
+    /// - Parameters:
+    ///   - line: Progress output line from Python/Hunyuan
+    ///   - stage: Human-readable stage name (e.g., "Diffusion Sampling")
+    /// - Returns: Formatted progress string
     private func parseDetailedProgress(_ line: String, stage: String) -> String {
         var result = stage
 
-        // Extract percentage
-        if let pctMatch = line.range(of: #"\d+%"#, options: .regularExpression) {
-            let pct = String(line[pctMatch])
-            result += ": \(pct)"
-        }
+        // Single regex with capture groups for percentage, step count, and speed
+        let pattern = #"(\d+)%.*?\|\s*(\d+)/(\d+).*?(\d+\.?\d*)\s*(it/s|s/it)"#
+        if let regex = try? NSRegularExpression(pattern: pattern, options: []),
+           let match = regex.firstMatch(in: line, options: [], range: NSRange(line.startIndex..., in: line)) {
 
-        // Extract step count (e.g., "15/30")
-        if let stepMatch = line.range(of: #"\|\s*(\d+)/(\d+)"#, options: .regularExpression) {
-            let stepPart = String(line[stepMatch])
-            if let numMatch = stepPart.range(of: #"\d+/\d+"#, options: .regularExpression) {
-                result += " (\(String(stepPart[numMatch])))"
+            if let pctRange = Range(match.range(at: 1), in: line) {
+                result += ": \(String(line[pctRange]))"
             }
-        }
 
-        // Extract speed (e.g., "2.26it/s" or "2.5s/it")
-        if let speedMatch = line.range(of: #"\d+\.?\d*\s*it/s"#, options: .regularExpression) {
-            let speed = String(line[speedMatch])
-            result += " [\(speed)]"
-        } else if let sitMatch = line.range(of: #"\d+\.?\d*\s*s/it"#, options: .regularExpression) {
-            let speed = String(line[sitMatch])
-            result += " [\(speed)]"
+            if let currentRange = Range(match.range(at: 2), in: line),
+               let totalRange = Range(match.range(at: 3), in: line) {
+                result += " (\(String(line[currentRange]))/\(String(line[totalRange])))"
+            }
+
+            if let speedRange = Range(match.range(at: 4), in: line),
+               let unitRange = Range(match.range(at: 5), in: line) {
+                let speed = String(line[speedRange])
+                let unit = String(line[unitRange])
+                result += " [\(speed) \(unit)]"
+            }
         }
 
         return result

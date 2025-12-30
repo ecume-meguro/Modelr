@@ -1,68 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-enum SidebarTab: String, CaseIterable {
-    case preprocess = "Preprocess"
-    case segment = "Segment"
-    case generate = "Generate"
-}
-
-/// Detailed generation progress information
-struct GenerationProgress {
-    var stage: String = ""           // "Diffusion Sampling", "Volume Decoding", etc.
-    var currentStep: Int = 0
-    var totalSteps: Int = 0
-    var iterationsPerSecond: Double = 0
-    var elapsedTime: TimeInterval = 0
-    var estimatedRemaining: TimeInterval = 0
-
-    var isActive: Bool { totalSteps > 0 }
-
-    var percentComplete: Double {
-        guard totalSteps > 0 else { return 0 }
-        return Double(currentStep) / Double(totalSteps) * 100
-    }
-
-    var formattedSpeed: String {
-        if iterationsPerSecond >= 1 {
-            return String(format: "%.1f it/s", iterationsPerSecond)
-        } else if iterationsPerSecond > 0 {
-            return String(format: "%.1f s/it", 1.0 / iterationsPerSecond)
-        }
-        return ""
-    }
-
-    var formattedETA: String {
-        guard estimatedRemaining > 0 else { return "" }
-        let minutes = Int(estimatedRemaining) / 60
-        let seconds = Int(estimatedRemaining) % 60
-        if minutes > 0 {
-            return String(format: "%d:%02d remaining", minutes, seconds)
-        } else {
-            return String(format: "%ds remaining", seconds)
-        }
-    }
-
-    var formattedElapsed: String {
-        let minutes = Int(elapsedTime) / 60
-        let seconds = Int(elapsedTime) % 60
-        if minutes > 0 {
-            return String(format: "%d:%02d elapsed", minutes, seconds)
-        } else {
-            return String(format: "%ds elapsed", seconds)
-        }
-    }
-}
-
-/// Undo action types for Cmd+Z support
-enum UndoAction {
-    case addPoint(SAMPoint)
-    case addBox(SAMBox)
-    case addLasso(LassoSelection)
-    case addPaintStroke(PaintStroke)
-    case crop(originalImage: NSImage, originalPath: String?)
-}
-
 struct ContentView: View {
     @StateObject private var env = PythonEnvironment()
 
@@ -72,6 +10,7 @@ struct ContentView: View {
     @State private var maskImage: NSImage?
     @State private var isDragging = false
     @State private var imagePixelSize: CGSize = .zero
+    @State private var cachedDisplaySize: CGSize = .zero
 
     // Multi-point state
     @State private var selectedPoints: [SAMPoint] = []
@@ -112,6 +51,15 @@ struct ContentView: View {
     @State private var generationStartTime: Date?
     @State private var generated3DModelURL: URL?
 
+    // Performance optimization: dirty flag for mask to avoid unnecessary file writes
+    @State private var maskIsDirty = false
+
+    // Task cancellation support
+    @State private var currentTasks: Set<Task<Void, Never>> = []
+    
+    // State to force UI refresh when image content changes but path stays same
+    @State private var imageVersion: Int = 0
+
     var body: some View {
         VStack(spacing: 0) {
             if !env.isSetup {
@@ -121,16 +69,10 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 1000, minHeight: 700)
-        // Re-inference triggers
-        .onChange(of: selectedPoints.count) { _, _ in
-            triggerReInference()
-        }
-        .onChange(of: boundingBoxes.count) { _, _ in
-            triggerReInference()
-        }
-        .onChange(of: lassoSelections.count) { _, _ in
-            triggerReInference()
-        }
+        // Re-inference triggers - combined for efficiency
+        .onChange(of: selectedPoints.count) { _, _ in triggerReInference() }
+        .onChange(of: boundingBoxes.count) { _, _ in triggerReInference() }
+        .onChange(of: lassoSelections.count) { _, _ in triggerReInference() }
         // Hidden button for Cmd+Z undo keyboard shortcut
         .background(
             Button("") { performUndo() }
@@ -159,6 +101,10 @@ struct ContentView: View {
 
     // Compute display size for the image (reasonable default size)
     private var displaySize: CGSize {
+        if cachedDisplaySize != .zero {
+            return cachedDisplaySize
+        }
+
         guard let inputImage = inputImage else { return CGSize(width: 800, height: 600) }
         let imageSize = inputImage.size
         let aspectRatio = imageSize.width / imageSize.height
@@ -167,7 +113,9 @@ struct ContentView: View {
         let baseHeight: CGFloat = 600
         let baseWidth = baseHeight * aspectRatio
 
-        return CGSize(width: baseWidth, height: baseHeight)
+        let size = CGSize(width: baseWidth, height: baseHeight)
+        cachedDisplaySize = size
+        return size
     }
 
     // Map current tab/tool to SAMTool for ZoomableImageView
@@ -236,7 +184,7 @@ struct ContentView: View {
                     },
                     toolMode: effectiveToolMode,
                     contentSize: displaySize,
-                    contentID: inputImagePath ?? ""
+                    contentID: "\(inputImagePath ?? "")_v\(imageVersion)"
                 ) {
                     ZStack {
                         Image(nsImage: inputImage)
@@ -1177,7 +1125,6 @@ struct ContentView: View {
     private func applyPaintToMask() {
         guard !paintStrokes.isEmpty else { return }
         guard let currentMask = maskImage else {
-            // If no mask exists yet, we can't apply paint strokes
             env.status = "Create a mask first with Point or Box tool"
             return
         }
@@ -1186,8 +1133,8 @@ struct ContentView: View {
         let modifiedMask = applyStrokesToMask(currentMask, strokes: paintStrokes)
         maskImage = modifiedMask
 
-        // Save the modified mask for 3D generation
-        saveMaskImage(modifiedMask)
+        // Mark mask as dirty (write to disk before generation)
+        maskIsDirty = true
 
         // Clear the strokes after applying
         clearPaintStrokes()
@@ -1196,15 +1143,16 @@ struct ContentView: View {
     }
 
     private func applyStrokesToMask(_ mask: NSImage, strokes: [PaintStroke]) -> NSImage {
-        guard let maskTiff = mask.tiffRepresentation,
-              let maskBitmap = NSBitmapImageRep(data: maskTiff) else {
+        guard let tiffData = mask.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else {
             return mask
         }
 
-        let width = maskBitmap.pixelsWide
-        let height = maskBitmap.pixelsHigh
+        let width = bitmap.pixelsWide
+        let height = bitmap.pixelsHigh
+        let imageSize = NSSize(width: width, height: height)
 
-        // Create a new bitmap for editing
+        // Create new bitmap with Core Graphics
         guard let newBitmap = NSBitmapImageRep(
             bitmapDataPlanes: nil,
             pixelsWide: width,
@@ -1220,47 +1168,83 @@ struct ContentView: View {
             return mask
         }
 
-        // Copy existing mask data
+        // Copy existing mask
         NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: newBitmap)
+        let context = NSGraphicsContext(bitmapImageRep: newBitmap)
+        NSGraphicsContext.current = context
+        bitmap.draw(in: NSRect(origin: .zero, size: imageSize))
 
-        maskBitmap.draw(in: NSRect(x: 0, y: 0, width: width, height: height))
+        let cgWidth = CGFloat(width)
+        let cgHeight = CGFloat(height)
 
-        // Apply each stroke - use SAM2 mask color RGB(50, 100, 200)
+        // Use vector graphics for smooth strokes
         for stroke in strokes {
-            let brushRadius = Int(stroke.brushSize * CGFloat(width) / 2)
-            let color: NSColor = stroke.isErasing
-                ? NSColor.clear
-                : NSColor(red: 50/255, green: 100/255, blue: 200/255, alpha: 1.0)  // SAM2 mask color
+            guard stroke.points.count > 1 else { continue }
 
+            let brushRadius = stroke.brushSize * cgWidth / 2
+            let path = NSBezierPath()
+
+            // Convert normalized points to pixel coordinates (pre-allocated for efficiency)
+            let firstPoint = stroke.points[0]
+            path.move(to: CGPoint(
+                x: firstPoint.x * cgWidth,
+                y: firstPoint.y * cgHeight
+            ))
+
+            for i in 1..<stroke.points.count {
+                let point = stroke.points[i]
+                path.line(to: CGPoint(
+                    x: point.x * cgWidth,
+                    y: point.y * cgHeight
+                ))
+            }
+
+            // Set stroke color and properties
+            if stroke.isErasing {
+                context?.compositingOperation = .copy
+                NSColor.clear.setStroke()
+                NSColor.clear.setFill()
+            } else {
+                NSColor(red: 50/255, green: 100/255, blue: 200/255, alpha: 1.0).setStroke()
+                NSColor(red: 50/255, green: 100/255, blue: 200/255, alpha: 1.0).setFill()
+            }
+
+            path.lineWidth = brushRadius * 2
+            path.lineCapStyle = .round
+            path.lineJoinStyle = .round
+            path.stroke()
+
+            // Add circles at each point to fill gaps (optimized with direct fill)
             for point in stroke.points {
-                let centerX = Int(point.x * CGFloat(width))
-                let centerY = Int(point.y * CGFloat(height))
+                let circle = NSBezierPath(ovalIn: NSRect(
+                    x: point.x * cgWidth - brushRadius,
+                    y: point.y * cgHeight - brushRadius,
+                    width: brushRadius * 2,
+                    height: brushRadius * 2
+                ))
+                circle.fill()
+            }
 
-                // Draw filled circle at this point
-                for dy in -brushRadius...brushRadius {
-                    for dx in -brushRadius...brushRadius {
-                        if dx*dx + dy*dy <= brushRadius*brushRadius {
-                            let px = centerX + dx
-                            let py = centerY + dy
-                            if px >= 0 && px < width && py >= 0 && py < height {
-                                newBitmap.setColor(color, atX: px, y: py)
-                            }
-                        }
-                    }
-                }
+            // Reset compositing operation if we were erasing
+            if stroke.isErasing {
+                context?.compositingOperation = .sourceOver
             }
         }
 
         NSGraphicsContext.restoreGraphicsState()
 
-        // Create new image from bitmap
-        let newImage = NSImage(size: NSSize(width: width, height: height))
+        let newImage = NSImage(size: imageSize)
         newImage.addRepresentation(newBitmap)
         return newImage
     }
 
     private func saveMaskImage(_ mask: NSImage) {
+        maskIsDirty = true
+    }
+
+    private func flushMaskToDisk() {
+        guard maskIsDirty, let mask = maskImage else { return }
+
         let maskURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/ModelrV3/mask.png")
 
@@ -1271,6 +1255,7 @@ struct ContentView: View {
         }
 
         try? pngData.write(to: maskURL)
+        maskIsDirty = false
     }
 
     // MARK: - Re-inference
@@ -1283,12 +1268,15 @@ struct ContentView: View {
         // Get the best box: prefer explicit bounding boxes, then lasso bounding boxes
         let effectiveBox: SAMBox? = boundingBoxes.first ?? lassoSelections.first?.boundingBox
 
-        Task {
+        let task = Task.detached(priority: .userInitiated) {
             do {
                 let pixelSize = try await env.setImage(path: path)
-                self.imagePixelSize = pixelSize
+                await MainActor.run {
+                    guard !Task.isCancelled else { return }
+                    self.imagePixelSize = pixelSize
+                }
 
-                let maskURL = try await env.predict(
+                 let maskURL = try await env.predict(
                     points: selectedPoints,
                     box: effectiveBox,
                     imageSize: pixelSize
@@ -1296,14 +1284,20 @@ struct ContentView: View {
 
                 if let newMask = NSImage(contentsOf: maskURL) {
                     await MainActor.run {
+                        guard !Task.isCancelled else { return }
                         self.maskImage = newMask
                     }
                 }
             } catch {
                 await MainActor.run {
-                    env.status = "Error: \(error.localizedDescription)"
+                    guard !Task.isCancelled else { return }
+                    self.env.status = "Error: \(error.localizedDescription)"
                 }
             }
+        }
+
+        Task { @MainActor in
+            self.currentTasks.insert(task)
         }
     }
 
@@ -1314,6 +1308,9 @@ struct ContentView: View {
             generationProgress.stage = "Error: No image loaded"
             return
         }
+
+        // Flush mask to disk before generation if dirty
+        flushMaskToDisk()
 
         guard let maskPath = getMaskPath() else {
             generationProgress.stage = "Error: No mask available"
@@ -1483,41 +1480,69 @@ struct ContentView: View {
         // Save for undo
         undoStack.append(.crop(originalImage: image, originalPath: inputImagePath))
 
-        // Get crop rect in pixel coordinates
-        let rect = crop.normalizedRect
-        let imageSize = image.size
-        let pixelRect = CGRect(
-            x: rect.minX * imageSize.width,
-            y: rect.minY * imageSize.height,
-            width: rect.width * imageSize.width,
-            height: rect.height * imageSize.height
-        )
+        // Get the oriented pixel size from our cached state
+        let pixelW = imagePixelSize.width
+        let pixelH = imagePixelSize.height
+        
+        if pixelW == 0 || pixelH == 0 { return }
 
-        // Create cropped image
-        if let croppedImage = cropImage(image, to: pixelRect) {
-            inputImage = croppedImage
-            // Save cropped image to temp location
-            saveAndLoad(image: croppedImage)
-        }
+        let rect = crop.normalizedRect
+        
+        // The normalized coordinates are relative to the oriented image.
+        // We want to extract this rect from the oriented version of the image.
+        // A robust way in macOS is to draw the oriented NSImage into a new bitmap.
+        
+        let targetSize = CGSize(
+            width: rect.width * pixelW,
+            height: rect.height * pixelH
+        )
+        
+        guard let newRep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(targetSize.width),
+            pixelsHigh: Int(targetSize.height),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else { return }
+        
+        newRep.size = targetSize
+        
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: newRep)
+        
+        // Draw the specific portion of the oriented image. 
+        // We use image.size (points) for the 'from' rect because NSImage.draw
+        // works in the point space of the source image.
+        let fromRect = CGRect(
+            x: rect.minX * image.size.width,
+            y: (1.0 - rect.maxY) * image.size.height, // NSImage has bottom-left origin
+            width: rect.width * image.size.width,
+            height: rect.height * image.size.height
+        )
+        
+        image.draw(in: NSRect(origin: .zero, size: targetSize), 
+                   from: fromRect, 
+                   operation: .copy, 
+                   fraction: 1.0)
+        
+        NSGraphicsContext.restoreGraphicsState()
+        
+        let croppedImage = NSImage(size: targetSize)
+        croppedImage.addRepresentation(newRep)
+        
+        self.inputImage = croppedImage
+        saveAndLoad(image: croppedImage)
 
         cropRect = nil
         env.status = "Image cropped"
     }
 
-    private func cropImage(_ image: NSImage, to rect: CGRect) -> NSImage? {
-        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
 
-        // Convert rect to CGImage coordinates (origin at bottom-left)
-        let flippedRect = CGRect(
-            x: rect.minX,
-            y: CGFloat(cgImage.height) - rect.maxY,
-            width: rect.width,
-            height: rect.height
-        )
-
-        guard let croppedCG = cgImage.cropping(to: flippedRect) else { return nil }
-        return NSImage(cgImage: croppedCG, size: NSSize(width: croppedCG.width, height: croppedCG.height))
-    }
 
     private func applyLassoDelete() {
         guard let image = inputImage,
@@ -1538,11 +1563,12 @@ struct ContentView: View {
     }
 
     private func deleteInsideLasso(_ image: NSImage, lasso: LassoSelection) -> NSImage? {
-        guard let tiff = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
+        guard let tiffData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else { return nil }
 
         let width = bitmap.pixelsWide
         let height = bitmap.pixelsHigh
+        let imageSize = NSSize(width: width, height: height)
 
         // Create new bitmap with alpha
         guard let newBitmap = NSBitmapImageRep(
@@ -1558,49 +1584,54 @@ struct ContentView: View {
             bitsPerPixel: 32
         ) else { return nil }
 
-        // Copy original image
+        // Copy original image using Core Graphics
         NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: newBitmap)
-        bitmap.draw(in: NSRect(x: 0, y: 0, width: width, height: height))
+        let context = NSGraphicsContext(bitmapImageRep: newBitmap)
+        NSGraphicsContext.current = context
+        bitmap.draw(in: NSRect(origin: .zero, size: imageSize))
+
+        let cgWidth = CGFloat(width)
+        let cgHeight = CGFloat(height)
+
+        // Use NSBezierPath to clear the lasso area efficiently
+        guard lasso.points.count >= 3 else { return image }
+
+        let path = NSBezierPath()
+
+        // Convert normalized points to pixel coordinates (pre-allocated for efficiency)
+        let firstPoint = lasso.points[0]
+        path.move(to: CGPoint(
+            x: firstPoint.x * cgWidth,
+            y: (1.0 - firstPoint.y) * cgHeight
+        ))
+
+        for i in 1..<lasso.points.count {
+            let point = lasso.points[i]
+            path.line(to: CGPoint(
+                x: point.x * cgWidth,
+                y: (1.0 - point.y) * cgHeight
+            ))
+        }
+        path.close()
+
+        // Use copy compositing operation to clear pixels with transparent color
+        let originalComposite = context?.compositingOperation
+        context?.compositingOperation = .copy
+
+        // Fill lasso area with transparent color
+        NSColor.clear.setFill()
+        path.fill()
+
+        // Restore original compositing operation
+        if let originalOp = originalComposite {
+            context?.compositingOperation = originalOp
+        }
+
         NSGraphicsContext.restoreGraphicsState()
 
-        // Convert lasso points to pixel coordinates
-        let pixelPoints = lasso.points.map { point in
-            CGPoint(x: point.x * CGFloat(width), y: point.y * CGFloat(height))
-        }
-
-        // Clear pixels inside the lasso polygon
-        for y in 0..<height {
-            for x in 0..<width {
-                if isPointInsidePolygon(CGPoint(x: CGFloat(x), y: CGFloat(y)), polygon: pixelPoints) {
-                    newBitmap.setColor(.clear, atX: x, y: y)
-                }
-            }
-        }
-
-        let newImage = NSImage(size: NSSize(width: width, height: height))
+        let newImage = NSImage(size: imageSize)
         newImage.addRepresentation(newBitmap)
         return newImage
-    }
-
-    private func isPointInsidePolygon(_ point: CGPoint, polygon: [CGPoint]) -> Bool {
-        guard polygon.count >= 3 else { return false }
-
-        var inside = false
-        var j = polygon.count - 1
-
-        for i in 0..<polygon.count {
-            let xi = polygon[i].x, yi = polygon[i].y
-            let xj = polygon[j].x, yj = polygon[j].y
-
-            if ((yi > point.y) != (yj > point.y)) &&
-                (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi) {
-                inside = !inside
-            }
-            j = i
-        }
-
-        return inside
     }
 
     private func clearCrop() {
@@ -1612,6 +1643,10 @@ struct ContentView: View {
     }
 
     private func clearAll() {
+        // Cancel all running tasks
+        currentTasks.forEach { $0.cancel() }
+        currentTasks.removeAll()
+
         clearAnnotations()
         inputImage = nil
         inputImagePath = nil
@@ -1677,47 +1712,91 @@ struct ContentView: View {
             .appendingPathComponent("Library/Application Support/ModelrV3", isDirectory: true)
         let tempFile = tempDir.appendingPathComponent("temp_drop.png")
 
-        do {
-            try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-            if let tiffData = image.tiffRepresentation,
-               let bitmap = NSBitmapImageRep(data: tiffData),
-               let data = bitmap.representation(using: .png, properties: [:]) {
-                try data.write(to: tempFile)
-                self.loadImage(from: tempFile)
+        Task.detached(priority: .userInitiated) {
+            do {
+                try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+                if let tiffData = image.tiffRepresentation,
+                   let bitmap = NSBitmapImageRep(data: tiffData),
+                   let data = bitmap.representation(using: .png, properties: [:]) {
+                    try data.write(to: tempFile)
+                    await MainActor.run {
+                        self.loadImage(from: tempFile)
+                    }
+                }
+            } catch {
+                print("Failed to save dropped image: \(error.localizedDescription)")
             }
-        } catch {
-            print("Failed to save dropped image: \(error.localizedDescription)")
         }
     }
 
     private func loadImage(from url: URL) {
-        DispatchQueue.main.async {
-            guard let image = NSImage(contentsOf: url) else {
-                self.env.status = "Error: Could not load image"
-                return
-            }
+        // Cancel any existing tasks
+        currentTasks.forEach { $0.cancel() }
+        currentTasks.removeAll()
 
-            self.inputImage = image
-            self.maskImage = nil
-            self.generated3DModelURL = nil
-            self.env.status = "Loaded: \(url.lastPathComponent)"
+        // Invalidate cached display size
+        cachedDisplaySize = .zero
 
-            let safeExtensions = ["png", "jpg", "jpeg", "bmp", "webp", "tiff"]
-            let ext = url.pathExtension.lowercased()
+        // Load image on background thread with high priority
+        let task = Task.detached(priority: .userInitiated) {
+            let loadedImage: NSImage? = await Task {
+                return NSImage(contentsOf: url)
+            }.value
 
-            if safeExtensions.contains(ext) {
-                self.inputImagePath = url.path
-            } else {
-                self.saveImageForBackend(image: image)
-            }
+            await MainActor.run {
+                guard let image = loadedImage else {
+                    self.env.status = "Error: Could not load image"
+                    return
+                }
 
-            if let rep = image.representations.first {
-                self.imagePixelSize = CGSize(
-                    width: CGFloat(rep.pixelsWide),
-                    height: CGFloat(rep.pixelsHigh)
-                )
+                guard !Task.isCancelled else { return }
+
+                self.inputImage = image
+                self.maskImage = nil
+                self.generated3DModelURL = nil
+                self.imageVersion += 1
+                self.env.status = "Loaded: \(url.lastPathComponent)"
+
+                let safeExtensions = ["png", "jpg", "jpeg", "bmp", "webp", "tiff"]
+                let ext = url.pathExtension.lowercased()
+
+                if safeExtensions.contains(ext) {
+                    self.inputImagePath = url.path
+                } else {
+                    self.saveImageForBackend(image: image)
+                }
+
+                self.imagePixelSize = self.getOrientedPixelSize(for: image, at: url)
             }
         }
+
+        Task { @MainActor in
+            currentTasks.insert(task)
+        }
+    }
+
+    private func getOrientedPixelSize(for image: NSImage, at url: URL) -> CGSize {
+        // Use CGImageSource to get metadata without loading full pixels into memory if possible
+        if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+           let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let pW = props[kCGImagePropertyPixelWidth] as? CGFloat,
+           let pH = props[kCGImagePropertyPixelHeight] as? CGFloat {
+            
+            let orientation = props[kCGImagePropertyOrientation] as? Int ?? 1
+            // 5-8 means 90 or 270 degree rotation (and possibly mirroring)
+            if orientation >= 5 && orientation <= 8 {
+                return CGSize(width: pH, height: pW)
+            }
+            return CGSize(width: pW, height: pH)
+        }
+        
+        // Fallback: Use NSImage.size but treat it as pixels (often true if no 1x/2x reps)
+        // Or get it from the first representation
+        if let rep = image.representations.first {
+             return CGSize(width: CGFloat(rep.pixelsWide), height: CGFloat(rep.pixelsHigh))
+        }
+        
+        return image.size
     }
 
     private func saveImageForBackend(image: NSImage) {

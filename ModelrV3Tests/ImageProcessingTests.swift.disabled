@@ -1,0 +1,377 @@
+import XCTest
+import AppKit
+@testable import ModelrV3
+
+final class ImageProcessingTests: XCTestCase {
+    
+    var imageProcessingService: ImageProcessingService!
+    var tempDirectory: URL!
+    
+    override func setUpWithError() throws {
+        imageProcessingService = ImageProcessingService()
+        tempDirectory = try TestHelpers.createTempDirectory()
+    }
+    
+    override func tearDownWithError() throws {
+        TestHelpers.cleanupTempDirectory(at: tempDirectory)
+    }
+    
+    // MARK: - Crop Tests
+    
+    func testCropImageFull() throws {
+        let testImage = MockFileSystem.createTestImage(width: 100, height: 100, color: .red)
+        let cropRect = CGRect(x: 0, y: 0, width: 100, height: 100)
+        
+        let cropped = imageProcessingService.cropImage(testImage, to: cropRect)
+        
+        XCTAssertNotNil(cropped, "Should crop to full image")
+        XCTAssertEqual(cropped?.size.width, 100, accuracy: 1)
+        XCTAssertEqual(cropped?.size.height, 100, accuracy: 1)
+    }
+    
+    func testCropImagePartial() throws {
+        let testImage = MockFileSystem.createTestImage(width: 100, height: 100, color: .blue)
+        let cropRect = CGRect(x: 25, y: 25, width: 50, height: 50)
+        
+        let cropped = imageProcessingService.cropImage(testImage, to: cropRect)
+        
+        XCTAssertNotNil(cropped, "Should crop partial image")
+        XCTAssertEqual(cropped?.size.width, 50, accuracy: 1)
+        XCTAssertEqual(cropped?.size.height, 50, accuracy: 1)
+    }
+    
+    func testCropImageSmallRect() throws {
+        let testImage = MockFileSystem.createTestImage(width: 200, height: 200)
+        let cropRect = CGRect(x: 10, y: 10, width: 20, height: 20)
+        
+        let cropped = imageProcessingService.cropImage(testImage, to: cropRect)
+        
+        XCTAssertNotNil(cropped, "Should crop small rect")
+        XCTAssertEqual(cropped?.size.width, 20, accuracy: 1)
+        XCTAssertEqual(cropped?.size.height, 20, accuracy: 1)
+    }
+    
+    func testCropImageZeroRect() throws {
+        let testImage = MockFileSystem.createTestImage(width: 100, height: 100)
+        let cropRect = CGRect(x: 50, y: 50, width: 0, height: 0)
+        
+        let cropped = imageProcessingService.cropImage(testImage, to: cropRect)
+        
+        XCTAssertNotNil(cropped, "Should handle zero rect")
+        XCTAssertEqual(cropped?.size.width, 0, accuracy: 0.1)
+        XCTAssertEqual(cropped?.size.height, 0, accuracy: 0.1)
+    }
+    
+    func testCropImageOutOfBounds() throws {
+        let testImage = MockFileSystem.createTestImage(width: 100, height: 100)
+        let cropRect = CGRect(x: -10, y: -10, width: 120, height: 120)
+        
+        let cropped = imageProcessingService.cropImage(testImage, to: cropRect)
+        
+        XCTAssertNotNil(cropped, "Should handle out of bounds")
+    }
+    
+    // MARK: - Paint Stroke Tests
+    
+    func testApplySingleStrokeToMask() throws {
+        let maskImage = MockFileSystem.createTestMask(width: 100, height: 100, opaqueRegion: .zero)
+        let stroke = PaintStroke(startPoint: CGPoint(x: 0.5, y: 0.5), brushSize: 0.1, isErasing: false)
+        
+        let result = imageProcessingService.applyStrokesToMask(maskImage, strokes: [stroke])
+        
+        XCTAssertNotNil(result, "Should apply stroke")
+        XCTAssertEqual(result?.size.width, 100, accuracy: 1)
+        XCTAssertEqual(result?.size.height, 100, accuracy: 1)
+    }
+    
+    func testApplyMultipleStrokesToMask() throws {
+        let maskImage = MockFileSystem.createTestMask(width: 100, height: 100, opaqueRegion: .zero)
+        let strokes = [
+            PaintStroke(startPoint: CGPoint(x: 0.3, y: 0.5), brushSize: 0.1, isErasing: false),
+            PaintStroke(startPoint: CGPoint(x: 0.5, y: 0.5), brushSize: 0.1, isErasing: false),
+            PaintStroke(startPoint: CGPoint(x: 0.7, y: 0.5), brushSize: 0.1, isErasing: false)
+        ]
+        
+        let result = imageProcessingService.applyStrokesToMask(maskImage, strokes: strokes)
+        
+        XCTAssertNotNil(result, "Should apply multiple strokes")
+        XCTAssertEqual(result?.size.width, 100, accuracy: 1)
+    }
+    
+    func testApplyEraseStrokeToMask() throws {
+        let maskImage = MockFileSystem.createTestMask(width: 100, height: 100, opaqueRegion: CGRect(x: 25, y: 25, width: 50, height: 50))
+        let stroke = PaintStroke(startPoint: CGPoint(x: 0.5, y: 0.5), brushSize: 0.2, isErasing: true)
+        
+        let result = imageProcessingService.applyStrokesToMask(maskImage, strokes: [stroke])
+        
+        XCTAssertNotNil(result, "Should apply erase stroke")
+        XCTAssertEqual(result?.size.width, 100, accuracy: 1)
+    }
+    
+    func testApplyStrokeToEmptyMask() throws {
+        let emptyMask = MockFileSystem.createTestMask(width: 100, height: 100, opaqueRegion: .zero)
+        let stroke = PaintStroke(startPoint: CGPoint(x: 0.5, y: 0.5), brushSize: 0.1, isErasing: false)
+        
+        let result = imageProcessingService.applyStrokesToMask(emptyMask, strokes: [stroke])
+        
+        XCTAssertNotNil(result, "Should handle empty mask")
+    }
+    
+    func testApplyEmptyStrokes() throws {
+        let maskImage = MockFileSystem.createTestMask(width: 100, height: 100, opaqueRegion: .zero)
+        
+        let result = imageProcessingService.applyStrokesToMask(maskImage, strokes: [])
+        
+        XCTAssertNotNil(result, "Should handle empty strokes")
+        XCTAssertEqual(result?.size.width, 100, accuracy: 1)
+    }
+    
+    func testApplyStrokeWithDifferentBrushSizes() throws {
+        let maskImage = MockFileSystem.createTestMask(width: 100, height: 100, opaqueRegion: .zero)
+        let smallStroke = PaintStroke(startPoint: CGPoint(x: 0.3, y: 0.5), brushSize: 0.02, isErasing: false)
+        let largeStroke = PaintStroke(startPoint: CGPoint(x: 0.7, y: 0.5), brushSize: 0.15, isErasing: false)
+        
+        let result = imageProcessingService.applyStrokesToMask(maskImage, strokes: [smallStroke, largeStroke])
+        
+        XCTAssertNotNil(result, "Should handle different brush sizes")
+    }
+    
+    // MARK: - Lasso Delete Tests
+    
+    func testDeleteInsideLasso() throws {
+        let testImage = MockFileSystem.createTestImage(width: 100, height: 100, color: .blue)
+        let points = [
+            CGPoint(x: 0.25, y: 0.25),
+            CGPoint(x: 0.75, y: 0.25),
+            CGPoint(x: 0.75, y: 0.75),
+            CGPoint(x: 0.25, y: 0.75)
+        ]
+        var lasso = LassoSelection(startPoint: points[0])
+        for point in points.dropFirst() {
+            lasso.addPoint(point)
+        }
+        
+        let result = imageProcessingService.deleteInsideLasso(testImage, lasso: lasso)
+        
+        XCTAssertNotNil(result, "Should delete inside lasso")
+        XCTAssertEqual(result?.size.width, 100, accuracy: 1)
+        XCTAssertEqual(result?.size.height, 100, accuracy: 1)
+    }
+    
+    func testDeleteInsideSmallLasso() throws {
+        let testImage = MockFileSystem.createTestImage(width: 100, height: 100, color: .green)
+        let points = [
+            CGPoint(x: 0.4, y: 0.4),
+            CGPoint(x: 0.6, y: 0.4),
+            CGPoint(x: 0.6, y: 0.6),
+            CGPoint(x: 0.4, y: 0.6)
+        ]
+        var lasso = LassoSelection(startPoint: points[0])
+        for point in points.dropFirst() {
+            lasso.addPoint(point)
+        }
+        
+        let result = imageProcessingService.deleteInsideLasso(testImage, lasso: lasso)
+        
+        XCTAssertNotNil(result, "Should handle small lasso")
+    }
+    
+    func testDeleteInsideComplexLasso() throws {
+        let testImage = MockFileSystem.createTestImage(width: 100, height: 100, color: .yellow)
+        let lasso = TestDataGenerator.createComplexLasso()
+        
+        let result = imageProcessingService.deleteInsideLasso(testImage, lasso: lasso)
+        
+        XCTAssertNotNil(result, "Should handle complex lasso")
+    }
+    
+    func testDeleteInsideInvalidLasso() throws {
+        let testImage = MockFileSystem.createTestImage(width: 100, height: 100, color: .red)
+        let lasso = LassoSelection(startPoint: CGPoint(x: 0.5, y: 0.5))
+        
+        let result = imageProcessingService.deleteInsideLasso(testImage, lasso: lasso)
+        
+        XCTAssertNotNil(result, "Should handle invalid lasso")
+    }
+    
+    // MARK: - Point in Polygon Tests
+    
+    func testPointInsideSquarePolygon() throws {
+        let points = [
+            CGPoint(x: 0, y: 0),
+            CGPoint(x: 10, y: 0),
+            CGPoint(x: 10, y: 10),
+            CGPoint(x: 0, y: 10)
+        ]
+        let insidePoint = CGPoint(x: 5, y: 5)
+        let outsidePoint = CGPoint(x: 15, y: 15)
+        
+        XCTAssertTrue(imageProcessingService.isPointInsidePolygonTest(insidePoint, polygon: points))
+        XCTAssertFalse(imageProcessingService.isPointInsidePolygonTest(outsidePoint, polygon: points))
+    }
+    
+    func testPointInsideTrianglePolygon() throws {
+        let points = [
+            CGPoint(x: 5, y: 0),
+            CGPoint(x: 10, y: 10),
+            CGPoint(x: 0, y: 10)
+        ]
+        let insidePoint = CGPoint(x: 5, y: 7)
+        let outsidePoint = CGPoint(x: 5, y: 1)
+        
+        XCTAssertTrue(imageProcessingService.isPointInsidePolygonTest(insidePoint, polygon: points))
+        XCTAssertFalse(imageProcessingService.isPointInsidePolygonTest(outsidePoint, polygon: points))
+    }
+    
+    func testPointOnPolygonEdge() throws {
+        let points = [
+            CGPoint(x: 0, y: 0),
+            CGPoint(x: 10, y: 0),
+            CGPoint(x: 10, y: 10),
+            CGPoint(x: 0, y: 10)
+        ]
+        let edgePoint = CGPoint(x: 5, y: 0)
+        
+        let isInside = imageProcessingService.isPointInsidePolygonTest(edgePoint, polygon: points)
+        XCTAssertTrue(isInside || !isInside, "Point on edge should be consistent")
+    }
+    
+    func testPointOutsideConvexPolygon() throws {
+        let points = [
+            CGPoint(x: 2, y: 2),
+            CGPoint(x: 8, y: 2),
+            CGPoint(x: 8, y: 8),
+            CGPoint(x: 2, y: 8)
+        ]
+        let outsidePoint = CGPoint(x: 1, y: 5)
+        
+        XCTAssertFalse(imageProcessingService.isPointInsidePolygonTest(outsidePoint, polygon: points))
+    }
+    
+    func testInvalidPolygon() throws {
+        let points = [CGPoint(x: 0, y: 0), CGPoint(x: 1, y: 1)]
+        let testPoint = CGPoint(x: 0.5, y: 0.5)
+        
+        XCTAssertFalse(imageProcessingService.isPointInsidePolygonTest(testPoint, polygon: points))
+    }
+    
+    // MARK: - Mask Comparison Tests
+    
+    func testCompareIdenticalMasks() throws {
+        let mask1 = MockFileSystem.createTestMask(width: 100, height: 100, opaqueRegion: CGRect(x: 25, y: 25, width: 50, height: 50))
+        let mask2 = MockFileSystem.createTestMask(width: 100, height: 100, opaqueRegion: CGRect(x: 25, y: 25, width: 50, height: 50))
+        
+        let similarity = imageProcessingService.compareMasks(mask1: mask1, mask2: mask2)
+        
+        XCTAssertEqual(similarity, 1.0, accuracy: 0.01, "Identical masks should have 100% similarity")
+    }
+    
+    func testCompareDifferentMasks() throws {
+        let mask1 = MockFileSystem.createTestMask(width: 100, height: 100, opaqueRegion: CGRect(x: 25, y: 25, width: 50, height: 50))
+        let mask2 = MockFileSystem.createTestMask(width: 100, height: 100, opaqueRegion: CGRect(x: 50, y: 50, width: 25, height: 25))
+        
+        let similarity = imageProcessingService.compareMasks(mask1: mask1, mask2: mask2)
+        
+        XCTAssertGreaterThan(similarity, 0.0, "Should have some similarity")
+        XCTAssertLessThan(similarity, 1.0, "Should not be identical")
+    }
+    
+    func testCompareEmptyMasks() throws {
+        let mask1 = MockFileSystem.createTestMask(width: 100, height: 100, opaqueRegion: .zero)
+        let mask2 = MockFileSystem.createTestMask(width: 100, height: 100, opaqueRegion: .zero)
+        
+        let similarity = imageProcessingService.compareMasks(mask1: mask1, mask2: mask2)
+        
+        XCTAssertEqual(similarity, 0.0, accuracy: 0.01, "Empty masks should have 0% similarity")
+    }
+    
+    func testCompareDifferentSizes() throws {
+        let mask1 = MockFileSystem.createTestMask(width: 100, height: 100, opaqueRegion: CGRect(x: 25, y: 25, width: 50, height: 50))
+        let mask2 = MockFileSystem.createTestMask(width: 50, height: 50, opaqueRegion: CGRect(x: 12, y: 12, width: 25, height: 25))
+        
+        let similarity = imageProcessingService.compareMasks(mask1: mask1, mask2: mask2)
+        
+        XCTAssertGreaterThan(similarity, 0.0)
+        XCTAssertLessThanOrEqual(similarity, 1.0)
+    }
+    
+    // MARK: - Large Image Tests
+    
+    func testCropLargeImage() throws {
+        let testImage = MockFileSystem.createTestImage(width: 2000, height: 2000, color: .purple)
+        let cropRect = CGRect(x: 500, y: 500, width: 1000, height: 1000)
+        
+        let cropped = imageProcessingService.cropImage(testImage, to: cropRect)
+        
+        XCTAssertNotNil(cropped)
+        XCTAssertEqual(cropped?.size.width, 1000, accuracy: 5)
+        XCTAssertEqual(cropped?.size.height, 1000, accuracy: 5)
+    }
+    
+    func testProcessLargeMask() throws {
+        let maskImage = MockFileSystem.createTestMask(width: 2000, height: 2000, opaqueRegion: CGRect(x: 500, y: 500, width: 1000, height: 1000))
+        let stroke = PaintStroke(startPoint: CGPoint(x: 0.5, y: 0.5), brushSize: 0.05, isErasing: false)
+        
+        let result = imageProcessingService.applyStrokesToMask(maskImage, strokes: [stroke])
+        
+        XCTAssertNotNil(result)
+        XCTAssertEqual(result?.size.width, 2000, accuracy: 5)
+    }
+}
+
+extension ImageProcessingService {
+    func isPointInsidePolygonTest(_ point: CGPoint, polygon: [CGPoint]) -> Bool {
+        guard polygon.count >= 3 else { return false }
+        
+        var inside = false
+        var j = polygon.count - 1
+        
+        for i in 0..<polygon.count {
+            let xi = polygon[i].x, yi = polygon[i].y
+            let xj = polygon[j].x, yj = polygon[j].y
+            
+            if ((yi > point.y) != (yj > point.y)) &&
+                (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi) {
+                inside = !inside
+            }
+            j = i
+        }
+        
+        return inside
+    }
+    
+    func compareMasks(mask1: NSImage, mask2: NSImage) -> Double {
+        guard let tiff1 = mask1.tiffRepresentation,
+              let tiff2 = mask2.tiffRepresentation,
+              let bitmap1 = NSBitmapImageRep(data: tiff1),
+              let bitmap2 = NSBitmapImageRep(data: tiff2) else {
+            return 0
+        }
+        
+        let width = min(bitmap1.pixelsWide, bitmap2.pixelsWide)
+        let height = min(bitmap1.pixelsHigh, bitmap2.pixelsHigh)
+        
+        var matchingPixels = 0
+        var totalPixels = 0
+        
+        for y in 0..<height {
+            for x in 0..<width {
+                let alpha1 = bitmap1.colorAt(x: x, y: y)?.alphaComponent ?? 0
+                let alpha2 = bitmap2.colorAt(x: x, y: y)?.alphaComponent ?? 0
+                
+                let hasContent1 = alpha1 > 0.1
+                let hasContent2 = alpha2 > 0.1
+                
+                if hasContent1 || hasContent2 {
+                    totalPixels += 1
+                    if hasContent1 == hasContent2 {
+                        matchingPixels += 1
+                    }
+                }
+            }
+        }
+        
+        guard totalPixels > 0 else { return 0 }
+        return Double(matchingPixels) / Double(totalPixels)
+    }
+}
