@@ -9,6 +9,9 @@ build: generate
 run: build
 	./build/Build/Products/Debug/ModelrV3.app/Contents/MacOS/ModelrV3
 
+test: generate
+	xcodebuild -project ModelrV3.xcodeproj -scheme ModelrV3Tests -configuration Debug -derivedDataPath build test
+
 clean:
 	rm -rf ModelrV3.xcodeproj
 	rm -rf build

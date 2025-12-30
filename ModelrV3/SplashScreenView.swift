@@ -7,7 +7,7 @@ struct SplashScreenView: View {
     
     var body: some View {
         ZStack {
-            LinearGradient(gradient: Gradient(colors: [Color(NSColor.windowBackgroundColor), Color.blue.opacity(0.1)]), startPoint: .topLeading, endPoint: .bottomTrailing)
+            LinearGradient(gradient: Gradient(colors: [Color(NSColor.windowBackgroundColor), Color(red: 0.1, green: 0.25, blue: 0.5).opacity(0.4)]), startPoint: .topLeading, endPoint: .bottomTrailing)
                 .ignoresSafeArea()
             
             VStack(spacing: 20) {
@@ -31,7 +31,7 @@ struct SplashScreenView: View {
                                     .resizable()
                                     .aspectRatio(contentMode: .fit)
                                     .frame(height: 400)
-                                    .opacity(0.8)
+                                    .opacity(0.9)
                             }
                         }
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.2), lineWidth: 1))
@@ -42,7 +42,7 @@ struct SplashScreenView: View {
                     // App Icon Placeholder
                     ZStack {
                         RoundedRectangle(cornerRadius: 24)
-                            .fill(LinearGradient(gradient: Gradient(colors: [.blue, .purple]), startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .fill(LinearGradient(gradient: Gradient(colors: [Color(red: 0.1, green: 0.3, blue: 0.7), .purple]), startPoint: .topLeading, endPoint: .bottomTrailing))
                             .frame(width: 80, height: 80)
                         
                         Image(systemName: "ai.generator.fill")
@@ -59,6 +59,23 @@ struct SplashScreenView: View {
                     Text("Modelr V3")
                         .font(.system(size: 28, weight: .bold, design: .rounded))
                     
+                    if !env.canProceed {
+                        Picker("Model", selection: $env.selectedModel) {
+                            Text("Tiny").tag("tiny")
+                            Text("Small").tag("small")
+                            Text("Base Plus").tag("base_plus")
+                            Text("Large").tag("large")
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 300)
+                        .padding(.vertical, 10)
+                        .disabled(env.status != "Choose a model to begin" && env.status != "Setup failed" && env.status != "Error: uv not found")
+                    } else {
+                        Text("Model: \(env.selectedModel.replacingOccurrences(of: "_", with: " ").capitalized)")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+
                     Text(env.status)
                         .font(.subheadline)
                         .foregroundColor(.secondary)
@@ -73,16 +90,38 @@ struct SplashScreenView: View {
                             env.isSetup = true
                         }
                     }) {
-                        Text("Finish Setup")
+                        Text("Open Editor")
                             .font(.headline)
                             .foregroundColor(.white)
-                            .padding(.horizontal, 40)
-                            .padding(.vertical, 12)
-                            .background(Color.blue)
-                            .cornerRadius(10)
+                            .padding(.horizontal, 48)
+                            .padding(.vertical, 14)
+                            .background(
+                                RoundedRectangle(cornerRadius: 14)
+                                    .fill(Color(red: 0.1, green: 0.3, blue: 0.7))
+                                    .shadow(color: Color.blue.opacity(0.3), radius: 10, x: 0, y: 5)
+                            )
                     }
                     .buttonStyle(.plain)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .opacity))
+                } else if env.status == "Choose a model to begin" || env.status == "Setup failed" || env.status == "Error: uv not found" {
+                    Button(action: {
+                        Task {
+                            await env.setup()
+                        }
+                    }) {
+                        Text("Start Setup")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 48)
+                            .padding(.vertical, 14)
+                            .background(
+                                RoundedRectangle(cornerRadius: 14)
+                                    .fill(Color(red: 0.1, green: 0.3, blue: 0.7))
+                                    .shadow(color: Color.blue.opacity(0.3), radius: 10, x: 0, y: 5)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .transition(.opacity)
                 } else {
                     ProgressView(value: progress, total: 1.0)
                         .progressViewStyle(.linear)

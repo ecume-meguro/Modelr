@@ -20,3 +20,12 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
         ENABLE_APP_SANDBOX: NO
+  ModelrV3Tests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: ModelrV3Tests
+    settings:
+      GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: ModelrV3

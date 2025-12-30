@@ -3,14 +3,18 @@ import AppKit
 
 class PythonEnvironment: ObservableObject {
     @Published var isSetup = false
-    @Published var status = "Initializing..."
+    @Published var status = "Choose a model to begin"
     @Published var selfTestImage: NSImage?
     @Published var selfTestMask: NSImage?
     @Published var canProceed = false
+    @Published var selectedModel = "tiny"
     
     private let appSupportDir: URL
     private let venvDir: URL
     private let pythonWorkingDir: URL
+    
+    /// Used for dependency injection during unit tests
+    var resourcePathOverride: String?
     
     init() {
         let fileManager = FileManager.default
@@ -25,13 +29,18 @@ class PythonEnvironment: ObservableObject {
     func setup() async {
         await MainActor.run { status = "Bootstrapping..." }
         
-        var uvPath = Bundle.main.path(forResource: "uv", ofType: nil)
-        if uvPath == nil {
-            uvPath = Bundle.main.path(forResource: "uv", ofType: nil, inDirectory: "Resources")
+        var uvPath: String?
+        if let override = resourcePathOverride {
+            uvPath = (override as NSString).appendingPathComponent("uv")
+        } else {
+            uvPath = Bundle.main.path(forResource: "uv", ofType: nil)
+            if uvPath == nil {
+                uvPath = Bundle.main.path(forResource: "uv", ofType: nil, inDirectory: "Resources")
+            }
         }
         
         guard let finalUvPath = uvPath else {
-            print("ERROR: uv binary not found in bundle")
+            print("ERROR: uv binary not found")
             await MainActor.run { status = "Error: uv not found" }
             return
         }
@@ -42,9 +51,15 @@ class PythonEnvironment: ObservableObject {
         let resources = ["sam_wrapper.py", "pyproject.toml", "self_test.jpg"]
         for res in resources {
             let targetPath = appSupportDir.appendingPathComponent(res)
-            var sourcePath = Bundle.main.path(forResource: res, ofType: nil)
-            if sourcePath == nil {
-                sourcePath = Bundle.main.path(forResource: res, ofType: nil, inDirectory: "Resources")
+            var sourcePath: String?
+            
+            if let override = resourcePathOverride {
+                sourcePath = (override as NSString).appendingPathComponent(res)
+            } else {
+                sourcePath = Bundle.main.path(forResource: res, ofType: nil)
+                if sourcePath == nil {
+                    sourcePath = Bundle.main.path(forResource: res, ofType: nil, inDirectory: "Resources")
+                }
             }
             
             if let finalSource = sourcePath {
@@ -59,7 +74,7 @@ class PythonEnvironment: ObservableObject {
         if let image = NSImage(contentsOf: testImgURL) {
             await MainActor.run { self.selfTestImage = image }
         }
-
+        
         // 1. Sync Environment (this will also install python locally if needed)
         await MainActor.run { status = "Setting up Python environment..." }
         
@@ -145,7 +160,7 @@ class PythonEnvironment: ObservableObject {
         let testImgPath = appSupportDir.appendingPathComponent("self_test.jpg").path
         let success = await execute(
             executable: finalUvPath,
-            arguments: ["run", scriptPath, "--test", testImgPath],
+            arguments: ["run", scriptPath, "--model", selectedModel, "--test", testImgPath],
             environment: [
                 "PYTHONPATH": appSupportDir.path,
                 "PYTHONUNBUFFERED": "1"
@@ -191,7 +206,7 @@ class PythonEnvironment: ObservableObject {
         
         let success = await execute(
             executable: finalUvPath,
-            arguments: ["run", scriptPath, imagePath, "\(x)", "\(y)", maskPath],
+            arguments: ["run", scriptPath, "--model", selectedModel, imagePath, "\(x)", "\(y)", maskPath],
             environment: [
                 "PYTHONPATH": appSupportDir.path,
                 "PYTHONUNBUFFERED": "1"
