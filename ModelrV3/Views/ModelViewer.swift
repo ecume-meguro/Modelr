@@ -208,7 +208,20 @@ struct ModelViewerContainer: View {
                 ModelViewer(modelURL: url)
 
                 VStack {
+                    HStack {
+                        Text("Low Quality Preview")
+                            .font(.caption2)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.orange.opacity(0.8))
+                            .cornerRadius(6)
+                        Spacer()
+                    }
+                    
                     Spacer()
+                    
                     HStack {
                         Spacer()
                         Text("Drag to rotate")

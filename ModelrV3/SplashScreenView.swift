@@ -135,40 +135,6 @@ struct SplashScreenView: View {
                     Text("Modelr V3")
                         .font(.system(size: 28, weight: .bold, design: .rounded))
 
-                    if !env.canProceed && env.status == "Initializing..." {
-                        let isEnabled = env.status == "Initializing..." || env.status == "Setup failed" || env.status == "Error: uv not found"
-
-                        VStack(spacing: 6) {
-                            HStack(spacing: 2) {
-                                ForEach(["tiny", "small"], id: \.self) { model in
-                                    modelButton(model: model, label: model.capitalized, isEnabled: isEnabled, isDimmed: true)
-                                }
-                                ForEach(["base_plus", "large"], id: \.self) { model in
-                                    let label = model == "base_plus" ? "Base+" : "Large"
-                                    modelButton(model: model, label: label, isEnabled: isEnabled, isDimmed: false)
-                                }
-                            }
-                            .background(
-                                GeometryReader { geo in
-                                    HStack {
-                                        Spacer()
-                                        Text("Recommended")
-                                            .font(.system(size: 9, weight: .medium))
-                                            .foregroundColor(.green)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(Color.green.opacity(0.15))
-                                            .cornerRadius(4)
-                                            .offset(y: -18)
-                                    }
-                                    .frame(width: geo.size.width / 2)
-                                    .offset(x: geo.size.width / 2)
-                                }
-                            )
-                        }
-                        .padding(.vertical, 10)
-                    }
-
                     Text(env.status)
                         .font(.subheadline)
                         .foregroundColor(.secondary)
@@ -176,7 +142,7 @@ struct SplashScreenView: View {
                         .id(env.status)
                         .transition(.opacity)
                 }
-                
+
                 if env.canProceed {
                     Button(action: {
                         withAnimation {
@@ -196,13 +162,14 @@ struct SplashScreenView: View {
                     }
                     .buttonStyle(.plain)
                     .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .opacity))
-                } else if env.status == "Initializing..." || env.status == "Setup failed" || env.status == "Error: uv not found" {
+                } else if !env.setupStarted {
+                    // Show "Begin Setup" button before setup starts
                     Button(action: {
                         Task {
                             await env.setup()
                         }
                     }) {
-                        Text("Start Setup")
+                        Text("Begin Setup")
                             .font(.headline)
                             .foregroundColor(.white)
                             .padding(.horizontal, 48)
@@ -215,6 +182,25 @@ struct SplashScreenView: View {
                     }
                     .buttonStyle(.plain)
                     .transition(.opacity)
+
+                    if env.canSkipSetup {
+                        Button(action: {
+                            env.skipSetup()
+                        }) {
+                            Text("Skip Setup")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 8)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, 4)
+                        .transition(.opacity)
+                    }
                 } else {
                     ProgressView(value: progress, total: 1.0)
                         .progressViewStyle(.linear)
@@ -236,29 +222,5 @@ struct SplashScreenView: View {
                 }
             }
         }
-    }
-
-    @ViewBuilder
-    private func modelButton(model: String, label: String, isEnabled: Bool, isDimmed: Bool) -> some View {
-        let isSelected = env.selectedModel == model
-
-        Button(action: {
-            if isEnabled {
-                env.selectedModel = model
-            }
-        }) {
-            Text(label)
-                .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-                .foregroundColor(isSelected ? .white : (isDimmed ? .secondary : .primary))
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(isSelected ? Color(red: 0.1, green: 0.3, blue: 0.7) : Color.gray.opacity(0.2))
-                )
-                .opacity(isDimmed && !isSelected ? 0.5 : 1.0)
-        }
-        .buttonStyle(.plain)
-        .disabled(!isEnabled)
     }
 }

@@ -1,17 +1,47 @@
 import SwiftUI
 import AppKit
 
-/// A zoomable and pannable scroll view wrapper using native NSScrollView
-struct ZoomableScrollView<Content: View>: NSViewRepresentable {
+// MARK: - ZoomableImageView
+
+/// A zoomable and pannable image view using native NSScrollView with AppKit gesture handling.
+/// Fixes: centering on load, smooth panning, correct click coordinates.
+struct ZoomableImageView<Content: View>: NSViewRepresentable {
     @Binding var magnification: CGFloat
-    private var content: Content
+
+    // Gesture callbacks (normalized 0-1 coordinates)
+    var onTap: ((CGPoint) -> Void)?
+    var onDragStart: ((CGPoint) -> Void)?
+    var onDragChange: ((CGPoint, CGPoint) -> Void)?
+    var onDragEnd: ((CGPoint, CGPoint) -> Void)?
+
+    // Tool mode determines gesture behavior
+    var toolMode: SAMTool
+
+    // Content configuration
+    let contentSize: CGSize
+    let contentID: String
+    let content: () -> Content
 
     init(
-        magnification: Binding<CGFloat> = .constant(1.0),
-        @ViewBuilder content: () -> Content
+        magnification: Binding<CGFloat>,
+        onTap: ((CGPoint) -> Void)? = nil,
+        onDragStart: ((CGPoint) -> Void)? = nil,
+        onDragChange: ((CGPoint, CGPoint) -> Void)? = nil,
+        onDragEnd: ((CGPoint, CGPoint) -> Void)? = nil,
+        toolMode: SAMTool = .point,
+        contentSize: CGSize,
+        contentID: String = "",
+        @ViewBuilder content: @escaping () -> Content
     ) {
         self._magnification = magnification
-        self.content = content()
+        self.onTap = onTap
+        self.onDragStart = onDragStart
+        self.onDragChange = onDragChange
+        self.onDragEnd = onDragEnd
+        self.toolMode = toolMode
+        self.contentSize = contentSize
+        self.contentID = contentID
+        self.content = content
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -20,66 +50,124 @@ struct ZoomableScrollView<Content: View>: NSViewRepresentable {
         scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.allowsMagnification = true
-        scrollView.minMagnification = 0.5
+        scrollView.minMagnification = 0.1
         scrollView.maxMagnification = 20.0
         scrollView.magnification = magnification
 
-        // Use layer backing for better performance
+        // Use layer backing for performance
         scrollView.wantsLayer = true
-        scrollView.contentView.wantsLayer = true
 
-        // Background color
-        scrollView.backgroundColor = NSColor.windowBackgroundColor
-        scrollView.drawsBackground = true
+        // Use centering clip view
+        let clipView = CenteringClipView()
+        clipView.drawsBackground = true
+        clipView.backgroundColor = NSColor.windowBackgroundColor
+        scrollView.contentView = clipView
 
-        let hostedView = context.coordinator.hostingView
-        hostedView.translatesAutoresizingMaskIntoConstraints = false
+        // Create canvas view that handles mouse events
+        let canvasView = context.coordinator.canvasView
+        canvasView.frame = NSRect(origin: .zero, size: contentSize)
+        canvasView.toolMode = toolMode
+        canvasView.onTap = onTap
+        canvasView.onDragStart = onDragStart
+        canvasView.onDragChange = onDragChange
+        canvasView.onDragEnd = onDragEnd
 
-        // Set the hosted view as the document view
-        scrollView.documentView = hostedView
+        // Create hosting view for SwiftUI content
+        let hostingView = NSHostingView(rootView: content())
+        hostingView.frame = NSRect(origin: .zero, size: contentSize)
+        hostingView.autoresizingMask = [.width, .height]
+        canvasView.addSubview(hostingView)
+        context.coordinator.hostingView = hostingView
 
-        // Center the content initially
-        scrollView.contentView.postsBoundsChangedNotifications = true
+        // Set canvas as document view
+        scrollView.documentView = canvasView
+
+        // Setup notifications
+        context.coordinator.setupNotifications(scrollView: scrollView)
 
         return scrollView
     }
 
-    func updateNSView(_ nsView: NSScrollView, context: Context) {
-        context.coordinator.hostingView.rootView = content
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        let coordinator = context.coordinator
+
+        // Update hosting view content
+        coordinator.hostingView?.rootView = content()
+
+        // Update canvas size if changed
+        if coordinator.canvasView.frame.size != contentSize {
+            coordinator.canvasView.frame.size = contentSize
+            coordinator.hostingView?.frame.size = contentSize
+        }
+
+        // Update tool mode and callbacks
+        coordinator.canvasView.toolMode = toolMode
+        coordinator.canvasView.onTap = onTap
+        coordinator.canvasView.onDragStart = onDragStart
+        coordinator.canvasView.onDragChange = onDragChange
+        coordinator.canvasView.onDragEnd = onDragEnd
 
         // Update magnification if changed externally
-        if abs(nsView.magnification - magnification) > 0.01 {
-            nsView.magnification = magnification
+        if abs(scrollView.magnification - magnification) > 0.01 {
+            scrollView.magnification = magnification
+        }
+
+        // Re-layout if content ID changed (new image)
+        if coordinator.lastContentID != contentID {
+            coordinator.lastContentID = contentID
+            // Reset magnification for new content
+            scrollView.magnification = 1.0
+            // Force layout update
+            scrollView.tile()
         }
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(hostingView: NSHostingView(rootView: content), parent: self)
+        Coordinator(parent: self, contentSize: contentSize)
     }
 
+    // MARK: - Coordinator
+
     class Coordinator: NSObject {
-        var hostingView: NSHostingView<Content>
-        var parent: ZoomableScrollView
+        var parent: ZoomableImageView
+        var canvasView: ImageCanvasView
+        var hostingView: NSHostingView<Content>?
+        var lastContentID: String = ""
 
-        init(hostingView: NSHostingView<Content>, parent: ZoomableScrollView) {
-            self.hostingView = hostingView
+        init(parent: ZoomableImageView, contentSize: CGSize) {
             self.parent = parent
+            self.canvasView = ImageCanvasView(frame: NSRect(origin: .zero, size: contentSize))
             super.init()
-
-            // Listen for magnification changes
-            NotificationCenter.default.addObserver(
-                self,
-                selector: #selector(scrollViewDidMagnify(_:)),
-                name: NSScrollView.didEndLiveMagnifyNotification,
-                object: nil
-            )
         }
 
         deinit {
             NotificationCenter.default.removeObserver(self)
         }
 
-        @objc func scrollViewDidMagnify(_ notification: Notification) {
+        func setupNotifications(scrollView: NSScrollView) {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(magnificationChanged(_:)),
+                name: NSScrollView.didEndLiveMagnifyNotification,
+                object: scrollView
+            )
+
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(liveMagnificationChanged(_:)),
+                name: NSScrollView.willStartLiveMagnifyNotification,
+                object: scrollView
+            )
+        }
+
+        @objc func magnificationChanged(_ notification: Notification) {
+            guard let scrollView = notification.object as? NSScrollView else { return }
+            DispatchQueue.main.async {
+                self.parent.magnification = scrollView.magnification
+            }
+        }
+
+        @objc func liveMagnificationChanged(_ notification: Notification) {
             guard let scrollView = notification.object as? NSScrollView else { return }
             DispatchQueue.main.async {
                 self.parent.magnification = scrollView.magnification
@@ -88,10 +176,119 @@ struct ZoomableScrollView<Content: View>: NSViewRepresentable {
     }
 }
 
-/// View modifier to add zoom controls
+// MARK: - ImageCanvasView
+
+/// Custom NSView that intercepts mouse events for point/box placement.
+/// Sits between NSScrollView and NSHostingView to handle gestures in AppKit.
+class ImageCanvasView: NSView {
+    var toolMode: SAMTool = .point
+
+    var onTap: ((CGPoint) -> Void)?
+    var onDragStart: ((CGPoint) -> Void)?
+    var onDragChange: ((CGPoint, CGPoint) -> Void)?
+    var onDragEnd: ((CGPoint, CGPoint) -> Void)?
+
+    private var isDragging = false
+    private var dragStartPoint: CGPoint?
+
+    override var isFlipped: Bool { true }  // Match SwiftUI coordinate system (origin top-left)
+
+    override func mouseDown(with event: NSEvent) {
+        let location = convert(event.locationInWindow, from: nil)
+        let normalized = normalizePoint(location)
+
+        if toolMode == .point {
+            // Single click for point placement
+            onTap?(normalized)
+        } else if toolMode == .boundingBox {
+            // Start drag for bounding box
+            isDragging = true
+            dragStartPoint = normalized
+            onDragStart?(normalized)
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard isDragging, let start = dragStartPoint else { return }
+        let location = convert(event.locationInWindow, from: nil)
+        let normalized = normalizePoint(location)
+        onDragChange?(start, normalized)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if isDragging, let start = dragStartPoint {
+            let location = convert(event.locationInWindow, from: nil)
+            let normalized = normalizePoint(location)
+            onDragEnd?(start, normalized)
+        }
+        isDragging = false
+        dragStartPoint = nil
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        // Remove old tracking areas
+        for area in trackingAreas {
+            removeTrackingArea(area)
+        }
+        // Add new tracking area for cursor changes
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInKeyWindow, .cursorUpdate],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        switch toolMode {
+        case .point:
+            NSCursor.pointingHand.set()
+        case .boundingBox:
+            NSCursor.crosshair.set()
+        }
+    }
+
+    private func normalizePoint(_ point: CGPoint) -> CGPoint {
+        guard bounds.width > 0, bounds.height > 0 else { return .zero }
+        return CGPoint(
+            x: max(0, min(1, point.x / bounds.width)),
+            y: max(0, min(1, point.y / bounds.height))
+        )
+    }
+}
+
+// MARK: - CenteringClipView
+
+/// Custom NSClipView that centers content when smaller than the viewport.
+/// Uses constrainBoundsRect for immediate centering without delays.
+class CenteringClipView: NSClipView {
+    override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
+        var rect = super.constrainBoundsRect(proposedBounds)
+
+        guard let docView = documentView else { return rect }
+        let docFrame = docView.frame
+
+        // Center horizontally if content narrower than viewport
+        if docFrame.width < bounds.width {
+            rect.origin.x = (docFrame.width - bounds.width) / 2
+        }
+
+        // Center vertically if content shorter than viewport
+        if docFrame.height < bounds.height {
+            rect.origin.y = (docFrame.height - bounds.height) / 2
+        }
+
+        return rect
+    }
+}
+
+// MARK: - Zoom Controls Modifier
+
 struct ZoomControlsModifier: ViewModifier {
     @Binding var magnification: CGFloat
-    let minMagnification: CGFloat = 0.5
+    let minMagnification: CGFloat = 0.1
     let maxMagnification: CGFloat = 20.0
 
     func body(content: Content) -> some View {
@@ -131,21 +328,15 @@ struct ZoomControlsModifier: ViewModifier {
     }
 
     private func zoomIn() {
-        withAnimation(.spring(response: 0.3)) {
-            magnification = min(magnification * 1.5, maxMagnification)
-        }
+        magnification = min(magnification * 1.5, maxMagnification)
     }
 
     private func zoomOut() {
-        withAnimation(.spring(response: 0.3)) {
-            magnification = max(magnification / 1.5, minMagnification)
-        }
+        magnification = max(magnification / 1.5, minMagnification)
     }
 
     private func resetZoom() {
-        withAnimation(.spring(response: 0.3)) {
-            magnification = 1.0
-        }
+        magnification = 1.0
     }
 }
 
@@ -153,17 +344,4 @@ extension View {
     func zoomControls(magnification: Binding<CGFloat>) -> some View {
         modifier(ZoomControlsModifier(magnification: magnification))
     }
-}
-
-#Preview {
-    ZoomableScrollView {
-        Rectangle()
-            .fill(Color.blue.opacity(0.3))
-            .frame(width: 800, height: 600)
-            .overlay {
-                Text("Zoomable Content")
-                    .font(.largeTitle)
-            }
-    }
-    .frame(width: 400, height: 300)
 }

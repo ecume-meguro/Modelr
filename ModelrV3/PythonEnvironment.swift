@@ -12,6 +12,7 @@ class PythonEnvironment: ObservableObject {
     @Published var isProcessing = false
     @Published var hunyuanProgress: String = ""
     @Published var setupStarted = false  // Track if setup has begun
+    @Published var canSkipSetup = false  // Track if we can skip the splash sequence
 
     // Interactive self-test state
     @Published var selfTestClickPoint: CGPoint? = nil  // Normalized 0-1
@@ -40,6 +41,11 @@ class PythonEnvironment: ObservableObject {
     private let processQueue = DispatchQueue(label: "com.modelr.python.process")
     private var pendingContinuation: CheckedContinuation<SAMResponse, Error>?
 
+    // Throughput monitoring
+    private var throughputMonitorTask: Task<Void, Never>?
+    private var lastDirectorySize: UInt64 = 0
+    private var lastSizeCheckTime: Date = Date()
+
     init() {
         let fileManager = FileManager.default
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -50,10 +56,50 @@ class PythonEnvironment: ObservableObject {
 
         try? fileManager.createDirectory(at: appSupportDir, withIntermediateDirectories: true)
         // Setup is started manually when user clicks "Begin Setup"
+        checkExistingSetup()
     }
 
     deinit {
         stopPersistentWorker()
+    }
+
+    /// Check if the required environment and scripts already exist
+    func checkExistingSetup() {
+        let fm = FileManager.default
+        let samWrapper = appSupportDir.appendingPathComponent("sam_wrapper.py").path
+        let hunyuanWrapper = appSupportDir.appendingPathComponent("Hunyuan3D/hunyuan_wrapper.py").path
+        let venv = venvDir.appendingPathComponent("bin/python").path
+        let hunyuanVenv = appSupportDir.appendingPathComponent("Hunyuan3D/.venv/bin/python").path
+
+        let filesExist = fm.fileExists(atPath: samWrapper) &&
+                         fm.fileExists(atPath: hunyuanWrapper) &&
+                         fm.fileExists(atPath: venv) &&
+                         fm.fileExists(atPath: hunyuanVenv)
+
+        DispatchQueue.main.async {
+            self.canSkipSetup = filesExist
+        }
+    }
+
+    /// Skip the setup and transition to the editor
+    func skipSetup() {
+        Task {
+            // Find uv binary
+            var uvPath = Bundle.main.path(forResource: "uv", ofType: nil)
+            if uvPath == nil {
+                uvPath = Bundle.main.path(forResource: "uv", ofType: nil, inDirectory: "Resources")
+            }
+            
+            if let finalUvPath = uvPath {
+                cachedUvPath = finalUvPath
+                hunyuanVenvReady = true // Assume ready if we found the files
+            }
+
+            await MainActor.run {
+                self.isSetup = true
+                self.status = "Ready"
+            }
+        }
     }
 
     // MARK: - Setup
@@ -130,6 +176,95 @@ class PythonEnvironment: ObservableObject {
         } else {
             await MainActor.run { status = "Setup failed" }
         }
+    }
+
+    // MARK: - Throughput Monitoring
+
+    /// Calculate total size of a directory recursively
+    private func directorySize(at url: URL) -> UInt64 {
+        let fm = FileManager.default
+        var totalSize: UInt64 = 0
+
+        guard let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) else {
+            return 0
+        }
+
+        for case let fileURL as URL in enumerator {
+            if let fileSize = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+                totalSize += UInt64(fileSize)
+            }
+        }
+
+        return totalSize
+    }
+
+    /// Format bytes as human-readable string
+    private func formatBytes(_ bytes: UInt64) -> String {
+        let kb = Double(bytes) / 1024
+        let mb = kb / 1024
+        let gb = mb / 1024
+
+        if gb >= 1 {
+            return String(format: "%.2f GB", gb)
+        } else if mb >= 1 {
+            return String(format: "%.1f MB", mb)
+        } else {
+            return String(format: "%.0f KB", kb)
+        }
+    }
+
+    /// Format throughput as human-readable string
+    private func formatThroughput(_ bytesPerSecond: Double) -> String {
+        let kbps = bytesPerSecond / 1024
+        let mbps = kbps / 1024
+
+        if mbps >= 1 {
+            return String(format: "%.1f MB/s", mbps)
+        } else if kbps >= 1 {
+            return String(format: "%.0f KB/s", kbps)
+        } else {
+            return "Connecting..."
+        }
+    }
+
+    /// Start monitoring throughput for a directory
+    private func startThroughputMonitor(directory: URL, statusPrefix: String) {
+        // Cancel any existing monitor
+        throughputMonitorTask?.cancel()
+
+        lastDirectorySize = directorySize(at: directory)
+        lastSizeCheckTime = Date()
+
+        throughputMonitorTask = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+
+                let currentSize = directorySize(at: directory)
+                let currentTime = Date()
+                let elapsed = currentTime.timeIntervalSince(lastSizeCheckTime)
+
+                if elapsed > 0 {
+                    let bytesDownloaded = currentSize > lastDirectorySize ? currentSize - lastDirectorySize : 0
+                    let throughput = Double(bytesDownloaded) / elapsed
+
+                    let totalDownloaded = formatBytes(currentSize)
+                    let speed = formatThroughput(throughput)
+
+                    if bytesDownloaded > 0 {
+                        status = "\(statusPrefix) (\(totalDownloaded) @ \(speed))"
+                    }
+
+                    lastDirectorySize = currentSize
+                    lastSizeCheckTime = currentTime
+                }
+            }
+        }
+    }
+
+    /// Stop the throughput monitor
+    private func stopThroughputMonitor() {
+        throughputMonitorTask?.cancel()
+        throughputMonitorTask = nil
     }
 
     @discardableResult
@@ -234,15 +369,23 @@ class PythonEnvironment: ObservableObject {
         // Step 1: Start SAM2 worker and download model
         await MainActor.run { status = "Downloading SAM2 model..." }
 
+        // Monitor SAM2 checkpoint downloads
+        let checkpointsDir = appSupportDir.appendingPathComponent("checkpoints")
+        try? FileManager.default.createDirectory(at: checkpointsDir, withIntermediateDirectories: true)
+        startThroughputMonitor(directory: checkpointsDir, statusPrefix: "Downloading SAM2 model")
+
         let testImgPath = appSupportDir.appendingPathComponent("self_test.jpg").path
 
         // Start persistent worker (this downloads SAM2 model if needed)
         do {
             try await startPersistentWorker()
         } catch {
+            stopThroughputMonitor()
             await MainActor.run { status = "Error: Failed to start SAM2 worker" }
             return
         }
+
+        stopThroughputMonitor()
 
         // Set the test image
         do {
@@ -258,7 +401,15 @@ class PythonEnvironment: ObservableObject {
 
         // Step 3: Download Hunyuan model (warmup run)
         await MainActor.run { status = "Downloading Hunyuan3D model..." }
+
+        // Monitor Hunyuan model downloads
+        let hunyuanCacheDir = appSupportDir.appendingPathComponent("Hunyuan3D/hf_cache")
+        try? FileManager.default.createDirectory(at: hunyuanCacheDir, withIntermediateDirectories: true)
+        startThroughputMonitor(directory: hunyuanCacheDir, statusPrefix: "Downloading Hunyuan3D model")
+
         await downloadHunyuanModel(finalUvPath: finalUvPath)
+
+        stopThroughputMonitor()
 
         // Step 4: Now ready for user interaction - show click screen
         await MainActor.run {
@@ -430,50 +581,22 @@ class PythonEnvironment: ObservableObject {
     }
 
     private func runHunyuanSelfTest(finalUvPath: String, maskPath: String, imagePath: String) async {
-        await MainActor.run { status = "Setting up Hunyuan3D environment..." }
-
-        // Rename pyproject for Hunyuan venv
-        let hunyuanPyprojectSource = appSupportDir.appendingPathComponent("pyproject_hunyuan.toml")
-        let hunyuanPyprojectTarget = appSupportDir.appendingPathComponent("Hunyuan3D/pyproject.toml")
-        let hunyuanDir = appSupportDir.appendingPathComponent("Hunyuan3D")
-
-        let fm = FileManager.default
-        try? fm.createDirectory(at: hunyuanDir, withIntermediateDirectories: true)
-        try? fm.removeItem(at: hunyuanPyprojectTarget)
-        try? fm.copyItem(at: hunyuanPyprojectSource, to: hunyuanPyprojectTarget)
-
-        // Also copy the wrapper script to Hunyuan3D dir
-        let wrapperSource = appSupportDir.appendingPathComponent("hunyuan_wrapper.py")
-        let wrapperTarget = hunyuanDir.appendingPathComponent("hunyuan_wrapper.py")
-        try? fm.removeItem(at: wrapperTarget)
-        try? fm.copyItem(at: wrapperSource, to: wrapperTarget)
-
-        // Sync Hunyuan3D environment (Python 3.10 for compatibility)
-        let hunyuanVenv = hunyuanDir.appendingPathComponent(".venv")
-        let syncSuccess = await execute(
-            executable: finalUvPath,
-            arguments: ["sync", "--python", "3.10"],
-            environment: [
-                "UV_PROJECT_ENVIRONMENT": hunyuanVenv.path,
-                "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
-                "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
-                "UV_PYTHON_PREFERENCE": "only-managed",
-                "PYTHONUNBUFFERED": "1"
-            ],
-            workingDirectory: hunyuanDir
-        )
-
-        guard syncSuccess else {
+        guard hunyuanVenvReady else {
             await MainActor.run {
-                status = "Error: Hunyuan3D setup failed"
+                self.canProceed = true
+                status = "Ready - Click 'Open Editor' to continue"
             }
             return
         }
 
-        await MainActor.run { status = "Generating 3D model (this may take a while)..." }
+        await MainActor.run { status = "Generating 3D model..." }
 
-        // Run Hunyuan3D self-test
+        let hunyuanDir = appSupportDir.appendingPathComponent("Hunyuan3D")
+        let hunyuanVenv = hunyuanDir.appendingPathComponent(".venv")
         let hunyuanScript = hunyuanDir.appendingPathComponent("hunyuan_wrapper.py").path
+        let fm = FileManager.default
+
+        // Run Hunyuan3D self-test (model already downloaded during warmup)
         let modelSuccess = await execute(
             executable: finalUvPath,
             arguments: ["run", hunyuanScript, "--test", maskPath, imagePath, "--output-dir", hunyuanDir.path],
@@ -746,6 +869,114 @@ class PythonEnvironment: ObservableObject {
 
         currentImagePath = nil
         imagePixelSize = .zero
+    }
+
+    // MARK: - 3D Model Generation
+
+    /// Generate a 3D model from an image and mask
+    func generate3DModel(
+        imagePath: String,
+        maskPath: String,
+        steps: Int,
+        resolution: Int,
+        progress: @escaping (String) -> Void,
+        completion: @escaping (Result<URL, Error>) -> Void
+    ) async {
+        var uvPath = Bundle.main.path(forResource: "uv", ofType: nil)
+        if uvPath == nil {
+            uvPath = Bundle.main.path(forResource: "uv", ofType: nil, inDirectory: "Resources")
+        }
+        guard let finalUvPath = uvPath else {
+            completion(.failure(PythonError.uvNotFound))
+            return
+        }
+
+        guard hunyuanVenvReady else {
+            completion(.failure(PythonError.predictionFailed("Hunyuan3D environment not ready")))
+            return
+        }
+
+        let hunyuanDir = appSupportDir.appendingPathComponent("Hunyuan3D")
+        let hunyuanVenv = hunyuanDir.appendingPathComponent(".venv")
+        let hunyuanScript = hunyuanDir.appendingPathComponent("hunyuan_wrapper.py").path
+
+        // Generate unique output path
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let outputPath = hunyuanDir.appendingPathComponent("generated_model_\(timestamp).obj")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: finalUvPath)
+        process.arguments = [
+            "run", hunyuanScript,
+            "--image", imagePath,
+            "--mask", maskPath,
+            "--output", outputPath.path,
+            "--output-dir", hunyuanDir.path,
+            "--steps", "\(steps)",
+            "--resolution", "\(resolution)"
+        ]
+        process.currentDirectoryURL = hunyuanDir
+
+        var currentEnv = ProcessInfo.processInfo.environment
+        currentEnv["UV_PROJECT_ENVIRONMENT"] = hunyuanVenv.path
+        currentEnv["UV_PYTHON_INSTALL_DIR"] = appSupportDir.appendingPathComponent("python_runtimes").path
+        currentEnv["UV_CACHE_DIR"] = appSupportDir.appendingPathComponent("uv_cache").path
+        currentEnv["UV_PYTHON_PREFERENCE"] = "only-managed"
+        currentEnv["PYTHONUNBUFFERED"] = "1"
+        process.environment = currentEnv
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty {
+                print("[Hunyuan] \(line)")
+
+                // Parse progress
+                if line.contains("Extracting foreground") {
+                    progress("Extracting foreground...")
+                } else if line.contains("Loading Hunyuan3D pipeline") {
+                    progress("Loading model...")
+                } else if line.contains("Generating 3D shape") {
+                    progress("Generating 3D shape...")
+                } else if line.contains("Diffusion Sampling") {
+                    if let match = line.range(of: #"(\d+)%"#, options: .regularExpression) {
+                        let pct = String(line[match])
+                        progress("Diffusion Sampling: \(pct)")
+                    }
+                } else if line.contains("Volume Decoding") {
+                    if let match = line.range(of: #"(\d+)%"#, options: .regularExpression) {
+                        let pct = String(line[match])
+                        progress("Volume Decoding: \(pct)")
+                    }
+                } else if line.contains("Model saved to") {
+                    progress("Saving model...")
+                }
+            }
+        }
+
+        do {
+            try process.run()
+        } catch {
+            pipe.fileHandleForReading.readabilityHandler = nil
+            completion(.failure(error))
+            return
+        }
+
+        // Wait for process in background
+        Task.detached {
+            process.waitUntilExit()
+            pipe.fileHandleForReading.readabilityHandler = nil
+
+            let fm = FileManager.default
+            if process.terminationStatus == 0 && fm.fileExists(atPath: outputPath.path) {
+                completion(.success(outputPath))
+            } else {
+                completion(.failure(PythonError.predictionFailed("3D generation failed")))
+            }
+        }
     }
 
     // MARK: - Legacy API (for backwards compatibility)
