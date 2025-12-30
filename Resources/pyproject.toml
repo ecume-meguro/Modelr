@@ -1,0 +1,14 @@
+[project]
+name = "modelrv3-backend"
+version = "0.1.0"
+dependencies = [
+    "torch",
+    "torchvision",
+    "numpy",
+    "opencv-python",
+    "pillow",
+    "hydra-core",
+    "iopath",
+    "sam2",
+]
+requires-python = ">=3.12"

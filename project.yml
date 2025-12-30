@@ -1,0 +1,22 @@
+name: ModelrV3
+options:
+  bundleIdPrefix: com.antigravity
+targets:
+  ModelrV3:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: ModelrV3
+      - path: Resources
+        type: folder
+    settings:
+      base:
+        PRODUCT_NAME: ModelrV3
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_HARDENED_RUNTIME: YES
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        SWIFT_VERSION: 5.9
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        ENABLE_APP_SANDBOX: NO
