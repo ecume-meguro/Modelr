@@ -1,3 +1,4 @@
 build/
 *.xcodeproj/
 sam2-studio/
+*.profraw
