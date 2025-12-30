@@ -134,22 +134,39 @@ struct SplashScreenView: View {
                 VStack(spacing: 8) {
                     Text("Modelr V3")
                         .font(.system(size: 28, weight: .bold, design: .rounded))
-                    
-                    if !env.canProceed {
-                        Picker("Model", selection: $env.selectedModel) {
-                            Text("Tiny").tag("tiny")
-                            Text("Small").tag("small")
-                            Text("Base Plus").tag("base_plus")
-                            Text("Large").tag("large")
+
+                    if !env.canProceed && env.status == "Initializing..." {
+                        let isEnabled = env.status == "Initializing..." || env.status == "Setup failed" || env.status == "Error: uv not found"
+
+                        VStack(spacing: 6) {
+                            HStack(spacing: 2) {
+                                ForEach(["tiny", "small"], id: \.self) { model in
+                                    modelButton(model: model, label: model.capitalized, isEnabled: isEnabled, isDimmed: true)
+                                }
+                                ForEach(["base_plus", "large"], id: \.self) { model in
+                                    let label = model == "base_plus" ? "Base+" : "Large"
+                                    modelButton(model: model, label: label, isEnabled: isEnabled, isDimmed: false)
+                                }
+                            }
+                            .background(
+                                GeometryReader { geo in
+                                    HStack {
+                                        Spacer()
+                                        Text("Recommended")
+                                            .font(.system(size: 9, weight: .medium))
+                                            .foregroundColor(.green)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(Color.green.opacity(0.15))
+                                            .cornerRadius(4)
+                                            .offset(y: -18)
+                                    }
+                                    .frame(width: geo.size.width / 2)
+                                    .offset(x: geo.size.width / 2)
+                                }
+                            )
                         }
-                        .pickerStyle(.segmented)
-                        .frame(width: 300)
                         .padding(.vertical, 10)
-                        .disabled(env.status != "Choose a model to begin" && env.status != "Setup failed" && env.status != "Error: uv not found")
-                    } else {
-                        Text("Model: \(env.selectedModel.replacingOccurrences(of: "_", with: " ").capitalized)")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
                     }
 
                     Text(env.status)
@@ -179,7 +196,7 @@ struct SplashScreenView: View {
                     }
                     .buttonStyle(.plain)
                     .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .opacity))
-                } else if env.status == "Choose a model to begin" || env.status == "Setup failed" || env.status == "Error: uv not found" {
+                } else if env.status == "Initializing..." || env.status == "Setup failed" || env.status == "Error: uv not found" {
                     Button(action: {
                         Task {
                             await env.setup()
@@ -219,5 +236,29 @@ struct SplashScreenView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func modelButton(model: String, label: String, isEnabled: Bool, isDimmed: Bool) -> some View {
+        let isSelected = env.selectedModel == model
+
+        Button(action: {
+            if isEnabled {
+                env.selectedModel = model
+            }
+        }) {
+            Text(label)
+                .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                .foregroundColor(isSelected ? .white : (isDimmed ? .secondary : .primary))
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isSelected ? Color(red: 0.1, green: 0.3, blue: 0.7) : Color.gray.opacity(0.2))
+                )
+                .opacity(isDimmed && !isSelected ? 0.5 : 1.0)
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
     }
 }

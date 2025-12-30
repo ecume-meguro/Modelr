@@ -3,14 +3,15 @@ import AppKit
 
 class PythonEnvironment: ObservableObject {
     @Published var isSetup = false
-    @Published var status = "Choose a model to begin"
+    @Published var status = "Welcome to Modelr V3"
     @Published var selfTestImage: NSImage?
     @Published var selfTestMask: NSImage?
     @Published var selfTest3DModelURL: URL?
     @Published var canProceed = false
-    @Published var selectedModel = "tiny"
+    @Published var selectedModel = "base_plus"  // Default to recommended
     @Published var isProcessing = false
     @Published var hunyuanProgress: String = ""
+    @Published var setupStarted = false  // Track if setup has begun
 
     // Interactive self-test state
     @Published var selfTestClickPoint: CGPoint? = nil  // Normalized 0-1
@@ -48,6 +49,7 @@ class PythonEnvironment: ObservableObject {
         pythonWorkingDir = appSupportDir
 
         try? fileManager.createDirectory(at: appSupportDir, withIntermediateDirectories: true)
+        // Setup is started manually when user clicks "Begin Setup"
     }
 
     deinit {
@@ -57,7 +59,10 @@ class PythonEnvironment: ObservableObject {
     // MARK: - Setup
 
     func setup() async {
-        await MainActor.run { status = "Bootstrapping..." }
+        await MainActor.run {
+            setupStarted = true
+            status = "Bootstrapping..."
+        }
 
         var uvPath: String?
         if let override = resourcePathOverride {
@@ -221,17 +226,17 @@ class PythonEnvironment: ObservableObject {
     }
 
     private var cachedUvPath: String?
+    private var hunyuanVenvReady = false
 
     private func runSelfTest(finalUvPath: String) async {
         cachedUvPath = finalUvPath
 
-        // Start the persistent SAM2 worker for interactive self-test
-        await MainActor.run { status = "Loading segmentation model..." }
+        // Step 1: Start SAM2 worker and download model
+        await MainActor.run { status = "Downloading SAM2 model..." }
 
-        let scriptPath = appSupportDir.appendingPathComponent("sam_wrapper.py").path
         let testImgPath = appSupportDir.appendingPathComponent("self_test.jpg").path
 
-        // Start persistent worker
+        // Start persistent worker (this downloads SAM2 model if needed)
         do {
             try await startPersistentWorker()
         } catch {
@@ -247,12 +252,78 @@ class PythonEnvironment: ObservableObject {
             return
         }
 
-        // Now wait for user click - SplashScreenView will call runSelfTestWithClick
+        // Step 2: Setup Hunyuan3D environment and download model
+        await MainActor.run { status = "Setting up Hunyuan3D environment..." }
+        await setupHunyuanEnvironment(finalUvPath: finalUvPath)
+
+        // Step 3: Download Hunyuan model (warmup run)
+        await MainActor.run { status = "Downloading Hunyuan3D model..." }
+        await downloadHunyuanModel(finalUvPath: finalUvPath)
+
+        // Step 4: Now ready for user interaction - show click screen
         await MainActor.run {
             selfTestAwaitingClick = true
             selfTestPrompt = "Click on the center of the alpaca's body"
             status = "Click on the alpaca to continue"
         }
+    }
+
+    /// Setup Hunyuan3D virtual environment (without generating a model)
+    private func setupHunyuanEnvironment(finalUvPath: String) async {
+        let hunyuanPyprojectSource = appSupportDir.appendingPathComponent("pyproject_hunyuan.toml")
+        let hunyuanDir = appSupportDir.appendingPathComponent("Hunyuan3D")
+        let hunyuanPyprojectTarget = hunyuanDir.appendingPathComponent("pyproject.toml")
+
+        let fm = FileManager.default
+        try? fm.createDirectory(at: hunyuanDir, withIntermediateDirectories: true)
+        try? fm.removeItem(at: hunyuanPyprojectTarget)
+        try? fm.copyItem(at: hunyuanPyprojectSource, to: hunyuanPyprojectTarget)
+
+        // Copy wrapper script
+        let wrapperSource = appSupportDir.appendingPathComponent("hunyuan_wrapper.py")
+        let wrapperTarget = hunyuanDir.appendingPathComponent("hunyuan_wrapper.py")
+        try? fm.removeItem(at: wrapperTarget)
+        try? fm.copyItem(at: wrapperSource, to: wrapperTarget)
+
+        // Sync Hunyuan3D environment
+        let hunyuanVenv = hunyuanDir.appendingPathComponent(".venv")
+        let syncSuccess = await execute(
+            executable: finalUvPath,
+            arguments: ["sync", "--python", "3.10"],
+            environment: [
+                "UV_PROJECT_ENVIRONMENT": hunyuanVenv.path,
+                "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
+                "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
+                "UV_PYTHON_PREFERENCE": "only-managed",
+                "PYTHONUNBUFFERED": "1"
+            ],
+            workingDirectory: hunyuanDir
+        )
+
+        hunyuanVenvReady = syncSuccess
+    }
+
+    /// Pre-download Hunyuan3D model by running a warmup command
+    private func downloadHunyuanModel(finalUvPath: String) async {
+        guard hunyuanVenvReady else { return }
+
+        let hunyuanDir = appSupportDir.appendingPathComponent("Hunyuan3D")
+        let hunyuanVenv = hunyuanDir.appendingPathComponent(".venv")
+        let hunyuanScript = hunyuanDir.appendingPathComponent("hunyuan_wrapper.py").path
+
+        // Run with --warmup flag to just download model without generating
+        _ = await execute(
+            executable: finalUvPath,
+            arguments: ["run", hunyuanScript, "--warmup"],
+            environment: [
+                "UV_PROJECT_ENVIRONMENT": hunyuanVenv.path,
+                "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
+                "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
+                "UV_PYTHON_PREFERENCE": "only-managed",
+                "PYTHONUNBUFFERED": "1"
+            ],
+            workingDirectory: hunyuanDir
+        )
     }
 
     /// Called from SplashScreenView when user clicks on the test image
@@ -422,12 +493,11 @@ class PythonEnvironment: ObservableObject {
             if modelSuccess && fm.fileExists(atPath: modelURL.path) {
                 self.selfTest3DModelURL = modelURL
                 self.canProceed = true
-                // Don't set isSetup - let user click "Open Editor"
-                status = "Ready - Click Open Editor to continue"
+                status = "Ready - Click 'Open Editor' to continue"
             } else {
                 // Still allow proceeding if SAM2 worked but Hunyuan failed
                 self.canProceed = true
-                status = "Ready (3D generation skipped)"
+                status = "Ready - Click 'Open Editor' to continue"
             }
         }
     }

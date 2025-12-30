@@ -136,18 +136,27 @@ def run_self_test(mask_path, original_image_path, output_dir, model_variant="min
         output_path=output_path,
         model_variant=model_variant,
         device=device,
-        num_steps=25,           # Increased from 15
-        octree_resolution=280,  # Increased from 192
+        num_steps=35,           # High feature quality
+        octree_resolution=150,  # Lower mesh resolution for faster generation
     )
 
     print(f"SELF_TEST_MODEL_PATH:{output_path}", flush=True)
     return output_path
 
 
+def warmup_model(model_variant="mini"):
+    """Pre-download and load the model to warm up the cache."""
+    print("Warming up Hunyuan3D model (downloading if needed)...", file=sys.stderr)
+    _ = load_pipeline(model_variant, device="mps")
+    print("Model warmup complete!", file=sys.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Hunyuan3D-2 Shape Generation Wrapper")
     parser.add_argument("--test", nargs=2, metavar=("MASK", "IMAGE"),
                         help="Run self-test with mask and original image paths")
+    parser.add_argument("--warmup", action="store_true",
+                        help="Pre-download model without generating anything")
     parser.add_argument("--output-dir", default=APP_SUPPORT_DIR,
                         help="Directory for output files")
     parser.add_argument("--model", default="mini", choices=["mini", "std"],
@@ -161,7 +170,9 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    if args.test:
+    if args.warmup:
+        warmup_model(args.model)
+    elif args.test:
         mask_path, image_path = args.test
         run_self_test(mask_path, image_path, args.output_dir, args.model)
     elif args.image:
