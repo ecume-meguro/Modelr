@@ -50,6 +50,13 @@ struct ContentView: View {
     @State private var generationProgress = GenerationProgress()
     @State private var generationStartTime: Date?
     @State private var generated3DModelURL: URL?
+    @State private var generationError: String?
+    
+    // Model selection for 3D generation
+    @State private var selectedGeneratorModel: GeneratorModel = .hunyuan
+    // SF3D-specific parameters
+    @State private var sf3dTextureResolution: Double = 1024
+    @State private var sf3dRemeshOption: String = "none"
 
     // Performance optimization: dirty flag for mask to avoid unnecessary file writes
     @State private var maskIsDirty = false
@@ -835,44 +842,104 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 40)
             } else {
-                // Parameters
+                // Model Selection
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("3D Generator")
+                        .font(.headline)
+                        .foregroundColor(.secondary)
+
+                    Picker("Generator", selection: $selectedGeneratorModel) {
+                        ForEach([GeneratorModel.hunyuan, GeneratorModel.sf3d], id: \.self) { model in
+                            Text(model.rawValue).tag(model)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    
+                    Text(selectedGeneratorModel.description)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+
+                Divider()
+
+                // Model-specific Parameters
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Parameters")
                         .font(.headline)
                         .foregroundColor(.secondary)
 
-                    // Steps slider
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text("Diffusion Steps")
-                            Spacer()
-                            Text("\(Int(generateSteps))")
+                    if selectedGeneratorModel == .hunyuan {
+                        // Hunyuan3D Parameters
+                        
+                        // Steps slider
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("Diffusion Steps")
+                                Spacer()
+                                Text("\(Int(generateSteps))")
+                                    .foregroundColor(.secondary)
+                            }
+                            .font(.subheadline)
+
+                            Slider(value: $generateSteps, in: 10...256, step: 1)
+
+                            Text("Higher = better quality, slower")
+                                .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
-                        .font(.subheadline)
 
-                        Slider(value: $generateSteps, in: 10...256, step: 1)
+                        // Resolution slider
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("Mesh Resolution")
+                                Spacer()
+                                Text("\(Int(generateResolution))")
+                                    .foregroundColor(.secondary)
+                            }
+                            .font(.subheadline)
 
-                        Text("Higher = better quality, slower")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
+                            Slider(value: $generateResolution, in: 128...1024, step: 64)
 
-                    // Resolution slider
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text("Mesh Resolution")
-                            Spacer()
-                            Text("\(Int(generateResolution))")
+                            Text("Higher = finer detail, more memory")
+                                .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
-                        .font(.subheadline)
+                    } else if selectedGeneratorModel == .sf3d {
+                        // SF3D Parameters
+                        
+                        // Texture Resolution slider
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("Texture Resolution")
+                                Spacer()
+                                Text("\(Int(sf3dTextureResolution))")
+                                    .foregroundColor(.secondary)
+                            }
+                            .font(.subheadline)
 
-                        Slider(value: $generateResolution, in: 128...1024, step: 64)
+                            Slider(value: $sf3dTextureResolution, in: 512...2048, step: 256)
 
-                        Text("Higher = finer detail, more memory")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
+                            Text("Higher = better texture quality")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        // Remesh Option picker
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Remesh Option")
+                                .font(.subheadline)
+                            
+                            Picker("Remesh", selection: $sf3dRemeshOption) {
+                                Text("None").tag("none")
+                                Text("Triangle").tag("triangle")
+                                Text("Quad").tag("quad")
+                            }
+                            .pickerStyle(.segmented)
+                            
+                            Text("Optimize mesh topology")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
 
@@ -936,9 +1003,31 @@ struct ContentView: View {
                         }
                         .buttonStyle(.bordered)
                     }
+                } else if let error = generationError {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.red)
+                            Text("Generation Failed")
+                                .font(.headline)
+                                .foregroundColor(.red)
+                        }
+
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            
+                        if error.contains("SF3D environment not ready") {
+                            Text("Please restart the app and run the Setup process to install SF3D.")
+                                .font(.caption.bold())
+                                .foregroundColor(.orange)
+                                .padding(.top, 4)
+                        }
+                    }
                 }
             }
-
+            
             Spacer()
         }
         .padding()
@@ -1322,30 +1411,72 @@ struct ContentView: View {
         generationProgress.stage = "Preparing..."
         generationStartTime = Date()
         generated3DModelURL = nil
+        generationError = nil
 
         Task {
-            await env.generate3DModel(
-                imagePath: imagePath,
-                maskPath: maskPath,
-                steps: Int(generateSteps),
-                resolution: Int(generateResolution)
-            ) { progressInfo in
-                Task { @MainActor in
-                    self.updateGenerationProgress(progressInfo)
+            switch selectedGeneratorModel {
+            case .hunyuan:
+                await env.generate3DModel(
+                    imagePath: imagePath,
+                    maskPath: maskPath,
+                    steps: Int(generateSteps),
+                    resolution: Int(generateResolution)
+                ) { progressInfo in
+                    Task { @MainActor in
+                        self.updateGenerationProgress(progressInfo)
+                    }
+                } completion: { result in
+                    Task { @MainActor in
+                        self.handleGenerationResult(result)
+                    }
                 }
-            } completion: { result in
-                Task { @MainActor in
-                    self.isGenerating = false
-                    self.generationStartTime = nil
-                    switch result {
-                    case .success(let url):
-                        self.generated3DModelURL = url
-                        self.generationProgress = GenerationProgress()
-                    case .failure(let error):
-                        self.generationProgress.stage = "Error: \(error.localizedDescription)"
+            
+            case .sf3d:
+                await env.generateWithSF3D(
+                    imagePath: imagePath,
+                    maskPath: maskPath,
+                    textureResolution: Int(sf3dTextureResolution),
+                    remeshOption: sf3dRemeshOption
+                ) { progressInfo in
+                    Task { @MainActor in
+                        self.updateGenerationProgress(progressInfo)
+                    }
+                } completion: { result in
+                    Task { @MainActor in
+                        self.handleGenerationResult(result)
+                    }
+                }
+            
+            case .both:
+                // For now, just run Hunyuan when "both" selected
+                await env.generate3DModel(
+                    imagePath: imagePath,
+                    maskPath: maskPath,
+                    steps: Int(generateSteps),
+                    resolution: Int(generateResolution)
+                ) { progressInfo in
+                    Task { @MainActor in
+                        self.updateGenerationProgress(progressInfo)
+                    }
+                } completion: { result in
+                    Task { @MainActor in
+                        self.handleGenerationResult(result)
                     }
                 }
             }
+        }
+    }
+    
+    private func handleGenerationResult(_ result: Result<URL, Error>) {
+        isGenerating = false
+        generationStartTime = nil
+        switch result {
+        case .success(let url):
+            generated3DModelURL = url
+            generationProgress = GenerationProgress()
+        case .failure(let error):
+            generationProgress.stage = "Error: \(error.localizedDescription)"
+            generationError = error.localizedDescription
         }
     }
 

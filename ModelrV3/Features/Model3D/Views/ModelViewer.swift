@@ -48,10 +48,10 @@ struct ModelViewer: NSViewRepresentable {
     func makeNSView(context: Context) -> SCNView {
         let scnView = SCNView()
         scnView.allowsCameraControl = true
-        scnView.autoenablesDefaultLighting = false
-        scnView.backgroundColor = NSColor(calibratedWhite: 0.15, alpha: 1.0)
+        scnView.autoenablesDefaultLighting = false // Disable default lighting to prevent back-face bias
+        scnView.backgroundColor = .black // Pure black for better contrast perception
         scnView.antialiasingMode = .multisampling4X
-
+        
         // Configure camera control behavior for smoother interaction
         scnView.defaultCameraController.interactionMode = .orbitTurntable
         scnView.defaultCameraController.inertiaEnabled = true
@@ -61,35 +61,16 @@ struct ModelViewer: NSViewRepresentable {
 
         // Create scene
         let scene = SCNScene()
+        
+        // Add global ambient light
+        let ambientNode = SCNNode()
+        ambientNode.light = SCNLight()
+        ambientNode.light?.type = .ambient
+        ambientNode.light?.intensity = 300 // Soft fill light
+        ambientNode.light?.temperature = 6500
+        scene.rootNode.addChildNode(ambientNode)
+        
         scnView.scene = scene
-
-        // Add soft ambient light
-        let ambientLight = SCNNode()
-        ambientLight.light = SCNLight()
-        ambientLight.light?.type = .ambient
-        ambientLight.light?.intensity = 200
-        ambientLight.light?.color = NSColor(calibratedWhite: 0.6, alpha: 1.0)
-        scene.rootNode.addChildNode(ambientLight)
-
-        // Key light from upper-right
-        let keyLight = SCNNode()
-        keyLight.light = SCNLight()
-        keyLight.light?.type = .directional
-        keyLight.light?.intensity = 400
-        keyLight.light?.color = NSColor.white
-        keyLight.position = SCNVector3(5, 10, 10)
-        keyLight.look(at: SCNVector3(0, 0, 0))
-        scene.rootNode.addChildNode(keyLight)
-
-        // Fill light from opposite side (dimmer)
-        let fillLight = SCNNode()
-        fillLight.light = SCNLight()
-        fillLight.light?.type = .directional
-        fillLight.light?.intensity = 150
-        fillLight.light?.color = NSColor(calibratedWhite: 0.8, alpha: 1.0)
-        fillLight.position = SCNVector3(-5, 2, -5)
-        fillLight.look(at: SCNVector3(0, 0, 0))
-        scene.rootNode.addChildNode(fillLight)
 
         // Load model if available
         if let url = modelURL {
@@ -200,6 +181,22 @@ struct ModelViewer: NSViewRepresentable {
                 // Set reasonable z-range for zooming
                 cameraNode.camera?.zNear = 0.01
                 cameraNode.camera?.zFar = 1000
+                // Add "Headlamp" - Directional light attached to camera
+                // This ensures the model is always lit from the viewer's perspective
+                let headlampNode = SCNNode()
+                headlampNode.light = SCNLight()
+                headlampNode.light?.type = .directional
+                headlampNode.light?.intensity = 1500
+                headlampNode.light?.castsShadow = true
+                cameraNode.addChildNode(headlampNode)
+                
+                // Enable HDR for better color reproduction (fixed faded look)
+                if #available(macOS 10.15, *) {
+                    cameraNode.camera?.wantsHDR = true
+                    cameraNode.camera?.exposureOffset = -0.5 // Slight negative exposure to deepen shadows
+                    cameraNode.camera?.averageGray = 0.18
+                    cameraNode.camera?.wantsExposureAdaptation = false
+                }
 
                 // Position camera at a good viewing distance
                 let cameraDistance: Float = 5.0
@@ -207,9 +204,6 @@ struct ModelViewer: NSViewRepresentable {
                 cameraNode.look(at: SCNVector3(0, 0, 0))
                 scene.rootNode.addChildNode(cameraNode)
                 scnView.pointOfView = cameraNode
-
-                // Set the camera controller's target to the model center
-                scnView.defaultCameraController.target = SCNVector3(0, 0, 0)
 
                 print("Model loaded successfully")
             }

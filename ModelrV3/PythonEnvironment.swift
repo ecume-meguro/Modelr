@@ -100,16 +100,42 @@ class PythonEnvironment: ObservableObject {
         let fm = FileManager.default
         let samWrapper = appSupportDir.appendingPathComponent("sam_wrapper.py").path
         let hunyuanWrapper = appSupportDir.appendingPathComponent("Hunyuan3D/hunyuan_wrapper.py").path
+        let sf3dWrapper = appSupportDir.appendingPathComponent("SF3D/sf3d_wrapper.py").path
         let venv = venvDir.appendingPathComponent("bin/python").path
         let hunyuanVenv = appSupportDir.appendingPathComponent("Hunyuan3D/.venv/bin/python").path
+        let sf3dVenv = appSupportDir.appendingPathComponent("SF3D/.venv/bin/python").path
 
         let filesExist = fm.fileExists(atPath: samWrapper) &&
                          fm.fileExists(atPath: hunyuanWrapper) &&
+                         fm.fileExists(atPath: sf3dWrapper) &&
                          fm.fileExists(atPath: venv) &&
-                         fm.fileExists(atPath: hunyuanVenv)
+                         fm.fileExists(atPath: hunyuanVenv) &&
+                         fm.fileExists(atPath: sf3dVenv)
 
         DispatchQueue.main.async {
             self.canSkipSetup = filesExist
+        }
+    }
+    
+    private func verifyModuleImport(_ module: String, pythonPath: String) async -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: pythonPath)
+        process.arguments = ["-c", "import \(module)"]
+        
+        // Environment variables needed for imports
+        var env = ProcessInfo.processInfo.environment
+        env["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+        process.environment = env
+        
+        // Suppress stderr to avoid confusing tracebacks in console
+        process.standardError = Pipe()
+        
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
         }
     }
 
@@ -124,7 +150,19 @@ class PythonEnvironment: ObservableObject {
             
             if let finalUvPath = uvPath {
                 cachedUvPath = finalUvPath
-                hunyuanVenvReady = true // Assume ready if we found the files
+                // Check potentially partial setups
+                let fm = FileManager.default
+                let hunyuanVenv = appSupportDir.appendingPathComponent("Hunyuan3D/.venv/bin/python").path
+                let sf3dVenv = appSupportDir.appendingPathComponent("SF3D/.venv/bin/python").path
+                
+                hunyuanVenvReady = fm.fileExists(atPath: hunyuanVenv)
+                
+                // For SF3D, check import too as file existence isn't enough
+                if fm.fileExists(atPath: sf3dVenv) {
+                    sf3dVenvReady = await verifyModuleImport("uv_unwrapper", pythonPath: sf3dVenv)
+                } else {
+                    sf3dVenvReady = false
+                }
             }
 
             await MainActor.run {
@@ -144,7 +182,7 @@ class PythonEnvironment: ObservableObject {
 
         var uvPath: String?
         if let override = resourcePathOverride {
-            uvPath = (override as NSString).appendingPathComponent("uv")
+            uvPath = override
         } else {
             uvPath = Bundle.main.path(forResource: "uv", ofType: nil)
             if uvPath == nil {
@@ -153,44 +191,39 @@ class PythonEnvironment: ObservableObject {
         }
 
         guard let finalUvPath = uvPath else {
-            print("ERROR: uv binary not found")
             await MainActor.run { status = "Error: uv not found" }
             return
         }
+        
+        cachedUvPath = finalUvPath
 
-        // 0. Copy script resources to App Support
-        await MainActor.run { status = "Syncing assets..." }
+        // Create Application Support directory
         let fm = FileManager.default
         let resources = ["sam_wrapper.py", "pyproject.toml", "self_test.jpg", "hunyuan_wrapper.py", "pyproject_hunyuan.toml", "correct_self_test_mask.png", "sf3d_wrapper.py", "pyproject_sf3d.toml"]
+
         for res in resources {
             let targetPath = appSupportDir.appendingPathComponent(res)
             var sourcePath: String?
 
             if let override = resourcePathOverride {
-                sourcePath = (override as NSString).appendingPathComponent(res)
+                // In tests, assume resources are in the same directory as override
+                sourcePath = URL(fileURLWithPath: override).deletingLastPathComponent().appendingPathComponent(res).path
             } else {
                 sourcePath = Bundle.main.path(forResource: res, ofType: nil)
                 if sourcePath == nil {
-                    sourcePath = Bundle.main.path(forResource: res, ofType: nil, inDirectory: "Resources")
+                     sourcePath = Bundle.main.path(forResource: res, ofType: nil, inDirectory: "Resources")
                 }
             }
 
-            if let finalSource = sourcePath {
-                print(">>> COPY: \(res) to \(targetPath.path)")
-                do {
-                    try fm.removeItem(at: targetPath)
-                } catch {
-                    print("ERROR: Failed to remove file at \(targetPath.path): \(error.localizedDescription)")
+            if let source = sourcePath {
+                if fm.fileExists(atPath: targetPath.path) {
+                    try? fm.removeItem(at: targetPath)
                 }
-                do {
-                    try fm.copyItem(atPath: finalSource, toPath: targetPath.path)
-                } catch {
-                    print("ERROR: Failed to copy file from \(finalSource) to \(targetPath.path): \(error.localizedDescription)")
-                }
+                try? fm.copyItem(at: URL(fileURLWithPath: source), to: targetPath)
             }
         }
 
-        // Load original self-test image for UI
+        // Copy self-test image for display
         let testImgURL = appSupportDir.appendingPathComponent("self_test.jpg")
         if let image = NSImage(contentsOf: testImgURL) {
             await MainActor.run { self.selfTestImage = image }
@@ -212,11 +245,115 @@ class PythonEnvironment: ObservableObject {
         )
 
         if syncSuccess {
+            // Setup Hunyuan environment
+            await setupHunyuanEnvironment(finalUvPath: finalUvPath)
+            await downloadHunyuanModel(finalUvPath: finalUvPath)
+            
+            // Setup SF3D environment
+            await setupSF3DEnvironment(finalUvPath: finalUvPath)
+            await downloadSF3DModel(finalUvPath: finalUvPath)
+            
             await runSelfTest(finalUvPath: finalUvPath)
         } else {
             await MainActor.run { status = "Setup failed" }
         }
     }
+    
+    // ... existing Hunyuan methods ...
+
+    private func setupSF3DEnvironment(finalUvPath: String) async {
+        let sf3dPyprojectSource = appSupportDir.appendingPathComponent("pyproject_sf3d.toml")
+        let sf3dDir = appSupportDir.appendingPathComponent("SF3D")
+        let sf3dPyprojectTarget = sf3dDir.appendingPathComponent("pyproject.toml")
+
+        let fm = FileManager.default
+        try? fm.createDirectory(at: sf3dDir, withIntermediateDirectories: true)
+        try? fm.removeItem(at: sf3dPyprojectTarget)
+        try? fm.copyItem(at: sf3dPyprojectSource, to: sf3dPyprojectTarget)
+
+        // Copy wrapper script
+        let wrapperSource = appSupportDir.appendingPathComponent("sf3d_wrapper.py")
+        let wrapperTarget = sf3dDir.appendingPathComponent("sf3d_wrapper.py")
+        try? fm.removeItem(at: wrapperTarget)
+        try? fm.copyItem(at: wrapperSource, to: wrapperTarget)
+        
+        // Clone stable-fast-3d repository for sf3d module access
+        let sf3dRepoTarget = sf3dDir.appendingPathComponent("stable-fast-3d")
+        if !fm.fileExists(atPath: sf3dRepoTarget.path) {
+            await MainActor.run { status = "Cloning SF3D repository..." }
+            // Clone the SF3D repository
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            process.arguments = ["clone", "--depth", "1", "https://github.com/Stability-AI/stable-fast-3d.git", sf3dRepoTarget.path]
+            process.currentDirectoryURL = sf3dDir
+            try? process.run()
+            process.waitUntilExit()
+        }
+
+        // Sync SF3D environment (Python 3.10 for compatibility)
+        let sf3dVenv = sf3dDir.appendingPathComponent(".venv")
+        let syncSuccess = await execute(
+            executable: finalUvPath,
+            arguments: ["sync", "--python", AppConstants.sf3dPythonVersion],
+            environment: [
+                "UV_PROJECT_ENVIRONMENT": sf3dVenv.path,
+                "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
+                "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
+                "UV_PYTHON_PREFERENCE": "only-managed",
+                "PYTHONUNBUFFERED": "1",
+                "PYTORCH_ENABLE_MPS_FALLBACK": "1"
+            ],
+            workingDirectory: sf3dDir
+        )
+        
+        guard syncSuccess else {
+            sf3dVenvReady = false
+            return
+        }
+        
+        // Install texture_baker and uv_unwrapper from cloned repo with --no-build-isolation
+        await MainActor.run { status = "Installing SF3D texture baker..." }
+        let textureBakerPath = sf3dRepoTarget.appendingPathComponent("texture_baker").path
+        let tbSuccess = await execute(
+            executable: finalUvPath,
+            arguments: ["pip", "install", "--no-build-isolation", textureBakerPath],
+            environment: [
+                "UV_PROJECT_ENVIRONMENT": sf3dVenv.path,
+                "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
+                "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
+                "UV_PYTHON_PREFERENCE": "only-managed",
+                "PYTHONUNBUFFERED": "1",
+                // "CC": "clang", "CXX": "clang++" - might be needed
+            ],
+            workingDirectory: sf3dDir
+        )
+        
+        await MainActor.run { status = "Installing SF3D UV unwrapper..." }
+        let uvUnwrapperPath = sf3dRepoTarget.appendingPathComponent("uv_unwrapper").path
+        let uvSuccess = await execute(
+            executable: finalUvPath,
+            arguments: ["pip", "install", "--no-build-isolation", uvUnwrapperPath],
+            environment: [
+                "UV_PROJECT_ENVIRONMENT": sf3dVenv.path,
+                "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
+                "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
+                "UV_PYTHON_PREFERENCE": "only-managed",
+                "PYTHONUNBUFFERED": "1",
+            ],
+            workingDirectory: sf3dDir
+        )
+
+        // Only ready if all installs succeeded
+        sf3dVenvReady = syncSuccess && tbSuccess && uvSuccess
+        
+        if !sf3dVenvReady {
+             await MainActor.run { status = "SF3D Setup Failed" }
+        }
+    }
+
+    // MARK: - Setup
+
+
 
     // MARK: - Throughput Monitoring
 
@@ -540,93 +677,7 @@ class PythonEnvironment: ObservableObject {
     }
 
     /// Setup SF3D virtual environment (without generating a model)
-    private func setupSF3DEnvironment(finalUvPath: String) async {
-        let sf3dPyprojectSource = appSupportDir.appendingPathComponent("pyproject_sf3d.toml")
-        let sf3dDir = appSupportDir.appendingPathComponent("SF3D")
-        let sf3dPyprojectTarget = sf3dDir.appendingPathComponent("pyproject.toml")
 
-        let fm = FileManager.default
-        try? fm.createDirectory(at: sf3dDir, withIntermediateDirectories: true)
-        try? fm.removeItem(at: sf3dPyprojectTarget)
-        try? fm.copyItem(at: sf3dPyprojectSource, to: sf3dPyprojectTarget)
-
-        // Copy wrapper script
-        let wrapperSource = appSupportDir.appendingPathComponent("sf3d_wrapper.py")
-        let wrapperTarget = sf3dDir.appendingPathComponent("sf3d_wrapper.py")
-        try? fm.removeItem(at: wrapperTarget)
-        try? fm.copyItem(at: wrapperSource, to: wrapperTarget)
-        
-        // Clone stable-fast-3d repository for sf3d module access
-        let sf3dRepoTarget = sf3dDir.appendingPathComponent("stable-fast-3d")
-        if !fm.fileExists(atPath: sf3dRepoTarget.path) {
-            await MainActor.run { status = "Cloning SF3D repository..." }
-            // Clone the SF3D repository
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-            process.arguments = ["clone", "--depth", "1", "https://github.com/Stability-AI/stable-fast-3d.git", sf3dRepoTarget.path]
-            process.currentDirectoryURL = sf3dDir
-            try? process.run()
-            process.waitUntilExit()
-        }
-
-        // Sync SF3D environment (Python 3.10 for compatibility)
-        // texture_baker and uv_unwrapper are installed from git subdirectories via pyproject.toml
-        let sf3dVenv = sf3dDir.appendingPathComponent(".venv")
-        let syncSuccess = await execute(
-            executable: finalUvPath,
-            arguments: ["sync", "--python", AppConstants.sf3dPythonVersion],
-            environment: [
-                "UV_PROJECT_ENVIRONMENT": sf3dVenv.path,
-                "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
-                "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
-                "UV_PYTHON_PREFERENCE": "only-managed",
-                "PYTHONUNBUFFERED": "1",
-                "PYTORCH_ENABLE_MPS_FALLBACK": "1"
-            ],
-            workingDirectory: sf3dDir
-        )
-        
-        guard syncSuccess else {
-            sf3dVenvReady = false
-            return
-        }
-        
-        // Install texture_baker and uv_unwrapper from cloned repo with --no-build-isolation
-        // These need setuptools which is now in the venv from uv sync
-        await MainActor.run { status = "Installing SF3D texture baker..." }
-        let textureBakerPath = sf3dRepoTarget.appendingPathComponent("texture_baker").path
-        _ = await execute(
-            executable: finalUvPath,
-            arguments: ["pip", "install", "--no-build-isolation", textureBakerPath],
-            environment: [
-                "UV_PROJECT_ENVIRONMENT": sf3dVenv.path,
-                "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
-                "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
-                "UV_PYTHON_PREFERENCE": "only-managed",
-                "PYTHONUNBUFFERED": "1",
-                "PYTORCH_ENABLE_MPS_FALLBACK": "1"
-            ],
-            workingDirectory: sf3dDir
-        )
-        
-        await MainActor.run { status = "Installing SF3D UV unwrapper..." }
-        let uvUnwrapperPath = sf3dRepoTarget.appendingPathComponent("uv_unwrapper").path
-        _ = await execute(
-            executable: finalUvPath,
-            arguments: ["pip", "install", "--no-build-isolation", uvUnwrapperPath],
-            environment: [
-                "UV_PROJECT_ENVIRONMENT": sf3dVenv.path,
-                "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
-                "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
-                "UV_PYTHON_PREFERENCE": "only-managed",
-                "PYTHONUNBUFFERED": "1",
-                "PYTORCH_ENABLE_MPS_FALLBACK": "1"
-            ],
-            workingDirectory: sf3dDir
-        )
-
-        sf3dVenvReady = syncSuccess
-    }
 
     /// Pre-download SF3D model by running a warmup command
     private func downloadSF3DModel(finalUvPath: String) async {
@@ -1236,6 +1287,107 @@ class PythonEnvironment: ObservableObject {
                 completion(.success(outputPath))
             } else {
                 completion(.failure(PythonError.predictionFailed("3D generation failed")))
+            }
+        }
+    }
+
+    /// Generate a 3D model using SF3D from an image and mask
+    func generateWithSF3D(
+        imagePath: String,
+        maskPath: String,
+        textureResolution: Int,
+        remeshOption: String,
+        progress: @escaping (String) -> Void,
+        completion: @escaping (Result<URL, Error>) -> Void
+    ) async {
+        var uvPath = Bundle.main.path(forResource: "uv", ofType: nil)
+        if uvPath == nil {
+            uvPath = Bundle.main.path(forResource: "uv", ofType: nil, inDirectory: "Resources")
+        }
+        guard let finalUvPath = uvPath else {
+            completion(.failure(PythonError.uvNotFound))
+            return
+        }
+
+        guard sf3dVenvReady else {
+            completion(.failure(PythonError.predictionFailed("SF3D environment not ready")))
+            return
+        }
+
+        let sf3dDir = appSupportDir.appendingPathComponent("SF3D")
+        let sf3dVenv = sf3dDir.appendingPathComponent(".venv")
+        let sf3dScript = sf3dDir.appendingPathComponent("sf3d_wrapper.py").path
+        let sf3dRepoPath = sf3dDir.appendingPathComponent("stable-fast-3d").path
+
+        // Generate unique output path
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let outputPath = sf3dDir.appendingPathComponent("generated_model_\(timestamp).obj")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: finalUvPath)
+        process.arguments = [
+            "run", sf3dScript,
+            "--image", imagePath,
+            "--mask", maskPath,
+            "--output", outputPath.path,
+            "--output-dir", sf3dDir.path,
+            "--texture-resolution", "\(textureResolution)",
+            "--remesh", remeshOption
+        ]
+        process.currentDirectoryURL = sf3dDir
+
+        var currentEnv = ProcessInfo.processInfo.environment
+        currentEnv["UV_PROJECT_ENVIRONMENT"] = sf3dVenv.path
+        currentEnv["UV_PYTHON_INSTALL_DIR"] = appSupportDir.appendingPathComponent("python_runtimes").path
+        currentEnv["UV_CACHE_DIR"] = appSupportDir.appendingPathComponent("uv_cache").path
+        currentEnv["UV_PYTHON_PREFERENCE"] = "only-managed"
+        currentEnv["PYTHONUNBUFFERED"] = "1"
+        currentEnv["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+        currentEnv["PYTHONPATH"] = sf3dRepoPath
+        process.environment = currentEnv
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty {
+                print("[SF3D] \(line)")
+
+                // Parse progress
+                if line.contains("Extracting foreground") {
+                    progress("Extracting foreground...")
+                } else if line.contains("Loading SF3D") {
+                    progress("Loading SF3D model...")
+                } else if line.contains("Generating 3D") {
+                    progress("Generating 3D model...")
+                } else if line.contains("Exporting") {
+                    progress("Exporting model...")
+                } else if line.contains("Model saved") {
+                    progress("Saving model...")
+                }
+            }
+        }
+
+        do {
+            try process.run()
+        } catch {
+            pipe.fileHandleForReading.readabilityHandler = nil
+            completion(.failure(error))
+            return
+        }
+
+        // Wait for process in background
+        Task.detached {
+            process.waitUntilExit()
+            pipe.fileHandleForReading.readabilityHandler = nil
+
+            let fm = FileManager.default
+            if process.terminationStatus == 0 && fm.fileExists(atPath: outputPath.path) {
+                completion(.success(outputPath))
+            } else {
+                completion(.failure(PythonError.predictionFailed("SF3D generation failed")))
             }
         }
     }

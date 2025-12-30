@@ -446,6 +446,12 @@ def main():
         default=0.85,
         help="Foreground size ratio (default: 0.85)",
     )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Device to use (mps, cpu, cuda)",
+    )
 
     args = parser.parse_args()
 
@@ -457,7 +463,7 @@ def main():
         mask_path, image_path = args.test
         run_self_test(mask_path, image_path, args.output_dir)
     elif args.image:
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        device = args.device or ("mps" if torch.backends.mps.is_available() else "cpu")
 
         if args.mask:
             image = extract_foreground_with_mask(
