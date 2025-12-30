@@ -1480,62 +1480,31 @@ struct ContentView: View {
         // Save for undo
         undoStack.append(.crop(originalImage: image, originalPath: inputImagePath))
 
-        // Get the oriented pixel size from our cached state
         let pixelW = imagePixelSize.width
         let pixelH = imagePixelSize.height
-        
         if pixelW == 0 || pixelH == 0 { return }
 
+        // Use CIImage to extract the crop at full resolution
+        guard let tiffData = image.tiffRepresentation,
+              let ciImage = CIImage(data: tiffData) else { return }
+        
         let rect = crop.normalizedRect
-        
-        // The normalized coordinates are relative to the oriented image.
-        // We want to extract this rect from the oriented version of the image.
-        // A robust way in macOS is to draw the oriented NSImage into a new bitmap.
-        
-        let targetSize = CGSize(
+        let cropRectPixels = CGRect(
+            x: rect.minX * pixelW,
+            y: (1.0 - rect.maxY) * pixelH,
             width: rect.width * pixelW,
             height: rect.height * pixelH
         )
+
+        let croppedCI = ciImage.cropped(to: cropRectPixels)
+        let context = CIContext(options: nil)
         
-        guard let newRep = NSBitmapImageRep(
-            bitmapDataPlanes: nil,
-            pixelsWide: Int(targetSize.width),
-            pixelsHigh: Int(targetSize.height),
-            bitsPerSample: 8,
-            samplesPerPixel: 4,
-            hasAlpha: true,
-            isPlanar: false,
-            colorSpaceName: .deviceRGB,
-            bytesPerRow: 0,
-            bitsPerPixel: 0
-        ) else { return }
+        guard let cgImage = context.createCGImage(croppedCI, from: croppedCI.extent) else { return }
         
-        newRep.size = targetSize
-        
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: newRep)
-        
-        // Draw the specific portion of the oriented image. 
-        // We use image.size (points) for the 'from' rect because NSImage.draw
-        // works in the point space of the source image.
-        let fromRect = CGRect(
-            x: rect.minX * image.size.width,
-            y: (1.0 - rect.maxY) * image.size.height, // NSImage has bottom-left origin
-            width: rect.width * image.size.width,
-            height: rect.height * image.size.height
-        )
-        
-        image.draw(in: NSRect(origin: .zero, size: targetSize), 
-                   from: fromRect, 
-                   operation: .copy, 
-                   fraction: 1.0)
-        
-        NSGraphicsContext.restoreGraphicsState()
-        
-        let croppedImage = NSImage(size: targetSize)
-        croppedImage.addRepresentation(newRep)
+        let croppedImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
         
         self.inputImage = croppedImage
+        self.imagePixelSize = CGSize(width: cgImage.width, height: cgImage.height)
         saveAndLoad(image: croppedImage)
 
         cropRect = nil
@@ -1563,11 +1532,11 @@ struct ContentView: View {
     }
 
     private func deleteInsideLasso(_ image: NSImage, lasso: LassoSelection) -> NSImage? {
-        guard let tiffData = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiffData) else { return nil }
-
-        let width = bitmap.pixelsWide
-        let height = bitmap.pixelsHigh
+        // Use the primary CGImage representation to avoid resolution loss
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        
+        let width = cgImage.width
+        let height = cgImage.height
         let imageSize = NSSize(width: width, height: height)
 
         // Create new bitmap with alpha
@@ -1584,11 +1553,17 @@ struct ContentView: View {
             bitsPerPixel: 32
         ) else { return nil }
 
-        // Copy original image using Core Graphics
+        // Create context from CGImage
         NSGraphicsContext.saveGraphicsState()
         let context = NSGraphicsContext(bitmapImageRep: newBitmap)
         NSGraphicsContext.current = context
-        bitmap.draw(in: NSRect(origin: .zero, size: imageSize))
+        
+        let ciContext = CIContext(options: nil)
+        let ciImage = CIImage(cgImage: cgImage)
+        if let cgDrawn = ciContext.createCGImage(ciImage, from: ciImage.extent) {
+            let nsDrawn = NSImage(cgImage: cgDrawn, size: imageSize)
+            nsDrawn.draw(in: NSRect(origin: .zero, size: imageSize))
+        }
 
         let cgWidth = CGFloat(width)
         let cgHeight = CGFloat(height)
@@ -1715,9 +1690,10 @@ struct ContentView: View {
         Task.detached(priority: .userInitiated) {
             do {
                 try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-                if let tiffData = image.tiffRepresentation,
-                   let bitmap = NSBitmapImageRep(data: tiffData),
-                   let data = bitmap.representation(using: .png, properties: [:]) {
+                // Use a proper bitmap rep from the image to preserve quality
+                guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+                let bitmap = NSBitmapImageRep(cgImage: cgImage)
+                if let data = bitmap.representation(using: .png, properties: [:]) {
                     try data.write(to: tempFile)
                     await MainActor.run {
                         self.loadImage(from: tempFile)
@@ -1806,9 +1782,9 @@ struct ContentView: View {
 
         do {
             try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-            if let tiffData = image.tiffRepresentation,
-               let bitmap = NSBitmapImageRep(data: tiffData),
-               let data = bitmap.representation(using: .png, properties: [:]) {
+            guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+            let bitmap = NSBitmapImageRep(cgImage: cgImage)
+            if let data = bitmap.representation(using: .png, properties: [:]) {
                 try data.write(to: tempFile)
                 self.inputImagePath = tempFile.path
             }
