@@ -15,27 +15,35 @@ struct SplashScreenView: View {
                 
                 if let testImage = env.selfTestImage {
                     VStack {
-                        Text("Visual Self-Test")
+                        Text(env.selfTest3DModelURL != nil ? "3D Model Generated" : "Visual Self-Test")
                             .font(.headline)
                             .foregroundColor(.secondary)
-                        
-                        ZStack {
-                            Image(nsImage: testImage)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(height: 400)
-                                .cornerRadius(12)
-                            
-                            if let mask = env.selfTestMask {
-                                Image(nsImage: mask)
+
+                        if let modelURL = env.selfTest3DModelURL {
+                            // Show 3D model viewer
+                            ModelViewerContainer(modelURL: modelURL)
+                                .frame(width: 500, height: 400)
+                                .shadow(radius: 10)
+                        } else {
+                            // Show 2D masked image
+                            ZStack {
+                                Image(nsImage: testImage)
                                     .resizable()
                                     .aspectRatio(contentMode: .fit)
                                     .frame(height: 400)
-                                    .opacity(0.9)
+                                    .cornerRadius(12)
+
+                                if let mask = env.selfTestMask {
+                                    Image(nsImage: mask)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fit)
+                                        .frame(height: 400)
+                                        .opacity(0.9)
+                                }
                             }
+                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.2), lineWidth: 1))
+                            .shadow(radius: 10)
                         }
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.2), lineWidth: 1))
-                        .shadow(radius: 10)
                     }
                     .transition(.scale.combined(with: .opacity))
                 } else {

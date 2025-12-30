@@ -1,0 +1,33 @@
+[project]
+name = "modelrv3-hunyuan"
+version = "0.1.0"
+dependencies = [
+    "torch",
+    "torchvision",
+    "numpy",
+    "pillow",
+    "transformers",
+    "diffusers",
+    "accelerate",
+    "trimesh",
+    "pygltflib",
+    "xatlas",
+    "onnxruntime",
+    "huggingface_hub",
+    "safetensors",
+    "einops",
+    "omegaconf",
+    "opencv-python",
+    "ninja",
+    "pybind11",
+    "pyyaml",
+    "hy3dgen @ git+https://github.com/tencent/Hunyuan3D-2.git",
+]
+requires-python = ">=3.10"
+
+[tool.uv]
+# Override problematic transitive dependencies
+override-dependencies = [
+    "numba>=0.58.0",
+    "llvmlite>=0.41.0",
+]

@@ -6,29 +6,59 @@ class PythonEnvironment: ObservableObject {
     @Published var status = "Choose a model to begin"
     @Published var selfTestImage: NSImage?
     @Published var selfTestMask: NSImage?
+    @Published var selfTest3DModelURL: URL?
     @Published var canProceed = false
     @Published var selectedModel = "tiny"
-    
+    @Published var isProcessing = false
+    @Published var hunyuanProgress: String = ""
+
+    // Interactive self-test state
+    @Published var selfTestClickPoint: CGPoint? = nil  // Normalized 0-1
+    @Published var selfTestPrompt: String = "Click on the center of the alpaca's body"
+    @Published var selfTestAwaitingClick = false
+    @Published var selfTestAttempts = 0
+    @Published var referenceMaskCoverage: Double = 0  // Expected mask coverage %
+
     private let appSupportDir: URL
     private let venvDir: URL
+    private let hunyuanVenvDir: URL
     private let pythonWorkingDir: URL
-    
+
     /// Used for dependency injection during unit tests
     var resourcePathOverride: String?
-    
+
+    // MARK: - Persistent Process State
+
+    private var persistentProcess: Process?
+    private var stdinPipe: Pipe?
+    private var stdoutPipe: Pipe?
+    private var responseBuffer = Data()
+    private var currentImagePath: String?
+    private var imagePixelSize: CGSize = .zero
+
+    private let processQueue = DispatchQueue(label: "com.modelr.python.process")
+    private var pendingContinuation: CheckedContinuation<SAMResponse, Error>?
+
     init() {
         let fileManager = FileManager.default
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         appSupportDir = appSupport.appendingPathComponent("ModelrV3")
         venvDir = appSupportDir.appendingPathComponent(".venv")
-        pythonWorkingDir = appSupportDir // The project root is now App Support
-        
+        hunyuanVenvDir = appSupportDir.appendingPathComponent(".venv_hunyuan")
+        pythonWorkingDir = appSupportDir
+
         try? fileManager.createDirectory(at: appSupportDir, withIntermediateDirectories: true)
     }
-    
+
+    deinit {
+        stopPersistentWorker()
+    }
+
+    // MARK: - Setup
+
     func setup() async {
         await MainActor.run { status = "Bootstrapping..." }
-        
+
         var uvPath: String?
         if let override = resourcePathOverride {
             uvPath = (override as NSString).appendingPathComponent("uv")
@@ -38,7 +68,7 @@ class PythonEnvironment: ObservableObject {
                 uvPath = Bundle.main.path(forResource: "uv", ofType: nil, inDirectory: "Resources")
             }
         }
-        
+
         guard let finalUvPath = uvPath else {
             print("ERROR: uv binary not found")
             await MainActor.run { status = "Error: uv not found" }
@@ -48,11 +78,11 @@ class PythonEnvironment: ObservableObject {
         // 0. Copy script resources to App Support
         await MainActor.run { status = "Syncing assets..." }
         let fm = FileManager.default
-        let resources = ["sam_wrapper.py", "pyproject.toml", "self_test.jpg"]
+        let resources = ["sam_wrapper.py", "pyproject.toml", "self_test.jpg", "hunyuan_wrapper.py", "pyproject_hunyuan.toml"]
         for res in resources {
             let targetPath = appSupportDir.appendingPathComponent(res)
             var sourcePath: String?
-            
+
             if let override = resourcePathOverride {
                 sourcePath = (override as NSString).appendingPathComponent(res)
             } else {
@@ -61,23 +91,23 @@ class PythonEnvironment: ObservableObject {
                     sourcePath = Bundle.main.path(forResource: res, ofType: nil, inDirectory: "Resources")
                 }
             }
-            
+
             if let finalSource = sourcePath {
                 print(">>> COPY: \(res) to \(targetPath.path)")
                 try? fm.removeItem(at: targetPath)
                 try? fm.copyItem(atPath: finalSource, toPath: targetPath.path)
             }
         }
-        
+
         // Load original self-test image for UI
         let testImgURL = appSupportDir.appendingPathComponent("self_test.jpg")
         if let image = NSImage(contentsOf: testImgURL) {
             await MainActor.run { self.selfTestImage = image }
         }
-        
+
         // 1. Sync Environment (this will also install python locally if needed)
         await MainActor.run { status = "Setting up Python environment..." }
-        
+
         let syncSuccess = await execute(
             executable: finalUvPath,
             arguments: ["sync", "--python", "3.12"],
@@ -89,58 +119,95 @@ class PythonEnvironment: ObservableObject {
                 "PYTHONUNBUFFERED": "1"
             ]
         )
-        
+
         if syncSuccess {
             await runSelfTest(finalUvPath: finalUvPath)
         } else {
             await MainActor.run { status = "Setup failed" }
         }
     }
-    
+
     @discardableResult
-    private func execute(executable: String, arguments: [String], environment: [String: String]? = nil) async -> Bool {
+    private func execute(executable: String, arguments: [String], environment: [String: String]? = nil, workingDirectory: URL? = nil) async -> Bool {
         print("\n>>> EXEC: \(executable) \(arguments.joined(separator: " "))")
-        
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
-        process.currentDirectoryURL = appSupportDir // Set working directory to app support
-        
+        process.currentDirectoryURL = workingDirectory ?? appSupportDir
+
         var currentEnv = ProcessInfo.processInfo.environment
-        
-        // Globally enforce UV isolation for all commands
+
         let cacheDir = appSupportDir.appendingPathComponent("uv_cache").path
         let runtimesDir = appSupportDir.appendingPathComponent("python_runtimes").path
-        
+
         currentEnv["UV_PROJECT_ENVIRONMENT"] = venvDir.path
         currentEnv["UV_PYTHON_INSTALL_DIR"] = runtimesDir
         currentEnv["UV_CACHE_DIR"] = cacheDir
         currentEnv["UV_PYTHON_PREFERENCE"] = "only-managed"
         currentEnv["PYTHONUNBUFFERED"] = "1"
-        
+
         if let env = environment {
             for (key, value) in env {
                 currentEnv[key] = value
             }
         }
         process.environment = currentEnv
-        
+
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
-               pipe.fileHandleForReading.readabilityHandler = { handle in
+        pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             if let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty {
                 print(">>> \(line)")
-                // Dynamically update status if the line looks like a status message
-                if line.contains("Testing segmentation model") {
-                    DispatchQueue.main.async {
+                DispatchQueue.main.async {
+                    // Parse progress messages
+                    if line.contains("Testing segmentation model") {
                         self.status = "Testing segmentation model..."
+                    } else if line.contains("Diffusion Sampling") {
+                        // Extract percentage and speed: "Diffusion Sampling::  50%|█████     | 15/30 [00:06<00:06,  2.26it/s]"
+                        if let match = line.range(of: #"(\d+)%.*?(\d+\.?\d*it/s)"#, options: .regularExpression) {
+                            let progressStr = String(line[match])
+                            if let pctMatch = progressStr.range(of: #"\d+%"#, options: .regularExpression),
+                               let speedMatch = progressStr.range(of: #"\d+\.?\d*it/s"#, options: .regularExpression) {
+                                let pct = String(progressStr[pctMatch])
+                                let speed = String(progressStr[speedMatch])
+                                self.status = "Diffusion Sampling: \(pct) (\(speed))"
+                            }
+                        }
+                    } else if line.contains("Volume Decoding") {
+                        // Extract percentage and speed
+                        if let match = line.range(of: #"(\d+)%.*?(\d+\.?\d*it/s)"#, options: .regularExpression) {
+                            let progressStr = String(line[match])
+                            if let pctMatch = progressStr.range(of: #"\d+%"#, options: .regularExpression),
+                               let speedMatch = progressStr.range(of: #"\d+\.?\d*it/s"#, options: .regularExpression) {
+                                let pct = String(progressStr[pctMatch])
+                                let speed = String(progressStr[speedMatch])
+                                self.status = "Volume Decoding: \(pct) (\(speed))"
+                            }
+                        }
+                    } else if line.contains("Loading Hunyuan3D pipeline") {
+                        self.status = "Loading Hunyuan3D model..."
+                    } else if line.contains("Generating 3D shape") {
+                        self.status = "Generating 3D shape..."
+                    } else if line.contains("Extracting foreground") {
+                        self.status = "Extracting foreground..."
+                    } else if line.contains("Model saved to") {
+                        self.status = "3D model generated!"
+                    } else if line.contains("download from huggingface") {
+                        self.status = "Downloading Hunyuan3D model..."
+                    } else if line.contains("Fetching") && line.contains("files") {
+                        // "Fetching 3 files:  67%|██████▋   | 2/3"
+                        if let match = line.range(of: #"\d+%"#, options: .regularExpression) {
+                            let pct = String(line[match])
+                            self.status = "Downloading model files: \(pct)"
+                        }
                     }
                 }
             }
         }
-        
+
         do {
             try process.run()
             process.waitUntilExit()
@@ -152,47 +219,457 @@ class PythonEnvironment: ObservableObject {
             return false
         }
     }
-    
+
+    private var cachedUvPath: String?
+
     private func runSelfTest(finalUvPath: String) async {
+        cachedUvPath = finalUvPath
+
+        // Start the persistent SAM2 worker for interactive self-test
         await MainActor.run { status = "Loading segmentation model..." }
-        
+
         let scriptPath = appSupportDir.appendingPathComponent("sam_wrapper.py").path
         let testImgPath = appSupportDir.appendingPathComponent("self_test.jpg").path
-        let success = await execute(
-            executable: finalUvPath,
-            arguments: ["run", scriptPath, "--model", selectedModel, "--test", testImgPath],
-            environment: [
-                "PYTHONPATH": appSupportDir.path,
-                "PYTHONUNBUFFERED": "1"
-            ]
-        )
-        
-        let maskURL = appSupportDir.appendingPathComponent("self_test_mask.png")
-        let maskImage = NSImage(contentsOf: maskURL)
-        
+
+        // Start persistent worker
+        do {
+            try await startPersistentWorker(uvPath: finalUvPath)
+        } catch {
+            await MainActor.run { status = "Error: Failed to start SAM2 worker" }
+            return
+        }
+
+        // Set the test image
+        do {
+            _ = try await setImage(path: testImgPath)
+        } catch {
+            await MainActor.run { status = "Error: Failed to load test image" }
+            return
+        }
+
+        // Now wait for user click - SplashScreenView will call runSelfTestWithClick
         await MainActor.run {
-            if success {
-                self.selfTestMask = maskImage
-                self.canProceed = true
-                status = "Ready"
-            } else {
-                status = "Error: Self-test failed"
+            selfTestAwaitingClick = true
+            selfTestPrompt = "Click on the center of the alpaca's body"
+            status = "Click on the alpaca to continue"
+        }
+    }
+
+    /// Called from SplashScreenView when user clicks on the test image
+    func runSelfTestWithClick(normalizedPoint: CGPoint) async {
+        guard let uvPath = cachedUvPath else { return }
+
+        await MainActor.run {
+            selfTestClickPoint = normalizedPoint
+            selfTestAwaitingClick = false
+            status = "Segmenting..."
+        }
+
+        let testImgPath = appSupportDir.appendingPathComponent("self_test.jpg").path
+
+        // Create a SAMPoint from normalized coords
+        let point = SAMPoint(normalizedCoords: normalizedPoint)
+
+        do {
+            let maskURL = try await predict(points: [point], box: nil, imageSize: imagePixelSize)
+            let maskImage = NSImage(contentsOf: maskURL)
+
+            // Calculate mask coverage
+            let coverage = calculateMaskCoverage(maskURL: maskURL)
+
+            await MainActor.run {
+                selfTestMask = maskImage
+                selfTestAttempts += 1
+            }
+
+            // Check if mask is reasonable (between 5% and 60% coverage)
+            // Also compare with expected coverage if we have a reference
+            let isValidMask = coverage > 0.05 && coverage < 0.60
+
+            if !isValidMask {
+                await MainActor.run {
+                    selfTestClickPoint = nil
+                    selfTestMask = nil
+                    selfTestAwaitingClick = true
+                    selfTestPrompt = "That doesn't look right. Try clicking on the alpaca's body again."
+                    status = "Click on the alpaca to continue"
+                }
+                return
+            }
+
+            // Store reference coverage for future comparison
+            await MainActor.run {
+                referenceMaskCoverage = coverage
+                status = "Segmentation successful!"
+            }
+
+            // Continue to Hunyuan3D
+            await runHunyuanSelfTest(finalUvPath: uvPath, maskPath: maskURL.path, imagePath: testImgPath)
+
+        } catch {
+            await MainActor.run {
+                selfTestClickPoint = nil
+                selfTestAwaitingClick = true
+                selfTestPrompt = "Error occurred. Try clicking again."
+                status = "Click on the alpaca to continue"
             }
         }
     }
-    
-    private func parseProgress(_ line: String) {
-        // Simple heuristic to show progress from uv output
-        if line.contains("Installed") || line.contains("Prepared") || line.contains("Resolved") {
-            status = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        } else if line.contains("Resolving") || line.contains("Downloading") {
-            status = line.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    /// Calculate the percentage of the image covered by the mask
+    private func calculateMaskCoverage(maskURL: URL) -> Double {
+        guard let image = NSImage(contentsOf: maskURL),
+              let tiffData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else {
+            return 0
+        }
+
+        let width = bitmap.pixelsWide
+        let height = bitmap.pixelsHigh
+        var nonZeroPixels = 0
+        let totalPixels = width * height
+
+        for y in 0..<height {
+            for x in 0..<width {
+                if let color = bitmap.colorAt(x: x, y: y) {
+                    // Check alpha channel (mask uses alpha for visibility)
+                    if color.alphaComponent > 0.1 {
+                        nonZeroPixels += 1
+                    }
+                }
+            }
+        }
+
+        return Double(nonZeroPixels) / Double(totalPixels)
+    }
+
+    private func runHunyuanSelfTest(finalUvPath: String, maskPath: String, imagePath: String) async {
+        await MainActor.run { status = "Setting up Hunyuan3D environment..." }
+
+        // Rename pyproject for Hunyuan venv
+        let hunyuanPyprojectSource = appSupportDir.appendingPathComponent("pyproject_hunyuan.toml")
+        let hunyuanPyprojectTarget = appSupportDir.appendingPathComponent("Hunyuan3D/pyproject.toml")
+        let hunyuanDir = appSupportDir.appendingPathComponent("Hunyuan3D")
+
+        let fm = FileManager.default
+        try? fm.createDirectory(at: hunyuanDir, withIntermediateDirectories: true)
+        try? fm.removeItem(at: hunyuanPyprojectTarget)
+        try? fm.copyItem(at: hunyuanPyprojectSource, to: hunyuanPyprojectTarget)
+
+        // Also copy the wrapper script to Hunyuan3D dir
+        let wrapperSource = appSupportDir.appendingPathComponent("hunyuan_wrapper.py")
+        let wrapperTarget = hunyuanDir.appendingPathComponent("hunyuan_wrapper.py")
+        try? fm.removeItem(at: wrapperTarget)
+        try? fm.copyItem(at: wrapperSource, to: wrapperTarget)
+
+        // Sync Hunyuan3D environment (Python 3.10 for compatibility)
+        let hunyuanVenv = hunyuanDir.appendingPathComponent(".venv")
+        let syncSuccess = await execute(
+            executable: finalUvPath,
+            arguments: ["sync", "--python", "3.10"],
+            environment: [
+                "UV_PROJECT_ENVIRONMENT": hunyuanVenv.path,
+                "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
+                "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
+                "UV_PYTHON_PREFERENCE": "only-managed",
+                "PYTHONUNBUFFERED": "1"
+            ],
+            workingDirectory: hunyuanDir
+        )
+
+        guard syncSuccess else {
+            await MainActor.run {
+                status = "Error: Hunyuan3D setup failed"
+            }
+            return
+        }
+
+        await MainActor.run { status = "Generating 3D model (this may take a while)..." }
+
+        // Run Hunyuan3D self-test
+        let hunyuanScript = hunyuanDir.appendingPathComponent("hunyuan_wrapper.py").path
+        let modelSuccess = await execute(
+            executable: finalUvPath,
+            arguments: ["run", hunyuanScript, "--test", maskPath, imagePath, "--output-dir", hunyuanDir.path],
+            environment: [
+                "UV_PROJECT_ENVIRONMENT": hunyuanVenv.path,
+                "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
+                "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
+                "UV_PYTHON_PREFERENCE": "only-managed",
+                "PYTHONUNBUFFERED": "1"
+            ],
+            workingDirectory: hunyuanDir
+        )
+
+        let modelURL = hunyuanDir.appendingPathComponent("self_test_model.obj")
+
+        await MainActor.run {
+            if modelSuccess && fm.fileExists(atPath: modelURL.path) {
+                self.selfTest3DModelURL = modelURL
+                self.canProceed = true
+                // Don't set isSetup - let user click "Open Editor"
+                status = "Ready - Click Open Editor to continue"
+            } else {
+                // Still allow proceeding if SAM2 worked but Hunyuan failed
+                self.canProceed = true
+                status = "Ready (3D generation skipped)"
+            }
         }
     }
-    
+
+    // MARK: - Persistent Worker Management
+
+    /// Start the persistent Python worker process
+    func startPersistentWorker() async throws {
+        guard persistentProcess == nil else {
+            print("Persistent worker already running")
+            return
+        }
+
+        var uvPath = Bundle.main.path(forResource: "uv", ofType: nil)
+        if uvPath == nil {
+            uvPath = Bundle.main.path(forResource: "uv", ofType: nil, inDirectory: "Resources")
+        }
+        guard let finalUvPath = uvPath else {
+            throw PythonError.uvNotFound
+        }
+
+        let scriptPath = appSupportDir.appendingPathComponent("sam_wrapper.py").path
+
+        let process = Process()
+        let stdin = Pipe()
+        let stdout = Pipe()
+        let stderr = Pipe()
+
+        process.executableURL = URL(fileURLWithPath: finalUvPath)
+        process.arguments = [
+            "run", scriptPath,
+            "--server",
+            "--model", selectedModel,
+            "--output-dir", appSupportDir.path
+        ]
+        process.currentDirectoryURL = appSupportDir
+
+        var currentEnv = ProcessInfo.processInfo.environment
+        currentEnv["UV_PROJECT_ENVIRONMENT"] = venvDir.path
+        currentEnv["UV_PYTHON_INSTALL_DIR"] = appSupportDir.appendingPathComponent("python_runtimes").path
+        currentEnv["UV_CACHE_DIR"] = appSupportDir.appendingPathComponent("uv_cache").path
+        currentEnv["UV_PYTHON_PREFERENCE"] = "only-managed"
+        currentEnv["PYTHONUNBUFFERED"] = "1"
+        currentEnv["PYTHONPATH"] = appSupportDir.path
+        process.environment = currentEnv
+
+        process.standardInput = stdin
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        // Handle stderr (for logging)
+        stderr.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty {
+                print("[Python stderr] \(line)")
+            }
+        }
+
+        // Handle stdout (JSON responses)
+        stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            self?.handleStdoutData(data)
+        }
+
+        try process.run()
+
+        self.persistentProcess = process
+        self.stdinPipe = stdin
+        self.stdoutPipe = stdout
+
+        print("Persistent worker started with PID \(process.processIdentifier)")
+
+        // Wait for ready signal
+        let response = try await waitForResponse(timeout: 30)
+        guard response.ready == true else {
+            throw PythonError.workerNotReady
+        }
+
+        print("Persistent worker ready")
+    }
+
+    /// Stop the persistent Python worker
+    func stopPersistentWorker() {
+        stdinPipe?.fileHandleForWriting.closeFile()
+        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+
+        if let process = persistentProcess, process.isRunning {
+            process.terminate()
+            process.waitUntilExit()
+        }
+
+        persistentProcess = nil
+        stdinPipe = nil
+        stdoutPipe = nil
+        currentImagePath = nil
+        imagePixelSize = .zero
+
+        print("Persistent worker stopped")
+    }
+
+    private func handleStdoutData(_ data: Data) {
+        responseBuffer.append(data)
+
+        // Look for complete JSON lines
+        while let newlineRange = responseBuffer.range(of: Data("\n".utf8)) {
+            let lineData = responseBuffer.subdata(in: responseBuffer.startIndex..<newlineRange.lowerBound)
+            responseBuffer.removeSubrange(responseBuffer.startIndex...newlineRange.lowerBound)
+
+            guard let line = String(data: lineData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !line.isEmpty else { continue }
+
+            do {
+                let response = try JSONDecoder().decode(SAMResponse.self, from: Data(line.utf8))
+                if let continuation = pendingContinuation {
+                    pendingContinuation = nil
+                    continuation.resume(returning: response)
+                }
+            } catch {
+                print("Failed to decode response: \(error), line: \(line)")
+                if let continuation = pendingContinuation {
+                    pendingContinuation = nil
+                    continuation.resume(throwing: PythonError.invalidResponse(line))
+                }
+            }
+        }
+    }
+
+    private func sendRequest(_ request: SAMRequest) async throws -> SAMResponse {
+        guard let stdin = stdinPipe?.fileHandleForWriting else {
+            throw PythonError.workerNotRunning
+        }
+
+        let jsonData = try JSONEncoder().encode(request)
+        guard var jsonString = String(data: jsonData, encoding: .utf8) else {
+            throw PythonError.encodingError
+        }
+        jsonString += "\n"
+
+        return try await withCheckedThrowingContinuation { continuation in
+            self.pendingContinuation = continuation
+
+            do {
+                try stdin.write(contentsOf: Data(jsonString.utf8))
+            } catch {
+                self.pendingContinuation = nil
+                continuation.resume(throwing: error)
+            }
+        }
+    }
+
+    private func waitForResponse(timeout: TimeInterval) async throws -> SAMResponse {
+        try await withCheckedThrowingContinuation { continuation in
+            self.pendingContinuation = continuation
+
+            // Set timeout
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
+                if let cont = self?.pendingContinuation {
+                    self?.pendingContinuation = nil
+                    cont.resume(throwing: PythonError.timeout)
+                }
+            }
+        }
+    }
+
+    // MARK: - Image & Prediction API
+
+    /// Set the current image for prediction
+    func setImage(path: String) async throws -> CGSize {
+        // Start worker if needed
+        if persistentProcess == nil || !persistentProcess!.isRunning {
+            try await startPersistentWorker()
+        }
+
+        let request = SAMRequest(command: "set_image", imagePath: path)
+        let response = try await sendRequest(request)
+
+        guard response.success else {
+            throw PythonError.predictionFailed(response.error ?? "Unknown error")
+        }
+
+        currentImagePath = path
+
+        // Parse dimensions from response (need to add width/height to SAMResponse)
+        // For now, we'll get them from the image file
+        if let image = NSImage(contentsOfFile: path),
+           let rep = image.representations.first {
+            imagePixelSize = CGSize(width: CGFloat(rep.pixelsWide), height: CGFloat(rep.pixelsHigh))
+        }
+
+        return imagePixelSize
+    }
+
+    /// Run prediction with points and/or box
+    func predict(points: [SAMPoint], box: SAMBox?, imageSize: CGSize) async throws -> URL {
+        guard persistentProcess?.isRunning == true else {
+            throw PythonError.workerNotRunning
+        }
+
+        await MainActor.run {
+            isProcessing = true
+            status = "Segmenting..."
+        }
+
+        defer {
+            Task { @MainActor in
+                isProcessing = false
+                status = "Ready"
+            }
+        }
+
+        // Convert points to pixel coordinates
+        let pixelPoints: [[Int]] = points.map { point in
+            let coords = point.pixelCoords(for: imageSize)
+            return [coords.x, coords.y]
+        }
+
+        // Convert box to pixel coordinates
+        let pixelBox: [Int]? = box?.pixelBox(for: imageSize)
+
+        let request = SAMRequest(
+            command: "predict",
+            points: pixelPoints.isEmpty ? nil : pixelPoints,
+            box: pixelBox
+        )
+
+        let response = try await sendRequest(request)
+
+        guard response.success, let maskPath = response.maskPath else {
+            throw PythonError.predictionFailed(response.error ?? "Unknown error")
+        }
+
+        if let inferenceTime = response.inferenceTimeMs {
+            print("Inference completed in \(inferenceTime)ms")
+        }
+
+        return URL(fileURLWithPath: maskPath)
+    }
+
+    /// Reset the predictor state
+    func resetPredictor() async throws {
+        guard persistentProcess?.isRunning == true else { return }
+
+        let request = SAMRequest(command: "reset")
+        let _ = try await sendRequest(request)
+
+        currentImagePath = nil
+        imagePixelSize = .zero
+    }
+
+    // MARK: - Legacy API (for backwards compatibility)
+
+    /// Legacy single-shot prediction (spawns new process each time)
+    @available(*, deprecated, message: "Use setImage() and predict() for faster iterative refinement")
     func runSAM2(imagePath: String, x: Int, y: Int) async -> URL? {
         guard isSetup else { return nil }
-        
+
         var uvPath = Bundle.main.path(forResource: "uv", ofType: nil)
         if uvPath == nil {
             uvPath = Bundle.main.path(forResource: "uv", ofType: nil, inDirectory: "Resources")
@@ -200,10 +677,10 @@ class PythonEnvironment: ObservableObject {
         guard let finalUvPath = uvPath else { return nil }
 
         await MainActor.run { status = "Segmenting..." }
-        
+
         let scriptPath = appSupportDir.appendingPathComponent("sam_wrapper.py").path
         let maskPath = appSupportDir.appendingPathComponent("mask.png").path
-        
+
         let success = await execute(
             executable: finalUvPath,
             arguments: ["run", scriptPath, "--model", selectedModel, imagePath, "\(x)", "\(y)", maskPath],
@@ -212,13 +689,44 @@ class PythonEnvironment: ObservableObject {
                 "PYTHONUNBUFFERED": "1"
             ]
         )
-        
+
         if success {
             await MainActor.run { status = "Done" }
             return URL(fileURLWithPath: maskPath)
         }
-        
+
         await MainActor.run { status = "Ready" }
         return nil
+    }
+}
+
+// MARK: - Error Types
+
+enum PythonError: Error, LocalizedError {
+    case uvNotFound
+    case workerNotRunning
+    case workerNotReady
+    case encodingError
+    case invalidResponse(String)
+    case predictionFailed(String)
+    case timeout
+
+    var errorDescription: String? {
+        switch self {
+        case .uvNotFound:
+            return "uv binary not found"
+        case .workerNotRunning:
+            return "Python worker is not running"
+        case .workerNotReady:
+            return "Python worker failed to start"
+        case .encodingError:
+            return "Failed to encode request"
+        case .invalidResponse(let response):
+            return "Invalid response from worker: \(response)"
+        case .predictionFailed(let error):
+            return "Prediction failed: \(error)"
+        case .timeout:
+            return "Request timed out"
+        }
     }
 }
