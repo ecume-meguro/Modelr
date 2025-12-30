@@ -136,8 +136,8 @@ def run_self_test(mask_path, original_image_path, output_dir, model_variant="min
         output_path=output_path,
         model_variant=model_variant,
         device=device,
-        num_steps=15,           # Reduced from 30
-        octree_resolution=192,  # Reduced from 256 (~900 volume steps vs 2100+)
+        num_steps=25,           # Increased from 15
+        octree_resolution=280,  # Increased from 192
     )
 
     print(f"SELF_TEST_MODEL_PATH:{output_path}", flush=True)

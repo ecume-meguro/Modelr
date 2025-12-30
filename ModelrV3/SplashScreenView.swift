@@ -4,20 +4,33 @@ struct SplashScreenView: View {
     @ObservedObject var env: PythonEnvironment
     @State private var animate = false
     @State private var progress: Double = 0
-    
+    @State private var imageDisplaySize: CGSize = .zero
+
     var body: some View {
         ZStack {
             LinearGradient(gradient: Gradient(colors: [Color(NSColor.windowBackgroundColor), Color(red: 0.1, green: 0.25, blue: 0.5).opacity(0.4)]), startPoint: .topLeading, endPoint: .bottomTrailing)
                 .ignoresSafeArea()
-            
+
             VStack(spacing: 20) {
                 Spacer()
-                
+
                 if let testImage = env.selfTestImage {
-                    VStack {
-                        Text(env.selfTest3DModelURL != nil ? "3D Model Generated" : "Visual Self-Test")
-                            .font(.headline)
-                            .foregroundColor(.secondary)
+                    VStack(spacing: 12) {
+                        // Header text
+                        if env.selfTest3DModelURL != nil {
+                            Text("3D Model Generated")
+                                .font(.headline)
+                                .foregroundColor(.secondary)
+                        } else if env.selfTestAwaitingClick {
+                            Text(env.selfTestPrompt)
+                                .font(.headline)
+                                .foregroundColor(env.selfTestAttempts > 0 ? .orange : .secondary)
+                                .multilineTextAlignment(.center)
+                        } else if env.selfTestMask != nil {
+                            Text("Visual Self-Test")
+                                .font(.headline)
+                                .foregroundColor(.secondary)
+                        }
 
                         if let modelURL = env.selfTest3DModelURL {
                             // Show 3D model viewer
@@ -25,24 +38,79 @@ struct SplashScreenView: View {
                                 .frame(width: 500, height: 400)
                                 .shadow(radius: 10)
                         } else {
-                            // Show 2D masked image
-                            ZStack {
-                                Image(nsImage: testImage)
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fit)
-                                    .frame(height: 400)
-                                    .cornerRadius(12)
+                            // Interactive test image
+                            GeometryReader { geo in
+                                let imageSize = testImage.size
+                                let aspectRatio = imageSize.width / imageSize.height
+                                let displayHeight: CGFloat = 400
+                                let displayWidth = displayHeight * aspectRatio
+                                let offsetX = (geo.size.width - displayWidth) / 2
+                                let offsetY = (geo.size.height - displayHeight) / 2
 
-                                if let mask = env.selfTestMask {
-                                    Image(nsImage: mask)
+                                ZStack {
+                                    // Base image
+                                    Image(nsImage: testImage)
                                         .resizable()
                                         .aspectRatio(contentMode: .fit)
-                                        .frame(height: 400)
-                                        .opacity(0.9)
+                                        .frame(height: displayHeight)
+
+                                    // Mask overlay
+                                    if let mask = env.selfTestMask {
+                                        Image(nsImage: mask)
+                                            .resizable()
+                                            .aspectRatio(contentMode: .fit)
+                                            .frame(height: displayHeight)
+                                            .opacity(0.6)
+                                            .allowsHitTesting(false)
+                                    }
+
+                                    // Click point indicator
+                                    if let clickPoint = env.selfTestClickPoint {
+                                        Circle()
+                                            .fill(Color.red)
+                                            .frame(width: 16, height: 16)
+                                            .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                                            .shadow(radius: 3)
+                                            .position(
+                                                x: clickPoint.x * displayWidth,
+                                                y: clickPoint.y * displayHeight
+                                            )
+                                    }
+                                }
+                                .frame(width: displayWidth, height: displayHeight)
+                                .cornerRadius(12)
+                                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.2), lineWidth: 1))
+                                .shadow(radius: 10)
+                                .position(x: geo.size.width / 2, y: geo.size.height / 2)
+                                .contentShape(Rectangle())
+                                .onTapGesture { location in
+                                    guard env.selfTestAwaitingClick else { return }
+
+                                    // Calculate normalized coordinates
+                                    let relativeX = (location.x - offsetX) / displayWidth
+                                    let relativeY = (location.y - offsetY) / displayHeight
+
+                                    // Bounds check
+                                    guard relativeX >= 0, relativeX <= 1,
+                                          relativeY >= 0, relativeY <= 1 else {
+                                        return
+                                    }
+
+                                    let normalizedPoint = CGPoint(x: relativeX, y: relativeY)
+
+                                    Task {
+                                        await env.runSelfTestWithClick(normalizedPoint: normalizedPoint)
+                                    }
+                                }
+                                .onHover { isHovering in
+                                    if isHovering && env.selfTestAwaitingClick {
+                                        NSCursor.pointingHand.push()
+                                    } else {
+                                        NSCursor.pop()
+                                    }
                                 }
                             }
-                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.2), lineWidth: 1))
-                            .shadow(radius: 10)
+                            .frame(height: 420)
                         }
                     }
                     .transition(.scale.combined(with: .opacity))

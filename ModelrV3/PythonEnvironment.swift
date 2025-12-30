@@ -78,7 +78,7 @@ class PythonEnvironment: ObservableObject {
         // 0. Copy script resources to App Support
         await MainActor.run { status = "Syncing assets..." }
         let fm = FileManager.default
-        let resources = ["sam_wrapper.py", "pyproject.toml", "self_test.jpg", "hunyuan_wrapper.py", "pyproject_hunyuan.toml"]
+        let resources = ["sam_wrapper.py", "pyproject.toml", "self_test.jpg", "hunyuan_wrapper.py", "pyproject_hunyuan.toml", "correct_self_test_mask.png"]
         for res in resources {
             let targetPath = appSupportDir.appendingPathComponent(res)
             var sourcePath: String?
@@ -233,7 +233,7 @@ class PythonEnvironment: ObservableObject {
 
         // Start persistent worker
         do {
-            try await startPersistentWorker(uvPath: finalUvPath)
+            try await startPersistentWorker()
         } catch {
             await MainActor.run { status = "Error: Failed to start SAM2 worker" }
             return
@@ -274,32 +274,30 @@ class PythonEnvironment: ObservableObject {
             let maskURL = try await predict(points: [point], box: nil, imageSize: imagePixelSize)
             let maskImage = NSImage(contentsOf: maskURL)
 
-            // Calculate mask coverage
-            let coverage = calculateMaskCoverage(maskURL: maskURL)
-
             await MainActor.run {
                 selfTestMask = maskImage
                 selfTestAttempts += 1
             }
 
-            // Check if mask is reasonable (between 5% and 60% coverage)
-            // Also compare with expected coverage if we have a reference
-            let isValidMask = coverage > 0.05 && coverage < 0.60
+            // Compare with reference mask
+            let referenceMaskURL = appSupportDir.appendingPathComponent("correct_self_test_mask.png")
+            let similarity = compareMasks(maskURL: maskURL, referenceURL: referenceMaskURL)
+            print("Mask similarity to reference: \(String(format: "%.1f", similarity * 100))%")
 
-            if !isValidMask {
+            // If less than 90% similar (i.e., more than 10% different), ask to retry
+            if similarity < 0.90 {
                 await MainActor.run {
                     selfTestClickPoint = nil
                     selfTestMask = nil
                     selfTestAwaitingClick = true
-                    selfTestPrompt = "That doesn't look right. Try clicking on the alpaca's body again."
+                    selfTestPrompt = "That doesn't look right (\(Int((1-similarity)*100))% off). Try clicking on the alpaca's body again."
                     status = "Click on the alpaca to continue"
                 }
                 return
             }
 
-            // Store reference coverage for future comparison
             await MainActor.run {
-                referenceMaskCoverage = coverage
+                referenceMaskCoverage = similarity
                 status = "Segmentation successful!"
             }
 
@@ -316,31 +314,48 @@ class PythonEnvironment: ObservableObject {
         }
     }
 
-    /// Calculate the percentage of the image covered by the mask
-    private func calculateMaskCoverage(maskURL: URL) -> Double {
-        guard let image = NSImage(contentsOf: maskURL),
-              let tiffData = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiffData) else {
+    /// Compare two masks and return similarity (0-1, where 1 = identical)
+    private func compareMasks(maskURL: URL, referenceURL: URL) -> Double {
+        guard let maskImage = NSImage(contentsOf: maskURL),
+              let refImage = NSImage(contentsOf: referenceURL),
+              let maskTiff = maskImage.tiffRepresentation,
+              let refTiff = refImage.tiffRepresentation,
+              let maskBitmap = NSBitmapImageRep(data: maskTiff),
+              let refBitmap = NSBitmapImageRep(data: refTiff) else {
+            print("Failed to load mask images for comparison")
             return 0
         }
 
-        let width = bitmap.pixelsWide
-        let height = bitmap.pixelsHigh
-        var nonZeroPixels = 0
-        let totalPixels = width * height
+        let width = min(maskBitmap.pixelsWide, refBitmap.pixelsWide)
+        let height = min(maskBitmap.pixelsHigh, refBitmap.pixelsHigh)
+
+        var matchingPixels = 0
+        var totalMaskPixels = 0  // Pixels where either mask has content
 
         for y in 0..<height {
             for x in 0..<width {
-                if let color = bitmap.colorAt(x: x, y: y) {
-                    // Check alpha channel (mask uses alpha for visibility)
-                    if color.alphaComponent > 0.1 {
-                        nonZeroPixels += 1
+                let maskAlpha = maskBitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0
+                let refAlpha = refBitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0
+
+                let maskHasContent = maskAlpha > 0.1
+                let refHasContent = refAlpha > 0.1
+
+                // Count pixels where either mask has content (union)
+                if maskHasContent || refHasContent {
+                    totalMaskPixels += 1
+                    // Count where both agree
+                    if maskHasContent == refHasContent {
+                        matchingPixels += 1
                     }
                 }
             }
         }
 
-        return Double(nonZeroPixels) / Double(totalPixels)
+        guard totalMaskPixels > 0 else { return 0 }
+
+        let similarity = Double(matchingPixels) / Double(totalMaskPixels)
+        print("Mask comparison: \(matchingPixels)/\(totalMaskPixels) pixels match (\(String(format: "%.1f", similarity * 100))%)")
+        return similarity
     }
 
     private func runHunyuanSelfTest(finalUvPath: String, maskPath: String, imagePath: String) async {
