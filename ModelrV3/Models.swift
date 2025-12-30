@@ -53,7 +53,9 @@ struct SAMBox: Hashable, Identifiable {
 // MARK: - Tool Selection
 enum SAMTool: String, CaseIterable, Identifiable {
     case point = "Point"
-    case boundingBox = "Bounding Box"
+    case boundingBox = "Box"
+    case lasso = "Lasso"
+    case paint = "Paint"
 
     var id: String { rawValue }
 
@@ -61,6 +63,93 @@ enum SAMTool: String, CaseIterable, Identifiable {
         switch self {
         case .point: return "hand.point.up.left"
         case .boundingBox: return "rectangle.dashed"
+        case .lasso: return "lasso"
+        case .paint: return "paintbrush.pointed"
+        }
+    }
+}
+
+// MARK: - Preprocess Tool Selection
+enum PreprocessTool: String, CaseIterable, Identifiable {
+    case crop = "Crop"
+    case lassoDelete = "Lasso Delete"
+
+    var id: String { rawValue }
+
+    var iconName: String {
+        switch self {
+        case .crop: return "crop"
+        case .lassoDelete: return "lasso.and.sparkles"
+        }
+    }
+}
+
+// MARK: - Lasso Selection Model
+struct LassoSelection: Identifiable {
+    let id = UUID()
+    var points: [CGPoint]  // Normalized 0-1 coordinates
+    let dateAdded = Date()
+
+    init(startPoint: CGPoint) {
+        self.points = [startPoint]
+    }
+
+    mutating func addPoint(_ point: CGPoint) {
+        // Only add if moved enough to avoid too many points
+        if let last = points.last {
+            let dx = point.x - last.x
+            let dy = point.y - last.y
+            let distance = sqrt(dx*dx + dy*dy)
+            if distance > 0.003 {  // ~0.3% of image
+                points.append(point)
+            }
+        } else {
+            points.append(point)
+        }
+    }
+
+    /// Get bounding box of the lasso selection (for SAM2)
+    var boundingBox: SAMBox? {
+        guard points.count >= 3 else { return nil }
+        let xs = points.map { $0.x }
+        let ys = points.map { $0.y }
+        guard let minX = xs.min(), let maxX = xs.max(),
+              let minY = ys.min(), let maxY = ys.max() else { return nil }
+        return SAMBox(startPoint: CGPoint(x: minX, y: minY),
+                      endPoint: CGPoint(x: maxX, y: maxY))
+    }
+
+    /// Check if lasso has enough points to be valid
+    var isValid: Bool {
+        points.count >= 3
+    }
+}
+
+// MARK: - Paint Stroke Model
+struct PaintStroke: Identifiable {
+    let id = UUID()
+    var points: [CGPoint]  // Normalized 0-1 coordinates
+    let brushSize: CGFloat  // Normalized brush size (relative to image width)
+    let isErasing: Bool     // true = erase, false = add to mask
+
+    init(startPoint: CGPoint, brushSize: CGFloat, isErasing: Bool = false) {
+        self.points = [startPoint]
+        self.brushSize = brushSize
+        self.isErasing = isErasing
+    }
+
+    mutating func addPoint(_ point: CGPoint) {
+        // Only add if moved enough (to avoid too many points)
+        if let last = points.last {
+            let dx = point.x - last.x
+            let dy = point.y - last.y
+            let distance = sqrt(dx*dx + dy*dy)
+            // Add point if moved at least 0.5% of image
+            if distance > 0.005 {
+                points.append(point)
+            }
+        } else {
+            points.append(point)
         }
     }
 }

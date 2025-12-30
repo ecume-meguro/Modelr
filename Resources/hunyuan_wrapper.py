@@ -164,8 +164,8 @@ def main():
     parser.add_argument("--image", help="Input image path for generation")
     parser.add_argument("--mask", help="Mask image path (white=foreground)")
     parser.add_argument("--output", help="Output GLB path")
-    parser.add_argument("--steps", type=int, default=30, help="Number of diffusion steps (default: 30)")
-    parser.add_argument("--resolution", type=int, default=256, help="Octree mesh resolution (default: 256)")
+    parser.add_argument("--steps", type=int, default=50, help="Number of diffusion steps (default: 50)")
+    parser.add_argument("--resolution", type=int, default=512, help="Octree mesh resolution (default: 512)")
     parser.add_argument("--no_texture", action="store_true", help="(ignored, texture not supported)")
 
     args = parser.parse_args()

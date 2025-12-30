@@ -14,6 +14,16 @@ struct ZoomableImageView<Content: View>: NSViewRepresentable {
     var onDragChange: ((CGPoint, CGPoint) -> Void)?
     var onDragEnd: ((CGPoint, CGPoint) -> Void)?
 
+    // Paint-specific callbacks
+    var onPaintStart: ((CGPoint) -> Void)?
+    var onPaintContinue: ((CGPoint) -> Void)?
+    var onPaintEnd: (() -> Void)?
+
+    // Lasso-specific callbacks (same signature as paint)
+    var onLassoStart: ((CGPoint) -> Void)?
+    var onLassoContinue: ((CGPoint) -> Void)?
+    var onLassoEnd: (() -> Void)?
+
     // Tool mode determines gesture behavior
     var toolMode: SAMTool
 
@@ -28,6 +38,12 @@ struct ZoomableImageView<Content: View>: NSViewRepresentable {
         onDragStart: ((CGPoint) -> Void)? = nil,
         onDragChange: ((CGPoint, CGPoint) -> Void)? = nil,
         onDragEnd: ((CGPoint, CGPoint) -> Void)? = nil,
+        onPaintStart: ((CGPoint) -> Void)? = nil,
+        onPaintContinue: ((CGPoint) -> Void)? = nil,
+        onPaintEnd: (() -> Void)? = nil,
+        onLassoStart: ((CGPoint) -> Void)? = nil,
+        onLassoContinue: ((CGPoint) -> Void)? = nil,
+        onLassoEnd: (() -> Void)? = nil,
         toolMode: SAMTool = .point,
         contentSize: CGSize,
         contentID: String = "",
@@ -38,6 +54,12 @@ struct ZoomableImageView<Content: View>: NSViewRepresentable {
         self.onDragStart = onDragStart
         self.onDragChange = onDragChange
         self.onDragEnd = onDragEnd
+        self.onPaintStart = onPaintStart
+        self.onPaintContinue = onPaintContinue
+        self.onPaintEnd = onPaintEnd
+        self.onLassoStart = onLassoStart
+        self.onLassoContinue = onLassoContinue
+        self.onLassoEnd = onLassoEnd
         self.toolMode = toolMode
         self.contentSize = contentSize
         self.contentID = contentID
@@ -71,6 +93,12 @@ struct ZoomableImageView<Content: View>: NSViewRepresentable {
         canvasView.onDragStart = onDragStart
         canvasView.onDragChange = onDragChange
         canvasView.onDragEnd = onDragEnd
+        canvasView.onPaintStart = onPaintStart
+        canvasView.onPaintContinue = onPaintContinue
+        canvasView.onPaintEnd = onPaintEnd
+        canvasView.onLassoStart = onLassoStart
+        canvasView.onLassoContinue = onLassoContinue
+        canvasView.onLassoEnd = onLassoEnd
 
         // Create hosting view for SwiftUI content
         let hostingView = NSHostingView(rootView: content())
@@ -106,6 +134,12 @@ struct ZoomableImageView<Content: View>: NSViewRepresentable {
         coordinator.canvasView.onDragStart = onDragStart
         coordinator.canvasView.onDragChange = onDragChange
         coordinator.canvasView.onDragEnd = onDragEnd
+        coordinator.canvasView.onPaintStart = onPaintStart
+        coordinator.canvasView.onPaintContinue = onPaintContinue
+        coordinator.canvasView.onPaintEnd = onPaintEnd
+        coordinator.canvasView.onLassoStart = onLassoStart
+        coordinator.canvasView.onLassoContinue = onLassoContinue
+        coordinator.canvasView.onLassoEnd = onLassoEnd
 
         // Update magnification if changed externally
         if abs(scrollView.magnification - magnification) > 0.01 {
@@ -178,7 +212,7 @@ struct ZoomableImageView<Content: View>: NSViewRepresentable {
 
 // MARK: - ImageCanvasView
 
-/// Custom NSView that intercepts mouse events for point/box placement.
+/// Custom NSView that intercepts mouse events for point/box/paint/lasso tools.
 /// Sits between NSScrollView and NSHostingView to handle gestures in AppKit.
 class ImageCanvasView: NSView {
     var toolMode: SAMTool = .point
@@ -187,6 +221,16 @@ class ImageCanvasView: NSView {
     var onDragStart: ((CGPoint) -> Void)?
     var onDragChange: ((CGPoint, CGPoint) -> Void)?
     var onDragEnd: ((CGPoint, CGPoint) -> Void)?
+
+    // Paint-specific callbacks
+    var onPaintStart: ((CGPoint) -> Void)?
+    var onPaintContinue: ((CGPoint) -> Void)?
+    var onPaintEnd: (() -> Void)?
+
+    // Lasso-specific callbacks
+    var onLassoStart: ((CGPoint) -> Void)?
+    var onLassoContinue: ((CGPoint) -> Void)?
+    var onLassoEnd: (() -> Void)?
 
     private var isDragging = false
     private var dragStartPoint: CGPoint?
@@ -197,30 +241,66 @@ class ImageCanvasView: NSView {
         let location = convert(event.locationInWindow, from: nil)
         let normalized = normalizePoint(location)
 
-        if toolMode == .point {
+        switch toolMode {
+        case .point:
             // Single click for point placement
             onTap?(normalized)
-        } else if toolMode == .boundingBox {
+        case .boundingBox:
             // Start drag for bounding box
             isDragging = true
             dragStartPoint = normalized
             onDragStart?(normalized)
+        case .lasso:
+            // Start lasso selection
+            isDragging = true
+            onLassoStart?(normalized)
+        case .paint:
+            // Start paint stroke
+            isDragging = true
+            onPaintStart?(normalized)
         }
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard isDragging, let start = dragStartPoint else { return }
         let location = convert(event.locationInWindow, from: nil)
         let normalized = normalizePoint(location)
-        onDragChange?(start, normalized)
+
+        switch toolMode {
+        case .point:
+            break  // No drag for point mode
+        case .boundingBox:
+            guard isDragging, let start = dragStartPoint else { return }
+            onDragChange?(start, normalized)
+        case .lasso:
+            guard isDragging else { return }
+            onLassoContinue?(normalized)
+        case .paint:
+            guard isDragging else { return }
+            onPaintContinue?(normalized)
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
-        if isDragging, let start = dragStartPoint {
-            let location = convert(event.locationInWindow, from: nil)
-            let normalized = normalizePoint(location)
-            onDragEnd?(start, normalized)
+        let location = convert(event.locationInWindow, from: nil)
+        let normalized = normalizePoint(location)
+
+        switch toolMode {
+        case .point:
+            break
+        case .boundingBox:
+            if isDragging, let start = dragStartPoint {
+                onDragEnd?(start, normalized)
+            }
+        case .lasso:
+            if isDragging {
+                onLassoEnd?()
+            }
+        case .paint:
+            if isDragging {
+                onPaintEnd?()
+            }
         }
+
         isDragging = false
         dragStartPoint = nil
     }
@@ -245,7 +325,9 @@ class ImageCanvasView: NSView {
         switch toolMode {
         case .point:
             NSCursor.pointingHand.set()
-        case .boundingBox:
+        case .boundingBox, .lasso:
+            NSCursor.crosshair.set()
+        case .paint:
             NSCursor.crosshair.set()
         }
     }

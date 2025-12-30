@@ -3,7 +3,7 @@ import SceneKit
 import ModelIO
 import SceneKit.ModelIO
 
-/// Interactive 3D model viewer using SceneKit
+/// Interactive 3D model viewer using SceneKit with improved camera controls
 struct ModelViewer: NSViewRepresentable {
     let modelURL: URL?
 
@@ -13,6 +13,13 @@ struct ModelViewer: NSViewRepresentable {
         scnView.autoenablesDefaultLighting = false  // We use custom lights
         scnView.backgroundColor = NSColor(calibratedWhite: 0.15, alpha: 1.0)
         scnView.antialiasingMode = .multisampling4X
+
+        // Configure camera control behavior for smoother interaction
+        scnView.defaultCameraController.interactionMode = .orbitTurntable
+        scnView.defaultCameraController.inertiaEnabled = true
+        scnView.defaultCameraController.inertiaFriction = 0.9  // Higher = less floaty
+        scnView.defaultCameraController.maximumVerticalAngle = 89  // Prevent gimbal lock
+        scnView.defaultCameraController.minimumVerticalAngle = -89
 
         // Create scene
         let scene = SCNScene()
@@ -60,7 +67,7 @@ struct ModelViewer: NSViewRepresentable {
             context.coordinator.currentModelURL = url
             if let scene = nsView.scene {
                 scene.rootNode.childNodes
-                    .filter { $0.name == "loadedModel" }
+                    .filter { $0.name == "loadedModel" || $0.name == "cameraNode" }
                     .forEach { $0.removeFromParentNode() }
                 loadModel(url: url, into: scene, scnView: nsView)
             }
@@ -131,13 +138,14 @@ struct ModelViewer: NSViewRepresentable {
                     return
                 }
 
-                // Center the model
+                // Center the model at origin
                 let centerX = (min.x + max.x) / 2
                 let centerY = (min.y + max.y) / 2
                 let centerZ = (min.z + max.z) / 2
 
-                // Create a pivot to center
+                // Create a pivot to center the model at origin
                 containerNode.pivot = SCNMatrix4MakeTranslation(centerX, centerY, centerZ)
+                containerNode.position = SCNVector3(0, 0, 0)
 
                 // Scale to fit in a 2-unit box
                 let scale = 2.0 / maxSize
@@ -145,15 +153,25 @@ struct ModelViewer: NSViewRepresentable {
 
                 print("Applied scale: \(scale)")
 
-                // Position camera to see the model
+                // Create camera with proper settings for orbit control
                 let cameraNode = SCNNode()
+                cameraNode.name = "cameraNode"
                 cameraNode.camera = SCNCamera()
                 cameraNode.camera?.automaticallyAdjustsZRange = true
-                cameraNode.camera?.fieldOfView = 60
-                cameraNode.position = SCNVector3(0, 0, 4)
+                cameraNode.camera?.fieldOfView = 45
+                // Set reasonable z-range for zooming
+                cameraNode.camera?.zNear = 0.01
+                cameraNode.camera?.zFar = 1000
+
+                // Position camera at a good viewing distance
+                let cameraDistance: Float = 5.0
+                cameraNode.position = SCNVector3(0, 0, cameraDistance)
                 cameraNode.look(at: SCNVector3(0, 0, 0))
                 scene.rootNode.addChildNode(cameraNode)
                 scnView.pointOfView = cameraNode
+
+                // Set the camera controller's target to the model center
+                scnView.defaultCameraController.target = SCNVector3(0, 0, 0)
 
                 print("Model loaded successfully")
             }
@@ -208,23 +226,11 @@ struct ModelViewerContainer: View {
                 ModelViewer(modelURL: url)
 
                 VStack {
-                    HStack {
-                        Text("Low Quality Preview")
-                            .font(.caption2)
-                            .fontWeight(.semibold)
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.orange.opacity(0.8))
-                            .cornerRadius(6)
-                        Spacer()
-                    }
-                    
                     Spacer()
-                    
+
                     HStack {
                         Spacer()
-                        Text("Drag to rotate")
+                        Text("Drag to rotate • Scroll to zoom")
                             .font(.caption2)
                             .foregroundColor(.white.opacity(0.7))
                             .padding(6)

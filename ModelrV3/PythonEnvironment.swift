@@ -934,7 +934,8 @@ class PythonEnvironment: ObservableObject {
             if let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty {
                 print("[Hunyuan] \(line)")
 
-                // Parse progress
+                // Parse progress with detailed info
+                // tqdm format: "Diffusion Sampling::  50%|█████     | 15/30 [00:06<00:06,  2.26it/s]"
                 if line.contains("Extracting foreground") {
                     progress("Extracting foreground...")
                 } else if line.contains("Loading Hunyuan3D pipeline") {
@@ -942,15 +943,11 @@ class PythonEnvironment: ObservableObject {
                 } else if line.contains("Generating 3D shape") {
                     progress("Generating 3D shape...")
                 } else if line.contains("Diffusion Sampling") {
-                    if let match = line.range(of: #"(\d+)%"#, options: .regularExpression) {
-                        let pct = String(line[match])
-                        progress("Diffusion Sampling: \(pct)")
-                    }
+                    let progressStr = self.parseDetailedProgress(line, stage: "Diffusion Sampling")
+                    progress(progressStr)
                 } else if line.contains("Volume Decoding") {
-                    if let match = line.range(of: #"(\d+)%"#, options: .regularExpression) {
-                        let pct = String(line[match])
-                        progress("Volume Decoding: \(pct)")
-                    }
+                    let progressStr = self.parseDetailedProgress(line, stage: "Volume Decoding")
+                    progress(progressStr)
                 } else if line.contains("Model saved to") {
                     progress("Saving model...")
                 }
@@ -977,6 +974,38 @@ class PythonEnvironment: ObservableObject {
                 completion(.failure(PythonError.predictionFailed("3D generation failed")))
             }
         }
+    }
+
+    /// Parse tqdm-style progress bar output into a structured string
+    /// Input: "Diffusion Sampling::  50%|█████     | 15/30 [00:06<00:06,  2.26it/s]"
+    /// Output: "Diffusion Sampling: 50% (15/30) [2.26 it/s]"
+    private func parseDetailedProgress(_ line: String, stage: String) -> String {
+        var result = stage
+
+        // Extract percentage
+        if let pctMatch = line.range(of: #"\d+%"#, options: .regularExpression) {
+            let pct = String(line[pctMatch])
+            result += ": \(pct)"
+        }
+
+        // Extract step count (e.g., "15/30")
+        if let stepMatch = line.range(of: #"\|\s*(\d+)/(\d+)"#, options: .regularExpression) {
+            let stepPart = String(line[stepMatch])
+            if let numMatch = stepPart.range(of: #"\d+/\d+"#, options: .regularExpression) {
+                result += " (\(String(stepPart[numMatch])))"
+            }
+        }
+
+        // Extract speed (e.g., "2.26it/s" or "2.5s/it")
+        if let speedMatch = line.range(of: #"\d+\.?\d*\s*it/s"#, options: .regularExpression) {
+            let speed = String(line[speedMatch])
+            result += " [\(speed)]"
+        } else if let sitMatch = line.range(of: #"\d+\.?\d*\s*s/it"#, options: .regularExpression) {
+            let speed = String(line[sitMatch])
+            result += " [\(speed)]"
+        }
+
+        return result
     }
 
     // MARK: - Legacy API (for backwards compatibility)
