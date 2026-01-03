@@ -9,8 +9,8 @@ struct LassoOverlay: View {
 
     // SAM2 mask color for segment mode
     private static let segmentColor = Color(red: 50/255, green: 100/255, blue: 200/255)
-    // Red for delete in preprocess mode
-    private static let deleteColor = Color.red
+    // Blue for crop in preprocess mode
+    private static let cropColor = Color.blue
 
     var body: some View {
         Canvas { context, size in
@@ -30,7 +30,7 @@ struct LassoOverlay: View {
     private func drawLasso(_ lasso: LassoSelection, in context: inout GraphicsContext, size: CGSize, isCurrent: Bool) {
         guard lasso.points.count >= 2 else { return }
 
-        let color = isPreprocessMode ? Self.deleteColor : Self.segmentColor
+        let color = isPreprocessMode ? Self.cropColor : Self.segmentColor
 
         // Create path from points
         var path = Path()

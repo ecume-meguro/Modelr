@@ -1,38 +1,37 @@
 [project]
 name = "modelrv3-backend"
 version = "0.1.0"
-# Python dependencies for SAM2 segmentation
-# Each dependency is essential for the segmentation pipeline
+# Python dependencies for SAM3 segmentation (MLX version for Apple Silicon)
 dependencies = [
-    # Core ML framework for model inference and tensor operations
-    # Required for: Model loading, GPU/CPU computation, autograd
-    "torch>=2.0.0,<3.0.0",
-    # Vision utilities for image transforms and preprocessing
-    # Required for: Image normalization, transforms, data augmentation
-    "torchvision>=0.15.0,<1.0.0",
-    # Numerical computing library for array operations
-    # Required for: Image data representation, mask manipulation
-    "numpy>=1.24.0,<2.0.0",
-    # Computer vision library for image I/O and processing
-    # Required for: Image loading, saving, EXIF handling, color conversions
-    "opencv-python>=4.8.0,<5.0.0",
-    # Image processing library for opening, converting, and saving images
-    # Required for: PIL image operations, format conversion, resizing
-    "pillow>=10.0.0,<11.0.0",
-    # Configuration management framework for SAM2 model configs
-    # Required for: Loading SAM2 model configurations (Hiera architectures)
-    "hydra-core>=1.3.0,<2.0.0",
-    # File I/O utilities for remote file access
-    # Required for: Model checkpoint loading from remote URLs
-    "iopath>=0.1.10,<1.0.0",
-    # Meta's Segment Anything Model 2 library (v1.0+ required for SAM2.1 support)
-    # Required for: SAM2 model loading, inference, mask generation
-    "sam2>=1.0.0,<2.0.0",
+    # Apple's ML framework for native Silicon performance
+    "mlx>=0.30.0",
+    # Core ML framework (used by some utilities in MLX SAM3)
+    "torch>=2.9.1",
+    # Vision utilities
+    "torchvision>=0.24.1",
+    # Numerical computing library
+    "numpy>=2.0.0",
+    # Computer vision library
+    "opencv-python>=4.8.0",
+    # Image processing library
+    "pillow>=12.0.0",
+    # File I/O utilities
+    "iopath>=0.1.10",
+    # Text processing for SAM3
+    "ftfy>=6.3.1",
+    # Regular expressions for tokenizer
+    "regex>=2024.0.0",
+    # Hugging Face Hub for model downloads
+    "huggingface-hub>=1.1.6",
+    # Scientific computing
+    "scikit-image>=0.25.0",
+    "scikit-learn>=1.6.0",
+    # MLX SAM3 implementation (local)
+    "mlx-sam3 @ file:///Users/zimengx/Code/MacOS_Utilities/Modelr/v3/mlx-sam3",
     # Retry library for handling transient network errors
-    # Required for: Robust model checkpoint downloads
-    "tenacity>=8.2.0,<9.0.0",
+    "tenacity>=8.2.0",
 ]
-requires-python = ">=3.12,<4.0.0"
+requires-python = ">=3.13"
 
 [tool.uv]
 dev-dependencies = []

@@ -308,6 +308,9 @@ class ImageCanvasView: NSView {
     override func mouseDragged(with event: NSEvent) {
         let location = convert(event.locationInWindow, from: nil)
         let normalized = normalizePoint(location)
+        
+        // Always update mouse moved for cursor previews
+        onMouseMoved?(normalized)
 
         switch toolMode {
         case .point, .polygon:

@@ -432,7 +432,7 @@ final class ModelsTests: XCTestCase {
     func testPreprocessToolCases() throws {
         XCTAssertEqual(PreprocessTool.allCases.count, 2, "Should have 2 preprocess tools")
         XCTAssertTrue(PreprocessTool.allCases.contains(.crop))
-        XCTAssertTrue(PreprocessTool.allCases.contains(.lassoDelete))
+        XCTAssertTrue(PreprocessTool.allCases.contains(.polygonCrop))
     }
 
     // MARK: - SAMRequest Tests

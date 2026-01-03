@@ -11,7 +11,7 @@ struct ModelrV3App: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(autoLoadLatest3DModel: isDebug3DViewer)
+            ContentViewSimple()
         }
     }
 }

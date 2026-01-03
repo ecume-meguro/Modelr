@@ -74,21 +74,6 @@ struct PathManager {
         hunyuanDirectory.appendingPathComponent(AppConstants.hunyuanPyprojectFileName)
     }
     
-    /// Get path for self-test image
-    static var selfTestImagePath: URL {
-        appSupportDirectory.appendingPathComponent(AppConstants.selfTestImageFileName)
-    }
-    
-    /// Get path for correct self-test mask
-    static var correctSelfTestMaskPath: URL {
-        appSupportDirectory.appendingPathComponent(AppConstants.correctSelfTestMaskFileName)
-    }
-    
-    /// Get path for self-test 3D model
-    static var selfTestModelPath: URL {
-        hunyuanDirectory.appendingPathComponent(AppConstants.selfTestModelFileName)
-    }
-    
     /// Get path for mask file
     static var maskFilePath: URL {
         appSupportDirectory.appendingPathComponent(AppConstants.maskFileName)
@@ -152,10 +137,4 @@ struct PathManager {
     }
     
     /// Check if self-test setup is complete
-    static func isSelfTestSetupComplete() -> Bool {
-        return fileExists(at: samWrapperPath) &&
-               fileExists(at: hunyuanWrapperPath) &&
-               fileExists(at: venvDirectory.appendingPathComponent("bin/python")) &&
-               fileExists(at: hunyuanVenvDirectory.appendingPathComponent("bin/python"))
-    }
 }

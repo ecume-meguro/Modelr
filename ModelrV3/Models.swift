@@ -299,14 +299,14 @@ struct PolygonSelection: Identifiable, Equatable, Codable {
 // MARK: - Preprocess Tool Selection
 enum PreprocessTool: String, CaseIterable, Identifiable {
     case crop = "Crop"
-    case lassoDelete = "Lasso Delete"
+    case polygonCrop = "Polygon Crop"
 
     var id: String { rawValue }
 
     var iconName: String {
         switch self {
         case .crop: return "crop"
-        case .lassoDelete: return "lasso.and.sparkles"
+        case .polygonCrop: return "lasso.and.sparkles"
         }
     }
 }
@@ -402,9 +402,10 @@ struct SAMRequest: Codable {
     let points: [[Int]]?  // [[x, y], [x, y], ...]
     let labels: [Int]?    // [1, 1, 0, ...] - 1=foreground, 0=background
     let box: [Int]?       // [x1, y1, x2, y2]
+    let text: String?     // Text prompt for SAM3 (e.g., "dog", "person")
     let model: String?
 
-    init(command: String, imagePath: String? = nil, points: [[Int]]? = nil, labels: [Int]? = nil, box: [Int]? = nil, model: String? = nil) {
+    init(command: String, imagePath: String? = nil, points: [[Int]]? = nil, labels: [Int]? = nil, box: [Int]? = nil, text: String? = nil, model: String? = nil) {
         self.messageId = UUID().uuidString
         self.version = Self.version
         self.command = command
@@ -412,6 +413,7 @@ struct SAMRequest: Codable {
         self.points = points
         self.labels = labels
         self.box = box
+        self.text = text
         self.model = model
     }
 
@@ -472,6 +474,7 @@ struct SAMResponse: Codable {
     let scores: [Double]?     // Confidence scores for each mask
     let selectedIndex: Int?   // Currently selected mask index
     let maskPath: String?     // Legacy single mask path
+    let imagePath: String?    // Path to processed image (e.g. background removed)
     let error: String?
     let inferenceTimeMs: Int?
     let ready: Bool?

@@ -1,12 +1,67 @@
 import SwiftUI
 
-enum SidebarTab: String, CaseIterable {
-    case preprocess = "Preprocess"
-    case segment = "Segment"
-    case generate = "Generate"
+enum WorkflowStep: Int, CaseIterable, Comparable {
+    case input = 0
+    case refine = 1
+    case segment = 2
+    case generate = 3
+
+    var title: String {
+        switch self {
+        case .input: return "Input"
+        case .refine: return "Refine"
+        case .segment: return "Segment"
+        case .generate: return "Generate"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .input: return "photo"
+        case .refine: return "slider.horizontal.3"
+        case .segment: return "square.dashed.inset.filled"
+        case .generate: return "cube.transparent"
+        }
+    }
+
+    static func < (lhs: WorkflowStep, rhs: WorkflowStep) -> Bool {
+        return lhs.rawValue < rhs.rawValue
+    }
 }
 
-struct GenerationProgress: Equatable {
+enum QualityPreset: String, CaseIterable, Identifiable {
+    case fast = "Fast Preview"
+    case standard = "Standard"
+    case high = "High Fidelity"
+
+    var id: String { rawValue }
+
+    var steps: Int {
+        switch self {
+        case .fast: return 30
+        case .standard: return 50
+        case .high: return 100
+        }
+    }
+
+    var resolution: Int {
+        switch self {
+        case .fast: return 128
+        case .standard: return 256
+        case .high: return 512
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .fast: return "Quick results for testing (30 steps, 128 res)"
+        case .standard: return "Balanced quality and speed (50 steps, 256 res)"
+        case .high: return "Best quality, takes longer (100 steps, 512 res)"
+        }
+    }
+}
+
+struct GenerationProgress {
     var stage: String = ""
     var currentStep: Int = 0
     var totalSteps: Int = 0

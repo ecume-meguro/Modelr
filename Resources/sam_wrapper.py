@@ -1,3 +1,18 @@
+#!/usr/bin/env python3
+"""
+MLX SAM3 Wrapper for ModelrV3
+=============================
+
+This module provides a Python wrapper around the MLX SAM3 (Segment Anything Model 3)
+for use with the ModelrV3 macOS application. It supports:
+- Text-based segmentation prompts
+- Point prompts (positive/negative)
+- Box prompts
+- Interactive server mode for persistent session
+
+Optimized for Apple Silicon using MLX framework.
+"""
+
 import os
 import sys
 import json
@@ -6,13 +21,16 @@ import gc
 from typing import Optional, Callable, List, Tuple, Dict, Any
 from pathlib import Path
 
-import torch
 import numpy as np
 import cv2
 from PIL import Image, ImageOps, ImageDraw
-from sam2.build_sam import build_sam2
-from sam2.sam2_image_predictor import SAM2ImagePredictor
 
+# MLX imports
+import mlx.core as mx
+from sam3 import build_sam3_image_model
+from sam3.model.sam3_image_processor import Sam3Processor
+
+# Optional retry library
 try:
     from tenacity import (
         retry,
@@ -20,11 +38,11 @@ try:
         wait_exponential,
         retry_if_exception_type,
     )
-
     TENACITY_AVAILABLE = True
 except ImportError:
     TENACITY_AVAILABLE = False
 
+# Optional core library
 try:
     from modelrv3_core import (
         get_logger,
@@ -44,12 +62,6 @@ try:
         ImageValidationError,
         OutOfMemoryError,
     )
-    from modelrv3_core.download import (
-        download_with_progress,
-        compute_sha256,
-        MAX_DOWNLOAD_SIZE,
-    )
-
     logger = get_logger("sam_wrapper")
 except ImportError:
     logger = None
@@ -57,24 +69,12 @@ except ImportError:
     log_error = lambda x: print(f"ERROR: {x}", file=sys.stderr)
     log_warning = lambda x: print(f"WARNING: {x}", file=sys.stderr)
     log_debug = lambda x: None
-    get_device = lambda: (
-        "mps"
-        if torch.backends.mps.is_available()
-        else "cuda"
-        if torch.cuda.is_available()
-        else "cpu"
-    )
-    check_gpu_available = (
-        lambda: torch.backends.mps.is_available() or torch.cuda.is_available()
-    )
+    get_device = lambda: "mlx"
+    check_gpu_available = lambda: True
     ModelLoadError = Exception
     ImageValidationError = Exception
     OutOfMemoryError = Exception
-    download_with_progress = None
-    compute_sha256 = None
-    MAX_DOWNLOAD_SIZE = 2 * 1024 * 1024 * 1024
 
-    # Fallback validation functions
     def validate_image_path(path: str) -> None:
         """Validate that image path exists and is a supported format."""
         if not os.path.exists(path):
@@ -85,9 +85,8 @@ except ImportError:
 
     def validate_image_dimensions(path: str) -> Tuple[int, int]:
         """Validate image dimensions and return (width, height)."""
-        from PIL import Image as PILImage
-        with PILImage.open(path) as img:
-            return img.size  # Returns (width, height)
+        with Image.open(path) as img:
+            return img.size
 
     def validate_coordinates(
         points: List[List[float]],
@@ -108,7 +107,7 @@ except ImportError:
 
     def health_check() -> Dict[str, Any]:
         """Basic health check."""
-        return {"status": "ok", "gpu_available": check_gpu_available()}
+        return {"status": "ok", "gpu_available": True, "device": "mlx"}
 
     class ModelConfig:
         @staticmethod
@@ -121,182 +120,35 @@ except ImportError:
     metrics = None
 
 
-MODEL_CONFIGS = {
-    "tiny": "configs/sam2.1/sam2.1_hiera_t.yaml",
-    "small": "configs/sam2.1/sam2.1_hiera_s.yaml",
-    "base_plus": "configs/sam2.1/sam2.1_hiera_b+.yaml",
-    "large": "configs/sam2.1/sam2.1_hiera_l.yaml",
-}
-
-MODEL_CHECKPOINTS = {
-    "tiny": "sam2.1_hiera_tiny.pt",
-    "small": "sam2.1_hiera_small.pt",
-    "base_plus": "sam2.1_hiera_base_plus.pt",
-    "large": "sam2.1_hiera_large.pt",
-}
-
-CHECKPOINT_URLS = {
-    "tiny": {
-        "primary": "https://huggingface.co/facebook/sam2.1-hiera-tiny/resolve/main/sam2.1_hiera_tiny.pt",
-        "mirror": "https://github.com/facebookresearch/segment-anything-2/raw/main/checkpoints/sam2.1_hiera_tiny.pt",
-        "checksum": "7402e0d864fa82708a20fbd15bc84245c2f26dff0eb43a4b5b93452deb34be69",
-    },
-    "small": {
-        "primary": "https://huggingface.co/facebook/sam2.1-hiera-small/resolve/main/sam2.1_hiera_small.pt",
-        "mirror": "https://github.com/facebookresearch/segment-anything-2/raw/main/checkpoints/sam2.1_hiera_small.pt",
-        "checksum": "95949964d4e548409021d47b22712d5f1abf2564cc0c3c765ba599a24ac7dce3",
-    },
-    "base_plus": {
-        "primary": "https://huggingface.co/facebook/sam2.1-hiera-base-plus/resolve/main/sam2.1_hiera_base_plus.pt",
-        "mirror": "https://github.com/facebookresearch/segment-anything-2/raw/main/checkpoints/sam2.1_hiera_base_plus.pt",
-        "checksum": "a2345aede8715ab1d5d31b4a509fb160c5a4af1970f199d9054ccfb746c004c5",
-    },
-    "large": {
-        "primary": "https://huggingface.co/facebook/sam2.1-hiera-large/resolve/main/sam2.1_hiera_large.pt",
-        "mirror": "https://github.com/facebookresearch/segment-anything-2/raw/main/checkpoints/sam2.1_hiera_large.pt",
-        "checksum": "8b36b71d5cafc83a0975d14d0afae81c3915804e12cc896b0665eaabcc445d56",
-    },
-}
-
-
-def download_checkpoint(
-    path: str,
-    model_type: str = "base_plus",
-    progress_callback: Optional[Callable[[int, int], None]] = None,
-) -> bool:
-    if os.path.exists(path):
-        log_info(f"Checkpoint already exists: {path}")
-        return True
-
-    config = CHECKPOINT_URLS.get(model_type)
-    if not config:
-        log_error(f"Unknown model type: {model_type}")
-        return False
-
-    log_info(f"Downloading {model_type} checkpoint to {path}...")
-
-    urls_to_try = [("primary", config["primary"]), ("mirror", config["mirror"])]
-
-    for source_name, url in urls_to_try:
-        if not url:
-            continue
-
-        log_info(f"Attempting download from {source_name}: {url}")
-
-        def wrapped_progress_callback(downloaded: int, total: int):
-            if progress_callback:
-                progress_callback(downloaded, total)
-            if total > 0:
-                percent = (downloaded / total) * 100
-                print(
-                    f"\rProgress: {downloaded}/{total} bytes ({percent:.1f}%)",
-                    end="",
-                    file=sys.stderr,
-                )
-            else:
-                print(f"\rProgress: {downloaded} bytes", end="", file=sys.stderr)
-            sys.stderr.flush()
-
-        if download_with_progress and download_with_progress(
-            url, path, wrapped_progress_callback
-        ):
-            print("", file=sys.stderr)
-
-            if "checksum" in config and compute_sha256:
-                log_info("Verifying checksum...")
-                actual_checksum = compute_sha256(path)
-                expected_checksum = config["checksum"]
-
-                if actual_checksum != expected_checksum:
-                    log_error("Checksum mismatch!")
-                    log_error(f"  Expected: {expected_checksum}")
-                    log_error(f"  Got: {actual_checksum}")
-                    os.remove(path)
-                    return False
-                log_info("Checksum verified.")
-
-            log_info("Download complete.")
-            return True
-
-        log_warning(f"Failed to download from {source_name}.")
-        if os.path.exists(path):
-            os.remove(path)
-
-    log_error("All download sources failed.")
-    return False
-
-
-def get_checkpoint_path(model_type: str, script_dir: str) -> str:
-    checkpoint_name = MODEL_CHECKPOINTS.get(model_type, "sam2.1_hiera_tiny.pt")
-
-    try:
-        checkpoint_dir = (
-            ModelConfig.get_checkpoint_dir()
-            if logger
-            else os.path.join(script_dir, "checkpoints")
-        )
-    except:
-        checkpoint_dir = os.path.join(script_dir, "checkpoints")
-
-    checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
-    os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-    return checkpoint_path
-
-
 class ModelManager:
-    def __init__(self, model_type: str = "base_plus", script_dir: str = ""):
+    """Manages MLX SAM3 model lifecycle."""
+    
+    def __init__(self, model_type: str = "default", script_dir: str = ""):
         self.model_type = model_type
         self.script_dir = script_dir
-        self.predictor: Optional[SAM2ImagePredictor] = None
-        self.device: Optional[str] = None
+        self.model = None
+        self.processor: Optional[Sam3Processor] = None
+        self.device: str = "mlx"
 
-    def load(self) -> Tuple[SAM2ImagePredictor, str]:
+    def load(self) -> Tuple[Sam3Processor, str]:
+        """Load the MLX SAM3 model."""
         try:
-            model_cfg = MODEL_CONFIGS.get(
-                self.model_type, "configs/sam2.1/sam2.1_hiera_t.yaml"
-            )
-            checkpoint_path = get_checkpoint_path(self.model_type, self.script_dir)
+            log_info("Building MLX SAM3 model...")
+            
+            # Build MLX SAM3 - weights auto-download from HuggingFace
+            self.model = build_sam3_image_model()
+            self.processor = Sam3Processor(self.model, confidence_threshold=0.5)
 
-            if not download_checkpoint(checkpoint_path, self.model_type):
-                raise ModelLoadError(
-                    f"Failed to download checkpoint for model type: {self.model_type}"
-                )
+            log_info("MLX SAM3 Model loaded successfully on Apple Silicon")
+            return self.processor, self.device
 
-            try:
-                self.device = get_device()
-            except:
-                self.device = "mps" if torch.backends.mps.is_available() else "cpu"
-
-            log_info(
-                f"Building SAM2 model (type={self.model_type}, device={self.device})..."
-            )
-            model = build_sam2(model_cfg, checkpoint_path, device=self.device)
-            self.predictor = SAM2ImagePredictor(model)
-
-            log_info(f"Model loaded successfully on {self.device}")
-            return self.predictor, self.device
-
-        except RuntimeError as e:
-            if "out of memory" in str(e).lower():
-                raise OutOfMemoryError(f"GPU memory exhausted: {e}")
-            raise ModelLoadError(f"Failed to load model: {e}")
         except Exception as e:
-            raise ModelLoadError(f"Unexpected error loading model: {e}")
+            raise ModelLoadError(f"Failed to load MLX model: {e}")
 
     def cleanup(self) -> None:
-        if self.predictor is not None:
-            try:
-                del self.predictor
-                self.predictor = None
-            except Exception as e:
-                log_warning(f"Error during predictor cleanup: {e}")
-
-        if torch.cuda.is_available():
-            try:
-                torch.cuda.empty_cache()
-            except Exception as e:
-                log_warning(f"Error clearing CUDA cache: {e}")
-
+        """Cleanup model resources."""
+        self.processor = None
+        self.model = None
         gc.collect()
         log_debug("Model cleanup complete")
 
@@ -309,22 +161,31 @@ class ModelManager:
 
 
 def load_predictor(
-    model_type: str,
-    script_dir: str,
+    model_type: str = "default",
+    script_dir: str = "",
     progress_callback: Optional[Callable[[int, int], None]] = None,
-) -> Tuple[SAM2ImagePredictor, str]:
+) -> Tuple[Sam3Processor, str]:
+    """Load the SAM3 predictor."""
     manager = ModelManager(model_type, script_dir)
-    predictor, device = manager.load()
-    return predictor, device
+    return manager.load()
 
 
 def save_mask(mask: np.ndarray, output_path: str) -> str:
     """Save mask as RGBA PNG with alpha channel."""
     try:
+        # Handle MLX arrays
+        if hasattr(mask, 'tolist'):
+            mask = np.array(mask)
+        
+        # Squeeze extra dimensions
+        while len(mask.shape) > 2:
+            mask = mask.squeeze(0)
+        
         mask_255 = (mask * 255).astype(np.uint8)
         h_mask, w_mask = mask_255.shape
 
-        b, g, r, a = (50, 100, 200, 255) if logger else (200, 100, 50, 255)
+        # Blue-ish mask color (BGRA for OpenCV)
+        b, g, r = 200, 100, 50
 
         rgba = np.zeros((h_mask, w_mask, 4), dtype=np.uint8)
         rgba[:, :, 0] = b
@@ -347,26 +208,29 @@ def save_debug_image(
     box: Optional[List[float]],
     output_dir: str,
 ) -> str:
-    """Save a debug image with click points and box marked."""
+    """Save debug visualization with points and boxes."""
     try:
         debug_img = Image.fromarray(image_np)
         draw = ImageDraw.Draw(debug_img)
-
-        r = 15
-        for x, y in points:
-            draw.ellipse([x - r, y - r, x + r, y + r], outline="lime", width=3)
-            draw.line([x - r, y, x + r, y], fill="lime", width=2)
-            draw.line([x, y - r, x, y + r], fill="lime", width=2)
-
-        if box is not None:
-            x1, y1, x2, y2 = box
-            draw.rectangle([x1, y1, x2, y2], outline="cyan", width=3)
-
+        
+        # Draw points
+        point_radius = 15
+        for point in points:
+            if len(point) >= 2:
+                x, y = point[0], point[1]
+                draw.ellipse(
+                    [x - point_radius, y - point_radius, x + point_radius, y + point_radius],
+                    outline="lime",
+                    width=3,
+                )
+        
+        # Draw box
+        if box is not None and len(box) >= 4:
+            draw.rectangle(box[:4], outline="cyan", width=3)
+        
         os.makedirs(output_dir, exist_ok=True)
         debug_path = os.path.join(output_dir, "debug_click_point.png")
         debug_img.save(debug_path)
-
-        log_debug(f"Debug image saved to: {debug_path}")
         return debug_path
     except Exception as e:
         log_warning(f"Failed to save debug image: {e}")
@@ -374,377 +238,263 @@ def save_debug_image(
 
 
 def server_mode(model_type: str, script_dir: str, output_dir: str) -> None:
-    """Persistent server mode for fast iterative refinement."""
-    log_info(f"Starting SAM2 server mode (model_type={model_type})")
-
+    """
+    Run in server mode, processing JSON commands from stdin.
+    
+    Commands:
+    - set_image: Load an image for segmentation
+    - predict: Run segmentation with text/point/box prompts
+    - ping: Health check
+    - exit: Shutdown server
+    """
+    log_info(f"Starting MLX SAM3 server mode")
+    
     try:
-        if not check_gpu_available():
-            log_warning("No GPU available, inference will be slower")
-
-        print(f"Loading SAM2 model ({model_type})...", file=sys.stderr)
-        predictor, device = load_predictor(model_type, script_dir)
-        print(f"Model loaded on {device}", file=sys.stderr)
-        log_info(f"Model loaded on {device}")
-
-        current_image_path: Optional[str] = None
+        processor, device = load_predictor(model_type, script_dir)
         current_image_np: Optional[np.ndarray] = None
         image_set = False
+        inference_state: Optional[Dict] = None
 
-        response = {"success": True, "ready": True}
-        print(json.dumps(response), flush=True)
+        # Signal ready
+        print(json.dumps({"success": True, "ready": True, "device": device}), flush=True)
 
         for line in sys.stdin:
             line = line.strip()
             if not line:
                 continue
-
+            
             try:
                 request = json.loads(line)
                 command = request.get("command", "")
 
                 if command == "set_image":
                     image_path = request.get("imagePath")
-                    if not image_path:
-                        response = {"success": False, "error": "Image path is required"}
-                    elif not os.path.exists(image_path):
-                        response = {
-                            "success": False,
-                            "error": f"Image not found: {image_path}",
-                        }
+                    if not image_path or not os.path.exists(image_path):
+                        response = {"success": False, "error": "Image not found"}
                     else:
                         try:
-                            validate_image_path(image_path)
-                            width, height = validate_image_dimensions(image_path)
-
+                            # Load and preprocess image
                             image = ImageOps.exif_transpose(Image.open(image_path))
                             current_image_np = np.array(image.convert("RGB"))
-                            current_image_path = image_path
-
-                            with torch.inference_mode():
-                                predictor.set_image(current_image_np)
-
+                            
+                            # Set image in processor (computes backbone features)
+                            inference_state = processor.set_image(image)
                             image_set = True
+                            
                             h, w = current_image_np.shape[:2]
-                            response = {
-                                "success": True,
-                                "imagePath": image_path,
-                                "width": w,
-                                "height": h,
-                            }
-                            log_info(f"Image set: {image_path} ({w}x{h})")
+                            response = {"success": True, "width": w, "height": h}
                         except Exception as e:
-                            response = {
-                                "success": False,
-                                "error": f"Failed to load image: {str(e)}",
-                            }
-                            log_error(f"Failed to set image: {e}")
+                            response = {"success": False, "error": str(e)}
 
                 elif command == "predict":
-                    if not image_set:
-                        response = {
-                            "success": False,
-                            "error": "No image set. Call set_image first.",
-                        }
+                    if not image_set or inference_state is None:
+                        response = {"success": False, "error": "No image set"}
                     else:
                         start_time = time.time()
-
+                        
                         points = request.get("points", [])
                         labels = request.get("labels", [])
                         box = request.get("box")
+                        text_prompt = request.get("text")
 
                         try:
-                            if current_image_np is not None:
-                                validate_coordinates(
-                                    points,
-                                    box,
-                                    current_image_np.shape[1],
-                                    current_image_np.shape[0],
+                            # Reset prompts for new prediction
+                            processor.reset_all_prompts(inference_state)
+                            
+                            h, w = current_image_np.shape[:2]
+                            
+                            # Apply text prompt if provided
+                            if text_prompt:
+                                inference_state = processor.set_text_prompt(
+                                    text_prompt, inference_state
                                 )
-
-                            input_points = np.array(points) if points else None
-                            if labels and len(labels) == len(points):
-                                input_labels = np.array(labels, dtype=np.int32)
+                            
+                            # Apply point prompts (normalized to [0,1])
+                            for pt, label in zip(points, labels):
+                                normalized_pt = [pt[0] / w, pt[1] / h]
+                                inference_state = processor.add_point_prompt(
+                                    normalized_pt, int(label), inference_state
+                                )
+                            
+                            # Apply box prompt (convert to center format, normalized)
+                            if box and len(box) >= 4:
+                                x1, y1, x2, y2 = box[:4]
+                                cx = (x1 + x2) / 2 / w
+                                cy = (y1 + y2) / 2 / h
+                                bw = (x2 - x1) / w
+                                bh = (y2 - y1) / h
+                                inference_state = processor.add_geometric_prompt(
+                                    [cx, cy, bw, bh], True, inference_state
+                                )
+                            
+                            # Get results
+                            masks = inference_state.get("masks")
+                            scores = inference_state.get("scores")
+                            
+                            if masks is None or scores is None:
+                                response = {"success": False, "error": "No masks generated"}
                             else:
-                                input_labels = (
-                                    np.ones(len(points), dtype=np.int32)
-                                    if points
-                                    else None
-                                )
-                            input_box = np.array(box) if box else None
+                                # Convert MLX arrays to numpy
+                                masks_np = np.array(masks)
+                                scores_np = np.array(scores)
+                                
+                                # Ensure correct shape
+                                if len(masks_np.shape) == 2:
+                                    masks_np = masks_np[None, ...]
+                                
+                                # Save masks
+                                mask_paths = []
+                                for i in range(len(masks_np)):
+                                    mask_path = os.path.join(output_dir, f"mask_{i}.png")
+                                    save_mask(masks_np[i], mask_path)
+                                    mask_paths.append(mask_path)
+                                
+                                # Save debug image
+                                save_debug_image(current_image_np, points, box, output_dir)
+                                
+                                # Sort by score descending
+                                indices = np.argsort(scores_np)[::-1].tolist()
+                                
+                                inference_time = int((time.time() - start_time) * 1000)
+                                
+                                response = {
+                                    "success": True,
+                                    "masks": [mask_paths[i] for i in indices],
+                                    "scores": [float(scores_np[i]) for i in indices],
+                                    "selectedIndex": 0,
+                                    "inferenceTimeMs": inference_time
+                                }
 
-                            with torch.inference_mode():
-                                masks, scores, low_res_logits = predictor.predict(
-                                    point_coords=input_points,
-                                    point_labels=input_labels,
-                                    box=input_box,
-                                    multimask_output=True,
-                                )
-
-                            mask_paths = []
-                            for i, mask in enumerate(masks):
-                                mask_path = os.path.join(output_dir, f"mask_{i}.png")
-                                save_mask(mask, mask_path)
-                                mask_paths.append(mask_path)
-
-                            if current_image_np is not None:
-                                save_debug_image(
-                                    current_image_np, points or [], box, output_dir
-                                )
-
-                            # Generate confidence heatmap from best mask's logits
-                            confidence_map_path = None
-                            try:
-                                import torch.nn.functional as F
-
-                                best_idx = np.argmax(scores)
-                                # low_res_logits shape: (num_masks, 1, H, W) where H,W are low-res
-                                logits = low_res_logits[best_idx]  # Shape: (1, H, W)
-
-                                # Convert to tensor and upsample to image size
-                                logits_tensor = torch.from_numpy(logits).float()
-                                if len(logits_tensor.shape) == 2:
-                                    logits_tensor = logits_tensor.unsqueeze(0).unsqueeze(0)
-                                elif len(logits_tensor.shape) == 3:
-                                    logits_tensor = logits_tensor.unsqueeze(0)
-
-                                h, w = current_image_np.shape[:2]
-                                upsampled = F.interpolate(
-                                    logits_tensor,
-                                    size=(h, w),
-                                    mode='bilinear',
-                                    align_corners=False
-                                ).squeeze()
-
-                                # Apply sigmoid to get probability, then convert to colormap
-                                confidence = torch.sigmoid(upsampled).numpy()
-
-                                # Create a heatmap: blue (low confidence) -> red (high confidence)
-                                # Using a simple colormap
-                                confidence_uint8 = (confidence * 255).astype(np.uint8)
-
-                                # Apply colormap (COLORMAP_JET: blue->green->yellow->red)
-                                heatmap = cv2.applyColorMap(confidence_uint8, cv2.COLORMAP_JET)
-
-                                # Make it semi-transparent by adding alpha channel
-                                # Alpha = confidence level (more confident = more visible)
-                                alpha = (confidence * 200 + 55).astype(np.uint8)  # Range 55-255
-                                heatmap_rgba = np.dstack([heatmap, alpha])
-
-                                confidence_map_path = os.path.join(output_dir, "confidence_map.png")
-                                cv2.imwrite(confidence_map_path, heatmap_rgba)
-                                log_debug(f"Confidence map saved to: {confidence_map_path}")
-                            except Exception as e:
-                                log_warning(f"Failed to generate confidence map: {e}")
-
-                            elapsed_ms = int((time.time() - start_time) * 1000)
-
-                            sorted_indices = np.argsort(scores)[::-1].tolist()
-                            sorted_mask_paths = [mask_paths[i] for i in sorted_indices]
-                            sorted_scores = [float(scores[i]) for i in sorted_indices]
-
-                            response = {
-                                "success": True,
-                                "masks": sorted_mask_paths,
-                                "scores": sorted_scores,
-                                "selectedIndex": 0,
-                                "inferenceTimeMs": elapsed_ms,
-                                "confidenceMapPath": confidence_map_path,
-                            }
-                            log_info(
-                                f"Prediction complete: top score={sorted_scores[0]:.4f}, time={elapsed_ms}ms, masks={len(masks)}"
-                            )
                         except Exception as e:
+                            log_error(f"Prediction error: {e}")
+                            import traceback
+                            traceback.print_exc()
                             response = {"success": False, "error": str(e)}
-                            log_error(f"Prediction failed: {e}")
 
-                elif command == "reset":
-                    current_image_path = None
-                    current_image_np = None
-                    image_set = False
-                    predictor.reset_predictor()
-                    response = {"success": True}
-                    log_info("Predictor reset")
+                elif command == "ping":
+                    response = {"success": True, "status": "pong", "device": device}
 
-                elif command == "health":
-                    try:
-                        response = health_check()
-                    except:
-                        response = {
-                            "status": "unknown",
-                            "error": "Health check unavailable",
-                        }
+                elif command == "exit":
+                    response = {"success": True, "status": "exiting"}
+                    print(json.dumps(response), flush=True)
+                    break
 
                 else:
-                    response = {
-                        "success": False,
-                        "error": f"Unknown command: {command}",
-                    }
+                    response = {"success": False, "error": f"Unknown command: {command}"}
+
+                print(json.dumps(response), flush=True)
 
             except json.JSONDecodeError as e:
-                response = {"success": False, "error": f"Invalid JSON: {str(e)}"}
-                log_error(f"JSON decode error: {e}")
+                error_response = {"success": False, "error": f"Invalid JSON: {e}"}
+                print(json.dumps(error_response), flush=True)
             except Exception as e:
-                response = {"success": False, "error": str(e)}
-                log_error(f"Unexpected error in server mode: {e}")
+                log_error(f"Request handling error: {e}")
+                error_response = {"success": False, "error": str(e)}
+                print(json.dumps(error_response), flush=True)
 
-            print(json.dumps(response), flush=True)
-
-    except KeyboardInterrupt:
-        log_info("Server mode interrupted by user")
     except Exception as e:
-        log_error(f"Fatal error in server mode: {e}")
+        log_error(f"Fatal server error: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 
-def cli_mode() -> None:
-    """Original CLI mode for backwards compatibility."""
-    model_type = "tiny"
-    for i, arg in enumerate(sys.argv):
-        if arg == "--model" and i + 1 < len(sys.argv):
-            model_type = sys.argv[i + 1]
-            break
-
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-
-    if "--test" in sys.argv:
-        run_self_test(model_type, script_dir)
-        sys.exit(0)
-
-    pos_args = []
-    skip_next = False
-    for i, arg in enumerate(sys.argv[1:]):
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == "--model":
-            skip_next = True
-            continue
-        pos_args.append(arg)
-
-    if len(pos_args) < 3:
-        print(
-            "Usage: python sam_wrapper.py [--model type] <image_path> <x> <y> [output_path]"
-        )
-        sys.exit(1)
-
-    image_path = pos_args[0]
-    x = int(pos_args[1])
-    y = int(pos_args[2])
-    output_path = pos_args[3] if len(pos_args) > 3 else "mask.png"
-
+def cli_mode():
+    """Run in CLI mode for single-shot segmentation."""
+    if len(sys.argv) < 4:
+        print("Usage: sam_wrapper.py <image> <x> <y> [output]")
+        print("       sam_wrapper.py <image> --text <prompt> [output]")
+        return
+    
+    image_path = sys.argv[1]
+    output_path = "mask.png"
+    
     try:
-        validate_image_path(image_path)
-        width, height = validate_image_dimensions(image_path)
-
-        print(f"Loading model (Hiera {model_type.replace('_', ' ').title()})...")
-        predictor, device = load_predictor(model_type, script_dir)
-
-        print(f"Processing image: {image_path}")
+        processor, device = load_predictor("default", ".")
         image = ImageOps.exif_transpose(Image.open(image_path))
-        image_np = np.array(image.convert("RGB"))
-
-        validate_coordinates([[x, y]], None, width, height)
-
-        print(f"Image dimensions: {width}x{height} (WxH)")
-        print(f"Click coordinates: ({x}, {y})")
-
-        if x < 0 or x >= width or y < 0 or y >= height:
-            log_warning(f"Coordinates ({x}, {y}) are outside image bounds")
-
-        output_dir = (
-            os.path.dirname(output_path) if os.path.dirname(output_path) else "."
-        )
-        save_debug_image(image_np, [[x, y]], None, output_dir)
-
-        with torch.inference_mode():
-            predictor.set_image(image_np)
-
-            masks, scores, _ = predictor.predict(
-                point_coords=np.array([[x, y]]),
-                point_labels=np.array([1]),
-                multimask_output=True,
-            )
-
-        best_idx = np.argmax(scores)
-        mask = masks[best_idx]
-        print(f"Selected mask {best_idx} with score {scores[best_idx]:.4f}")
-        print(f"All scores: {[f'{s:.4f}' for s in scores]}")
-
-        save_mask(mask, output_path)
-        print(f"Mask saved to {output_path}")
-
+        w, h = image.size
+        
+        state = processor.set_image(image)
+        
+        # Check for text mode
+        if "--text" in sys.argv:
+            text_idx = sys.argv.index("--text")
+            if text_idx + 1 < len(sys.argv):
+                text_prompt = sys.argv[text_idx + 1]
+                state = processor.set_text_prompt(text_prompt, state)
+                if text_idx + 2 < len(sys.argv):
+                    output_path = sys.argv[text_idx + 2]
+        else:
+            # Point mode
+            x, y = int(sys.argv[2]), int(sys.argv[3])
+            if len(sys.argv) > 4:
+                output_path = sys.argv[4]
+            state = processor.add_point_prompt([x/w, y/h], 1, state)
+        
+        masks = np.array(state.get("masks", []))
+        if len(masks) > 0:
+            save_mask(masks[0], output_path)
+            print(f"Saved mask to {output_path}")
+        else:
+            print("No masks generated")
+            
     except Exception as e:
-        log_error(f"CLI mode failed: {e}")
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def test_mode():
+    """Run self-test to verify model loading."""
+    print("=" * 50)
+    print("MLX SAM3 Self-Test")
+    print("=" * 50)
+    
+    try:
+        print("\n[1/3] Loading model...")
+        start = time.time()
+        processor, device = load_predictor("default", ".")
+        load_time = time.time() - start
+        print(f"✓ Model loaded in {load_time:.2f}s on {device}")
+        
+        print("\n[2/3] Testing image processing...")
+        # Create a test image
+        test_img = Image.new("RGB", (512, 512), color=(128, 128, 128))
+        start = time.time()
+        state = processor.set_image(test_img)
+        img_time = time.time() - start
+        print(f"✓ Image processing completed in {img_time:.2f}s")
+        
+        print("\n[3/3] Testing text prompt...")
+        start = time.time()
+        state = processor.set_text_prompt("object", state)
+        prompt_time = time.time() - start
+        
+        masks = state.get("masks")
+        scores = state.get("scores")
+        print(f"✓ Text prompt inference in {prompt_time:.2f}s")
+        if masks is not None:
+            print(f"  → Generated {len(np.array(masks))} mask(s)")
+        
+        print("\n" + "=" * 50)
+        print("All tests passed! MLX SAM3 is ready.")
+        print("=" * 50)
+        
+    except Exception as e:
+        print(f"\n✗ Test failed: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
-
-
-def run_self_test(model_type: str, script_dir: str) -> None:
-    """Run self-test with optional image."""
-    print(f"Model: SAM2 (Hiera {model_type.replace('_', ' ').title()})")
-    print("Checking for model checkpoint...")
-
-    predictor, device = load_predictor(model_type, script_dir)
-    print(f"Self-test: Model loaded successfully on {device}")
-
-    test_img_path = None
-    for i, arg in enumerate(sys.argv):
-        if arg == "--test" and i + 1 < len(sys.argv):
-            test_img_path = sys.argv[i + 1]
-
-    if test_img_path and os.path.exists(test_img_path):
-        try:
-            validate_image_path(test_img_path)
-
-            print(f"Testing segmentation model on {test_img_path}...")
-            image = ImageOps.exif_transpose(Image.open(test_img_path))
-            w, h = image.size
-            print(f"Image dimensions: {w}x{h}")
-
-            image_np = np.array(image.convert("RGB"))
-
-            with torch.inference_mode():
-                predictor.set_image(image_np)
-
-                cx, cy = 700, h - 700
-                masks, scores, _ = predictor.predict(
-                    point_coords=np.array([[cx, cy]]),
-                    point_labels=np.array([1]),
-                    multimask_output=True,
-                )
-
-            best_idx = np.argmax(scores)
-            mask = masks[best_idx]
-            print(f"Best mask index: {best_idx}, score: {scores[best_idx]:.4f}")
-            print(
-                f"Mask shape: {mask.shape}, coverage: {mask.sum() / mask.size * 100:.1f}%"
-            )
-
-            output_mask_path = os.path.join(
-                os.path.dirname(test_img_path), "self_test_mask.png"
-            )
-            save_mask(mask, output_mask_path)
-            print(f"Visual self-test complete. Mask saved to {output_mask_path}")
-        except Exception as e:
-            log_error(f"Self-test failed: {e}")
-            raise
 
 
 if __name__ == "__main__":
     if "--server" in sys.argv:
-        model_type = "tiny"
-        for i, arg in enumerate(sys.argv):
-            if arg == "--model" and i + 1 < len(sys.argv):
-                model_type = sys.argv[i + 1]
-                break
-
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-
-        output_dir = script_dir
+        output_dir = "."
         for i, arg in enumerate(sys.argv):
             if arg == "--output-dir" and i + 1 < len(sys.argv):
                 output_dir = sys.argv[i + 1]
-                break
-
-        server_mode(model_type, script_dir, output_dir)
+        server_mode("default", ".", output_dir)
+    elif "--test" in sys.argv:
+        test_mode()
     else:
         cli_mode()

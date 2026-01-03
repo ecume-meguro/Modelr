@@ -8,6 +8,7 @@ protocol PythonServiceProtocol: ObservableObject {
     func setImage(path: String) async throws -> CGSize
     func setImageIfNeeded(path: String) async throws -> CGSize
     func predict(points: [SAMPoint], box: SAMBox?, imageSize: CGSize) async throws -> (masks: [URL], primaryMask: URL, scores: [Double], confidenceMap: URL?)
+    func removeBackground() async throws -> URL
     func resetPredictor() async throws
     func generate3DModel(
         imagePath: String,

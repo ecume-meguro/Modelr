@@ -69,7 +69,7 @@ struct ContentView: View {
 
     // Tool state
     @State private var selectedTool: SAMTool = .point
-    @State private var selectedTab: SidebarTab = .preprocess
+    @State private var currentStep: WorkflowStep = .input
 
     // Skip segmentation mode (for pre-cutout images)
     @State private var skipSegmentation: Bool = false
@@ -86,7 +86,8 @@ struct ContentView: View {
     @State private var magnification: CGFloat = 1.0
 
     // Generate state
-    @State private var generateSteps: Double = 30
+    @State private var selectedQualityPreset: QualityPreset = .standard
+    @State private var generateSteps: Double = 50
     @State private var generateResolution: Double = 256
     @State private var isGenerating = false
     @State private var generationProgress = GenerationProgress()
@@ -96,9 +97,6 @@ struct ContentView: View {
     
     // Model selection for 3D generation
     @State private var selectedGeneratorModel: GeneratorModel = .hunyuan
-    // SF3D-specific parameters
-    @State private var sf3dTextureResolution: Double = 1024
-    @State private var sf3dRemeshOption: String = "none"
 
     // Performance optimization: dirty flag for mask to avoid unnecessary file writes
     @State private var maskIsDirty = false
@@ -111,80 +109,119 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if !env.isSetup {
-                SplashScreenView(env: env)
-            } else {
-                mainEditorView
+            // Workflow Progress Bar (Header)
+            ZStack {
+                Color(NSColor.windowBackgroundColor)
+                
+                WorkflowProgressBar(currentStep: $currentStep, canMoveToNext: canMoveToNextStep)
+                    .padding(.vertical, 12)
             }
+            .frame(height: 100) // Fixed height for the header area
+            .zIndex(1)
+            
+            Divider()
+            
+            mainEditorView
         }
         .frame(minWidth: 1000, minHeight: 700)
+        .toolbar {
+            editorToolbar
+        }
         // Re-inference triggers - combined for efficiency
         .onChange(of: selectedPoints.count) { _, _ in triggerReInference() }
         .onChange(of: boundingBoxes.count) { _, _ in triggerReInference() }
         .onChange(of: lassoSelections.count) { _, _ in triggerReInference() }
-        // State persistence for tab switching
-        .onChange(of: selectedTab) { oldTab, newTab in
-            if oldTab == .segment && newTab != .segment {
+        // State persistence for step switching
+        .onChange(of: currentStep) { oldStep, newStep in
+            if oldStep == .segment && newStep != .segment {
                 saveSegmentationState()
             }
-            if newTab == .segment && oldTab != .segment {
+            if newStep == .segment && oldStep != .segment {
                 restoreSegmentationState()
             }
         }
-        // Keyboard shortcuts
-        .background(
-            Group {
-                // Undo: Cmd+Z
-                Button("") { performUndo() }
-                    .keyboardShortcut("z", modifiers: .command)
-                    .opacity(0)
+        .background(keyboardShortcuts)
+    }
 
-                // Redo: Cmd+Shift+Z
-                Button("") { performRedo() }
-                    .keyboardShortcut("z", modifiers: [.command, .shift])
-                    .opacity(0)
+    private var canMoveToNextStep: Bool {
+        switch currentStep {
+        case .input:
+            return inputImage != nil
+        case .refine:
+            return inputImage != nil
+        case .segment:
+            return maskImage != nil || skipSegmentation
+        case .generate:
+            return false
+        }
+    }
 
-                // Tool shortcuts (1-4)
-                Button("") { if selectedTab == .segment { selectedTool = .point } }
-                    .keyboardShortcut("1", modifiers: [])
-                    .opacity(0)
-
-                Button("") { if selectedTab == .segment { selectedTool = .boundingBox } }
-                    .keyboardShortcut("2", modifiers: [])
-                    .opacity(0)
-
-                Button("") { if selectedTab == .segment { selectedTool = .lasso } }
-                    .keyboardShortcut("3", modifiers: [])
-                    .opacity(0)
-
-                Button("") { if selectedTab == .segment { selectedTool = .paint } }
-                    .keyboardShortcut("4", modifiers: [])
-                    .opacity(0)
-
-                Button("") { if selectedTab == .segment { selectedTool = .polygon } }
-                    .keyboardShortcut("5", modifiers: [])
-                    .opacity(0)
-
-                // Delete selected annotation: Backspace/Delete
-                Button("") { deleteSelectedAnnotation() }
-                    .keyboardShortcut(.delete, modifiers: [])
-                    .opacity(0)
-
-                // Cancel polygon drawing: Escape
-                Button("") { cancelPolygon() }
-                    .keyboardShortcut(.escape, modifiers: [])
-                    .opacity(0)
-
-                // Toggle erase mode: E
-                Button("") { if selectedTool == .paint { isErasing.toggle() } }
-                    .keyboardShortcut("e", modifiers: [])
-                    .opacity(0)
+    @ToolbarContentBuilder
+    private var editorToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .navigation) {
+            if inputImage != nil {
+                Button(action: clearAll) {
+                    Label("New", systemImage: "plus")
+                }
+                .help("Clear current image")
             }
-        )
-        .onAppear {
-            if autoLoadLatest3DModel {
-                loadLatest3DModelForDebug()
-            }
+        }
+        
+        // Principal item removed as WorkflowProgressBar is now in the main view
+        ToolbarItem(placement: .principal) {
+            Text("Modelr")
+                .font(.headline)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private var keyboardShortcuts: some View {
+        Group {
+            // Undo: Cmd+Z
+            Button("") { performUndo() }
+                .keyboardShortcut("z", modifiers: .command)
+                .opacity(0)
+
+            // Redo: Cmd+Shift+Z
+            Button("") { performRedo() }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .opacity(0)
+
+            // Tool shortcuts (1-4)
+            Button("") { if currentStep == .segment { selectedTool = .point } }
+                .keyboardShortcut("1", modifiers: [])
+                .opacity(0)
+
+            Button("") { if currentStep == .segment { selectedTool = .boundingBox } }
+                .keyboardShortcut("2", modifiers: [])
+                .opacity(0)
+
+            Button("") { if currentStep == .segment { selectedTool = .lasso } }
+                .keyboardShortcut("3", modifiers: [])
+                .opacity(0)
+
+            Button("") { if currentStep == .segment { selectedTool = .paint } }
+                .keyboardShortcut("4", modifiers: [])
+                .opacity(0)
+
+            Button("") { if currentStep == .segment { selectedTool = .polygon } }
+                .keyboardShortcut("5", modifiers: [])
+                .opacity(0)
+
+            // Delete selected annotation: Backspace/Delete
+            Button("") { deleteSelectedAnnotation() }
+                .keyboardShortcut(.delete, modifiers: [])
+                .opacity(0)
+
+            // Cancel polygon drawing: Escape
+            Button("") { cancelPolygon() }
+                .keyboardShortcut(.escape, modifiers: [])
+                .opacity(0)
+
+            // Toggle erase mode: E
+            Button("") { if selectedTool == .paint { isErasing.toggle() } }
+                .keyboardShortcut("e", modifiers: [])
+                .opacity(0)
         }
     }
 
@@ -196,11 +233,9 @@ struct ContentView: View {
             imageArea
                 .frame(minWidth: 500)
 
-            // Right: Sidebar (30%) - only show when image loaded
-            if inputImage != nil {
-                sidebarView
-                    .frame(minWidth: 280, maxWidth: 350)
-            }
+            // Right: Sidebar (30%)
+            sidebarView
+                .frame(minWidth: 280, maxWidth: 350)
         }
     }
 
@@ -225,15 +260,17 @@ struct ContentView: View {
         return size
     }
 
-    // Map current tab/tool to SAMTool for ZoomableImageView
+    // Map current step/tool to SAMTool for ZoomableImageView
     private var effectiveToolMode: SAMTool {
-        switch selectedTab {
-        case .preprocess:
-            // Map preprocess tools to equivalent SAMTool gestures
+        switch currentStep {
+        case .input:
+            return .point // Not used
+        case .refine:
+            // Map refine tools to equivalent SAMTool gestures
             switch selectedPreprocessTool {
             case .crop:
                 return .boundingBox  // Uses drag for rectangle
-            case .lassoDelete:
+            case .polygonCrop:
                 return .lasso  // Uses lasso gesture
             }
         case .segment:
@@ -247,12 +284,15 @@ struct ContentView: View {
         ZStack {
             Color(NSColor.windowBackgroundColor).opacity(0.5)
 
+            if currentStep == .input && inputImage == nil {
+                dropZoneView
+            }
             // Show 3D viewer only on Generate tab when we have a model
-            if selectedTab == .generate, let modelURL = generated3DModelURL, !isGenerating {
+            else if currentStep == .generate, let modelURL = generated3DModelURL, !isGenerating {
                 model3DViewer(url: modelURL)
             }
             // Show generation progress during generation (only on Generate tab)
-            else if selectedTab == .generate && isGenerating {
+            else if currentStep == .generate && isGenerating {
                 generationProgressView
             }
             // Show image editor for Preprocess/Segment tabs, or Generate tab without a model
@@ -312,7 +352,7 @@ struct ContentView: View {
                             .frame(width: displaySize.width, height: displaySize.height)
 
                         // Only show mask in segment/generate modes (or skip segmentation mode)
-                        if selectedTab != .preprocess, let maskImage = maskImage {
+                        if currentStep != .refine && currentStep != .input, let maskImage = maskImage {
                             Image(nsImage: maskImage)
                                 .resizable()
                                 .frame(width: displaySize.width, height: displaySize.height)
@@ -321,7 +361,7 @@ struct ContentView: View {
                         }
 
                         // Live paint preview (shows mask while painting)
-                        if selectedTab == .segment, selectedTool == .paint, let liveMask = livePaintMask {
+                        if currentStep == .segment, selectedTool == .paint, let liveMask = livePaintMask {
                             Image(nsImage: liveMask)
                                 .resizable()
                                 .frame(width: displaySize.width, height: displaySize.height)
@@ -330,7 +370,7 @@ struct ContentView: View {
                         }
 
                         // Confidence overlay (shows per-pixel uncertainty heatmap from SAM2 logits)
-                        if selectedTab != .preprocess, showConfidenceOverlay, let confidence = confidenceOverlay {
+                        if currentStep != .refine && currentStep != .input, showConfidenceOverlay, let confidence = confidenceOverlay {
                             Image(nsImage: confidence)
                                 .resizable()
                                 .frame(width: displaySize.width, height: displaySize.height)
@@ -340,7 +380,7 @@ struct ContentView: View {
                         }
 
                         // Paint strokes overlay (segment mode)
-                        if selectedTab == .segment {
+                        if currentStep == .segment {
                             PaintStrokeOverlay(
                                 strokes: paintStrokes,
                                 currentStroke: currentPaintStroke,
@@ -350,7 +390,7 @@ struct ContentView: View {
                         }
 
                         // Lasso overlay for segment mode
-                        if selectedTab == .segment && selectedTool == .lasso {
+                        if currentStep == .segment && selectedTool == .lasso {
                             LassoOverlay(
                                 lassoSelections: lassoSelections,
                                 currentLasso: currentLasso,
@@ -361,7 +401,7 @@ struct ContentView: View {
                         }
 
                         // Polygon overlay for segment mode - always show completed polygons, show current only in polygon mode
-                        if selectedTab == .segment && !skipSegmentation {
+                        if currentStep == .segment && !skipSegmentation {
                             PolygonOverlay(
                                 polygons: polygonSelections,
                                 currentPolygon: selectedTool == .polygon ? currentPolygon : nil,
@@ -371,11 +411,11 @@ struct ContentView: View {
                         }
 
                         // Preprocess overlays
-                        if selectedTab == .preprocess {
+                        if currentStep == .refine {
                             if selectedPreprocessTool == .crop {
                                 CropOverlay(cropRect: cropRect, displayedSize: displaySize)
                                     .frame(width: displaySize.width, height: displaySize.height)
-                            } else if selectedPreprocessTool == .lassoDelete {
+                            } else if selectedPreprocessTool == .polygonCrop {
                                 LassoOverlay(
                                     lassoSelections: [],
                                     currentLasso: preprocessLasso,
@@ -387,7 +427,7 @@ struct ContentView: View {
                         }
 
                         // Points overlay (segment mode) - supports tap to select, drag to move
-                        if selectedTab == .segment && !skipSegmentation {
+                        if currentStep == .segment && !skipSegmentation {
                             PointsOverlay(
                                 points: selectedPoints,
                                 displayedSize: displaySize,
@@ -409,7 +449,7 @@ struct ContentView: View {
                         }
 
                         // Bounding box overlay (segment mode)
-                        if selectedTab == .segment && !skipSegmentation {
+                        if currentStep == .segment && !skipSegmentation {
                             BoundingBoxOverlay(
                                 boxes: boundingBoxes,
                                 currentBox: currentBox,
@@ -430,7 +470,7 @@ struct ContentView: View {
                         }
 
                         // Brush cursor preview (segment paint mode)
-                        if selectedTab == .segment && selectedTool == .paint {
+                        if currentStep == .segment && selectedTool == .paint {
                             BrushCursorPreview(
                                 brushSize: brushSize,
                                 isErasing: isErasing,
@@ -444,7 +484,7 @@ struct ContentView: View {
                 }
                 .zoomControls(magnification: $magnification)
             } else {
-                dropZone
+                dropZoneView
             }
         }
         .onPasteCommand(of: [.image, .png, .jpeg, .tiff, .fileURL]) { providers in
@@ -612,6 +652,17 @@ struct ContentView: View {
         }
     }
 
+    private var estimatedGenerationTime: String {
+        // Rough estimate: 1 second per step at 256 res, more for higher res
+        let baseTime = generateSteps * (generateResolution / 256.0)
+        let seconds = Int(baseTime)
+        if seconds < 60 {
+            return "\(seconds)s"
+        } else {
+            return "\(seconds / 60)m \(seconds % 60)s"
+        }
+    }
+
     private func formatElapsedTime(_ elapsed: TimeInterval) -> String {
         let minutes = Int(elapsed) / 60
         let seconds = Int(elapsed) % 60
@@ -622,63 +673,16 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Drop Zone
-
-    var dropZone: some View {
-        RoundedRectangle(cornerRadius: 12)
-            .strokeBorder(isDragging ? Color(red: 0.1, green: 0.3, blue: 0.7) : Color.gray.opacity(0.5), style: StrokeStyle(lineWidth: 2, dash: [10]))
-            .background(Color.gray.opacity(0.05))
-            .overlay(
-                VStack(spacing: 16) {
-                    Image(systemName: "photo.on.rectangle.angled")
-                        .font(.system(size: 56))
-                        .foregroundColor(.gray)
-                    Text("Drop an image here")
-                        .font(.title2)
-                        .foregroundColor(.gray)
-                    Text("or click to browse")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-
-                    Button(action: openFilePicker) {
-                        Label("Choose Image", systemImage: "folder")
-                            .padding(.horizontal, 20)
-                            .padding(.vertical, 10)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .padding(.top, 8)
-
-                    Text("⌘V to paste from clipboard")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .padding(.top, 4)
-                }
-            )
-            .contentShape(Rectangle())
-            .onTapGesture {
-                openFilePicker()
-            }
-            .onDrop(of: [.image, .fileURL, .url], isTargeted: $isDragging) { providers in
-                handleDrop(providers: providers)
-                return true
-            }
-            .padding(40)
-    }
-
     // MARK: - Sidebar View
 
     var sidebarView: some View {
         VStack(spacing: 0) {
-            // Workflow stepper
-            workflowStepper
-                .padding()
-
-            Divider()
-
             // Tab content
             ScrollView {
-                switch selectedTab {
-                case .preprocess:
+                switch currentStep {
+                case .input:
+                    EmptyView() // Input content is shown in drop zone
+                case .refine:
                     preprocessTabContent
                 case .segment:
                     segmentTabContent
@@ -686,78 +690,207 @@ struct ContentView: View {
                     generateTabContent
                 }
             }
+            .disabled(inputImage == nil && currentStep != .input)
+            .opacity(inputImage == nil && currentStep != .input ? 0.6 : 1.0)
 
             Divider()
 
             // Status footer with undo/redo
             enhancedStatusFooter
         }
-        .background(Color(NSColor.windowBackgroundColor))
+        .background(.ultraThinMaterial)
     }
 
-    // MARK: - Workflow Stepper
-
-    var workflowStepper: some View {
-        HStack(spacing: 0) {
-            ForEach(Array(SidebarTab.allCases.enumerated()), id: \.element) { index, tab in
-                Button(action: { selectedTab = tab }) {
-                    HStack(spacing: 6) {
-                        // Step number/checkmark
-                        ZStack {
-                            Circle()
-                                .fill(stepColor(for: tab))
-                                .frame(width: 22, height: 22)
-
-                            if isStepComplete(tab) {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundColor(.white)
-                            } else {
-                                Text("\(index + 1)")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundColor(selectedTab == tab ? .white : .primary)
-                            }
-                        }
-
-                        Text(tab.rawValue)
-                            .font(.system(size: 12, weight: selectedTab == tab ? .semibold : .regular))
-                            .foregroundColor(selectedTab == tab ? .primary : .secondary)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .background(selectedTab == tab ? Color.accentColor.opacity(0.15) : Color.clear)
-                    .cornerRadius(6)
+    var inputTabContent: some View {
+        VStack(spacing: 0) {
+            Spacer()
+            
+            // Hero section with icon and text
+            VStack(spacing: 20) {
+                // Animated icon
+                ZStack {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.accentColor.opacity(0.15), Color.purple.opacity(0.1)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 120, height: 120)
+                    
+                    Image(systemName: "photo.on.rectangle.angled")
+                        .font(.system(size: 48, weight: .light))
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [.accentColor, .purple],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .symbolEffect(.pulse, options: .repeating.speed(0.5))
                 }
-                .buttonStyle(.plain)
-
-                if index < SidebarTab.allCases.count - 1 {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 10))
+                
+                VStack(spacing: 8) {
+                    Text("Start with an Image")
+                        .font(.title2.bold())
+                    
+                    Text("Drag and drop, paste, or select an image to begin creating your 3D model.")
+                        .font(.subheadline)
                         .foregroundColor(.secondary)
-                        .padding(.horizontal, 4)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 280)
                 }
             }
+            
+            Spacer()
+                .frame(height: 32)
+            
+            // Action buttons
+            VStack(spacing: 12) {
+                Button(action: selectImage) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "folder")
+                        Text("Select Image")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                
+                HStack(spacing: 16) {
+                    Button(action: pasteFromClipboard) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "doc.on.clipboard")
+                            Text("Paste")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                    
+                    Button(action: {}) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "camera")
+                            Text("Camera")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                    .disabled(true)
+                }
+            }
+            .padding(.horizontal, 24)
+            
+            Spacer()
+            
+            // Examples section
+            VStack(alignment: .leading, spacing: 12) {
+                Divider()
+                    .padding(.horizontal)
+                
+                Text("Try an Example")
+                    .font(.headline)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal)
+                
+                exampleImagesGallery
+                    .padding(.bottom, 8)
+            }
+        }
+        .padding(.vertical)
+    }
+
+    var dropZoneView: some View {
+        ZStack {
+            // Drop zone overlay
+            if isDragging {
+                RoundedRectangle(cornerRadius: 16)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [.accentColor, .purple],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        style: StrokeStyle(lineWidth: 3, dash: [10, 5])
+                    )
+                    .background(
+                        RoundedRectangle(cornerRadius: 16)
+                            .fill(Color.accentColor.opacity(0.1))
+                    )
+                    .padding(20)
+                    .transition(.opacity)
+            }
+            
+            inputTabContent
+        }
+        .animation(.easeInOut(duration: 0.2), value: isDragging)
+    }
+
+    var exampleImagesGallery: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 12) {
+                ForEach([
+                    ("Toy", "example_000.png", "🧸"),
+                    ("Character", "example_002.png", "🎭"),
+                    ("Statue", "004.png", "🗿"),
+                    ("Object", "052.png", "📦")
+                ], id: \.1) { item in
+                    Button(action: { loadExample(item.1) }) {
+                        VStack(spacing: 8) {
+                            ZStack {
+                                if let image = loadExampleThumbnail(item.1) {
+                                    Image(nsImage: image)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fill)
+                                        .frame(width: 72, height: 72)
+                                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                                } else {
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(Color.gray.opacity(0.2))
+                                        .frame(width: 72, height: 72)
+                                        .overlay {
+                                            Text(item.2)
+                                                .font(.title)
+                                        }
+                                }
+                            }
+                            .shadow(color: .black.opacity(0.1), radius: 4, y: 2)
+                            
+                            Text(item.0)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .scaleEffect(1.0)
+                    .animation(.spring(response: 0.3), value: isDragging)
+                }
+            }
+            .padding(.horizontal)
         }
     }
 
-    private func stepColor(for tab: SidebarTab) -> Color {
-        if isStepComplete(tab) {
-            return .green
-        } else if selectedTab == tab {
-            return .accentColor
-        } else {
-            return Color.gray.opacity(0.3)
-        }
+
+    private func loadExampleThumbnail(_ filename: String) -> NSImage? {
+        let path = "/Users/zimengx/Code/MacOS_Utilities/Modelr/v3/Hunyuan3D-2/assets/example_images/\(filename)"
+        return NSImage(contentsOfFile: path)
     }
 
-    private func isStepComplete(_ tab: SidebarTab) -> Bool {
-        switch tab {
-        case .preprocess:
-            return selectedTab != .preprocess  // Complete when we've moved past it
-        case .segment:
-            return maskImage != nil || skipSegmentation
-        case .generate:
-            return generated3DModelURL != nil
+    private func loadExample(_ filename: String) {
+        let path = "/Users/zimengx/Code/MacOS_Utilities/Modelr/v3/Hunyuan3D-2/assets/example_images/\(filename)"
+        guard let image = NSImage(contentsOfFile: path) else { return }
+        
+        inputImage = image
+        // Reset state for new image
+        maskImage = nil
+        generated3DModelURL = nil
+        
+        // Auto-advance to next step
+        withAnimation {
+            currentStep = .refine
         }
     }
 
@@ -765,9 +898,30 @@ struct ContentView: View {
 
     var preprocessTabContent: some View {
         VStack(alignment: .leading, spacing: 16) {
+            // AI Automation
+            VStack(alignment: .leading, spacing: 8) {
+                Text("AI Automation")
+                    .font(.headline)
+                    .foregroundColor(.secondary)
+                
+                Button(action: autoRemoveBackground) {
+                    Label("Remove Background", systemImage: "wand.and.stars")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.purple)
+                .disabled(env.isProcessing)
+                
+                Text("Automatically isolate the primary object.")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            Divider()
+
             // Tool Selection
             VStack(alignment: .leading, spacing: 8) {
-                Text("Tool")
+                Text("Manual Refinement")
                     .font(.headline)
                     .foregroundColor(.secondary)
 
@@ -814,24 +968,24 @@ struct ContentView: View {
                             .italic()
                     }
                 }
-            } else if selectedPreprocessTool == .lassoDelete {
+            } else if selectedPreprocessTool == .polygonCrop {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Lasso Delete")
+                    Text("Polygon Crop")
                         .font(.headline)
                         .foregroundColor(.secondary)
 
-                    Text("Draw a freeform selection around the area you want to remove.")
+                    Text("Draw a freeform selection. Everything outside will be removed.")
                         .font(.caption)
                         .foregroundColor(.secondary)
 
                     if preprocessLasso != nil && (preprocessLasso?.isValid ?? false) {
                         HStack(spacing: 8) {
-                            Button(action: applyLassoDelete) {
-                                Label("Delete Selection", systemImage: "trash")
+                            Button(action: applyPolygonCrop) {
+                                Label("Crop to Selection", systemImage: "crop")
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.borderedProminent)
-                            .tint(.red)
+                            .tint(.blue)
 
                             Button(action: clearPreprocessLasso) {
                                 Label("Clear", systemImage: "xmark.circle")
@@ -862,9 +1016,9 @@ struct ContentView: View {
                         Text("• Drag to draw a crop rectangle")
                         Text("• Click Apply to crop the image")
                         Text("• Use Cmd+Z to undo")
-                    case .lassoDelete:
+                    case .polygonCrop:
                         Text("• Drag to draw a selection")
-                        Text("• Click Delete to remove the area")
+                        Text("• Click Crop to keep only the selected area")
                         Text("• Use Cmd+Z to undo")
                     }
                 }
@@ -876,16 +1030,18 @@ struct ContentView: View {
 
             // Next step hint
             VStack(spacing: 8) {
-                Text("When done preprocessing, switch to the Segment tab.")
+                Text("When done refining, proceed to segmentation.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
 
-                Button(action: { selectedTab = .segment }) {
-                    Label("Go to Segment", systemImage: "arrow.right")
+                Button(action: moveToNextStep) {
+                    Label("Proceed to Segment", systemImage: "arrow.right")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(!canMoveToNextStep)
             }
         }
         .padding()
@@ -1001,149 +1157,106 @@ struct ContentView: View {
 
     // MARK: - Segment Tab
 
+    private var toolDescription: String {
+        switch selectedTool {
+        case .point: return "Click to add points. Option-click to exclude."
+        case .boundingBox: return "Drag a box around the object."
+        case .lasso: return "Draw freeform around the object."
+        case .paint: return "Paint to refine the mask."
+        case .polygon: return "Click to add polygon vertices."
+        }
+    }
+
     var segmentTabContent: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            // Skip Segmentation Toggle
-            VStack(alignment: .leading, spacing: 8) {
-                Toggle(isOn: $skipSegmentation) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Skip Segmentation")
-                            .font(.subheadline.bold())
-                        Text("Use if image is already cut out")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
+        VStack(alignment: .leading, spacing: 20) {
+            // Header with skip toggle
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Segmentation")
+                        .font(.title3.bold())
+                    Text("Select the object to extract")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
-                .toggleStyle(.switch)
-                .onChange(of: skipSegmentation) { _, newValue in
-                    if newValue {
-                        // Create full-image mask when skipping segmentation
-                        createFullImageMask()
-                    } else {
-                        maskImage = nil
-                    }
-                }
-            }
-            .padding(10)
-            .background(Color.accentColor.opacity(0.1))
-            .cornerRadius(8)
-
-            if !skipSegmentation {
-                // Tool Selection
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Tool")
-                            .font(.headline)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text("1-4")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.secondary.opacity(0.2))
-                            .cornerRadius(4)
-                    }
-
-                    Picker("Tool", selection: $selectedTool) {
-                        ForEach(SAMTool.allCases) { tool in
-                            Label(tool.rawValue, systemImage: tool.iconName)
-                                .tag(tool)
+                
+                Spacer()
+                
+                Toggle("", isOn: $skipSegmentation)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .help("Skip segmentation if image is already cut out")
+                    .onChange(of: skipSegmentation) { _, newValue in
+                        if newValue {
+                            createFullImageMask()
+                        } else {
+                            maskImage = nil
                         }
                     }
-                    .pickerStyle(.segmented)
+            }
+            .padding()
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(.ultraThinMaterial)
+            )
+
+            if !skipSegmentation {
+                // Tool Grid
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Tools")
+                        .font(.headline)
+                        .foregroundColor(.secondary)
+                    
+                    LazyVGrid(columns: [
+                        GridItem(.flexible()),
+                        GridItem(.flexible()),
+                        GridItem(.flexible())
+                    ], spacing: 8) {
+                        ForEach(SAMTool.allCases) { tool in
+                            ToolButton(
+                                tool: tool,
+                                isSelected: selectedTool == tool,
+                                action: { selectedTool = tool }
+                            )
+                        }
+                    }
+                    
+                    // Tool hint
+                    Text(toolDescription)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 // Paint Tool Options
                 if selectedTool == .paint {
-                    Divider()
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Brush Settings")
-                            .font(.headline)
-                            .foregroundColor(.secondary)
-
-                        // Brush size slider
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text("Brush Size")
-                                Spacer()
-                                Text("\(Int(brushSize * 100))%")
-                                    .foregroundColor(.secondary)
-                            }
-                            .font(.subheadline)
-
-                            Slider(value: $brushSize, in: 0.01...0.15, step: 0.005)
-
-                            Text("Size relative to image width")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-
-                        // Erase toggle
-                        HStack {
-                            Toggle(isOn: $isErasing) {
-                                HStack {
-                                    Image(systemName: isErasing ? "eraser.fill" : "paintbrush.pointed.fill")
-                                        .foregroundColor(isErasing ? .red : Color(red: 50/255, green: 100/255, blue: 200/255))
-                                    Text(isErasing ? "Erase Mode" : "Add Mode")
-                                }
-                            }
-                            .toggleStyle(.switch)
-
-                            Spacer()
-
-                            Text("E")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.secondary.opacity(0.2))
-                                .cornerRadius(4)
-                        }
-
-                        // Clear paint button (auto-apply on stroke end)
-                        if !paintStrokes.isEmpty {
-                            Button(action: clearPaintStrokes) {
-                                Label("Clear Strokes", systemImage: "xmark.circle")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-                        }
-                    }
+                    paintToolOptions
                 }
 
-                Divider()
-
-                // Mask Display Options
+                // Mask Visibility
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Mask Display")
+                    Text("Mask")
                         .font(.headline)
                         .foregroundColor(.secondary)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text("Opacity")
-                            Spacer()
-                            Text("\(Int(maskOpacity * 100))%")
-                                .foregroundColor(.secondary)
-                        }
-                        .font(.subheadline)
-
-                        Slider(value: $maskOpacity, in: 0.1...1.0, step: 0.1)
+                    
+                    HStack(spacing: 12) {
+                        Image(systemName: "eye.slash")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Slider(value: $maskOpacity, in: 0...1)
+                        Image(systemName: "eye")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
-
-                    // Confidence overlay toggle
+                    
+                    // Confidence toggle if available
                     if !maskScores.isEmpty {
                         Toggle(isOn: $showConfidenceOverlay) {
-                            HStack {
-                                Image(systemName: "chart.bar.fill")
-                                    .foregroundColor(.orange)
-                                Text("Confidence Overlay")
-                            }
+                            Label("Confidence Overlay", systemImage: "chart.bar.fill")
+                                .font(.subheadline)
                         }
                         .toggleStyle(.switch)
-                        .padding(.top, 4)
+                        .tint(.orange)
                     }
                 }
 
@@ -1152,113 +1265,176 @@ struct ContentView: View {
                     multiMaskSelectionView
                 }
 
-                Divider()
+                // Annotations Summary
+                annotationsSummary
 
-                // Annotations with deletion
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Annotations")
-                            .font(.headline)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        if hasSelection {
-                            Button(action: deleteSelectedAnnotation) {
-                                Image(systemName: "trash")
-                                    .foregroundColor(.red)
-                            }
-                            .buttonStyle(.borderless)
-                            .help("Delete selected (Backspace)")
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        annotationRow(icon: "plus.circle.fill", color: .green, label: "\(selectedPoints.filter { $0.isPositive }.count) positive")
-                        annotationRow(icon: "minus.circle.fill", color: .red, label: "\(selectedPoints.filter { $0.isNegative }.count) negative")
-                        annotationRow(icon: "rectangle.dashed", color: .blue, label: "\(boundingBoxes.count) boxes")
-                        annotationRow(icon: "lasso", color: Color(red: 50/255, green: 100/255, blue: 200/255), label: "\(lassoSelections.count) lassos")
-                        annotationRow(icon: "paintbrush.pointed.fill", color: Color(red: 50/255, green: 100/255, blue: 200/255), label: "\(paintStrokes.count) strokes")
-                    }
-                    .font(.caption)
-
-                    if !selectedPoints.isEmpty || !boundingBoxes.isEmpty || !lassoSelections.isEmpty || !paintStrokes.isEmpty {
-                        Button(action: clearAnnotations) {
-                            Label("Clear All", systemImage: "trash")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                }
-
-                Divider()
-
-                // Instructions
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Tips")
-                        .font(.headline)
-                        .foregroundColor(.secondary)
-
-                    Group {
-                        switch selectedTool {
-                        case .point:
-                            Text("• Click to add include points")
-                            Text("• Option+Click to add exclude points")
-                            Text("• Click annotation to select, Delete to remove")
-                        case .boundingBox:
-                            Text("• Drag to draw a bounding box")
-                            Text("• Box should contain the object")
-                        case .lasso:
-                            Text("• Drag to draw a freeform selection")
-                            Text("• Lasso should surround the object")
-                        case .polygon:
-                            Text("• Click to add vertices")
-                            Text("• Click first vertex (green) to close polygon")
-                            Text("• Press Escape to cancel")
-                        case .paint:
-                            Text("• Drag to paint on the mask")
-                            Text("• Press E to toggle erase mode")
-                            Text("• Strokes auto-apply when released")
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                }
             } else {
-                // Skip segmentation mode - show info
-                VStack(spacing: 12) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 40))
-                        .foregroundColor(.green)
+                // Skip mode
+                VStack(spacing: 16) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.green.opacity(0.15))
+                            .frame(width: 80, height: 80)
+                        
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 40))
+                            .foregroundColor(.green)
+                    }
 
-                    Text("Ready for 3D Generation")
+                    Text("Ready for Generation")
                         .font(.headline)
 
-                    Text("Your pre-cutout image will be used directly. Switch to Generate tab when ready.")
+                    Text("Using pre-cutout image directly")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 30)
+                .padding(.vertical, 32)
             }
 
             Spacer()
 
-            // Clear Image Button
-            Button(action: clearAll) {
-                Label("Clear Image", systemImage: "xmark.circle")
+            // Action buttons
+            VStack(spacing: 12) {
+                Button(action: moveToNextStep) {
+                    HStack {
+                        Text("Continue to Generate")
+                        Image(systemName: "arrow.right")
+                    }
                     .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(!canMoveToNextStep)
+                
+                Button(action: clearAll) {
+                    Label("Start Over", systemImage: "arrow.counterclockwise")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .foregroundColor(.red)
             }
-            .buttonStyle(.bordered)
         }
         .padding()
     }
+    
+    private var paintToolOptions: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Brush")
+                .font(.headline)
+                .foregroundColor(.secondary)
 
-    private func annotationRow(icon: String, color: Color, label: String) -> some View {
+            // Brush size
+            HStack {
+                Image(systemName: "circle")
+                    .font(.system(size: 8))
+                Slider(value: $brushSize, in: 0.01...0.15, step: 0.005)
+                Image(systemName: "circle.fill")
+                    .font(.system(size: 16))
+            }
+            .foregroundColor(.secondary)
+
+            // Mode toggle
+            HStack {
+                Button(action: { isErasing = false }) {
+                    Label("Add", systemImage: "plus.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(isErasing ? .secondary : .blue)
+                .opacity(isErasing ? 0.6 : 1.0)
+                
+                Button(action: { isErasing = true }) {
+                    Label("Erase", systemImage: "minus.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(isErasing ? .red : .secondary)
+                .opacity(isErasing ? 1.0 : 0.6)
+            }
+            .controlSize(.small)
+
+            if !paintStrokes.isEmpty {
+                Button(action: clearPaintStrokes) {
+                    Label("Clear Strokes", systemImage: "xmark.circle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding()
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.secondary.opacity(0.1))
+        )
+    }
+    
+    private var annotationsSummary: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Annotations")
+                    .font(.headline)
+                    .foregroundColor(.secondary)
+                
+                Spacer()
+                
+                if hasSelection {
+                    Button(action: deleteSelectedAnnotation) {
+                        Image(systemName: "trash")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundColor(.red)
+                }
+            }
+
+            HStack(spacing: 16) {
+                annotationBadge(
+                    count: selectedPoints.filter { $0.isPositive }.count,
+                    icon: "plus.circle.fill",
+                    color: .green
+                )
+                annotationBadge(
+                    count: selectedPoints.filter { $0.isNegative }.count,
+                    icon: "minus.circle.fill",
+                    color: .red
+                )
+                annotationBadge(
+                    count: boundingBoxes.count,
+                    icon: "rectangle.dashed",
+                    color: .blue
+                )
+                annotationBadge(
+                    count: lassoSelections.count + paintStrokes.count,
+                    icon: "scribble",
+                    color: .purple
+                )
+            }
+
+            if !selectedPoints.isEmpty || !boundingBoxes.isEmpty || !lassoSelections.isEmpty || !paintStrokes.isEmpty {
+                Button(action: clearAnnotations) {
+                    Label("Clear All", systemImage: "trash")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private func annotationBadge(count: Int, icon: String, color: Color) -> some View {
         HStack(spacing: 4) {
             Image(systemName: icon)
                 .foregroundColor(color)
-            Text(label)
+            Text("\(count)")
+                .font(.caption.bold())
         }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(color.opacity(0.1))
+        .cornerRadius(6)
     }
 
     private var hasSelection: Bool {
@@ -1285,35 +1461,47 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 40)
             } else {
-                // Model Selection
+                // Model Selection (Hunyuan3D-2 only)
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("3D Generator")
+                    Text("Hunyuan3D-2")
                         .font(.headline)
-                        .foregroundColor(.secondary)
-
-                    Picker("Generator", selection: $selectedGeneratorModel) {
-                        ForEach([GeneratorModel.hunyuan, GeneratorModel.sf3d], id: \.self) { model in
-                            Text(model.rawValue).tag(model)
-                        }
-                    }
-                    .pickerStyle(.segmented)
                     
-                    Text(selectedGeneratorModel.description)
+                    Text(GeneratorModel.hunyuan.description)
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
 
                 Divider()
 
-                // Model-specific Parameters
+                // Quality Presets
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Parameters")
+                    Text("Quality Preset")
                         .font(.headline)
                         .foregroundColor(.secondary)
+                    
+                    Picker("Quality", selection: $selectedQualityPreset) {
+                        ForEach(QualityPreset.allCases) { preset in
+                            Text(preset.rawValue).tag(preset)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: selectedQualityPreset) { _, newValue in
+                        generateSteps = Double(newValue.steps)
+                        generateResolution = Double(newValue.resolution)
+                    }
+                    
+                    Text(selectedQualityPreset.description)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .italic()
+                        .padding(.top, 4)
+                }
 
-                    if selectedGeneratorModel == .hunyuan {
-                        // Hunyuan3D Parameters
-                        
+                Divider()
+
+                // Advanced Parameters (Collapsible)
+                DisclosureGroup("Advanced Parameters") {
+                    VStack(alignment: .leading, spacing: 12) {
                         // Steps slider
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
@@ -1325,10 +1513,6 @@ struct ContentView: View {
                             .font(.subheadline)
 
                             Slider(value: $generateSteps, in: 10...256, step: 1)
-
-                            Text("Higher = better quality, slower")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
                         }
 
                         // Resolution slider
@@ -1341,52 +1525,24 @@ struct ContentView: View {
                             }
                             .font(.subheadline)
 
-                            Slider(value: $generateResolution, in: 128...1024, step: 64)
-
-                            Text("Higher = finer detail, more memory")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                    } else if selectedGeneratorModel == .sf3d {
-                        // SF3D Parameters
-                        
-                        // Texture Resolution slider
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text("Texture Resolution")
-                                Spacer()
-                                Text("\(Int(sf3dTextureResolution))")
-                                    .foregroundColor(.secondary)
-                            }
-                            .font(.subheadline)
-
-                            Slider(value: $sf3dTextureResolution, in: 512...2048, step: 256)
-
-                            Text("Higher = better texture quality")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                        
-                        // Remesh Option picker
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Remesh Option")
-                                .font(.subheadline)
-                            
-                            Picker("Remesh", selection: $sf3dRemeshOption) {
-                                Text("None").tag("none")
-                                Text("Triangle").tag("triangle")
-                                Text("Quad").tag("quad")
-                            }
-                            .pickerStyle(.segmented)
-                            
-                            Text("Optimize mesh topology")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
+                            Slider(value: $generateResolution, in: 64...1024, step: 64)
                         }
                     }
+                    .padding(.top, 8)
                 }
+                .font(.subheadline)
 
                 Divider()
+
+                // Estimated Time
+                HStack {
+                    Image(systemName: "clock")
+                    Text("Estimated time: \(estimatedGenerationTime)")
+                }
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+                Spacer()
 
                 // Generate button
                 VStack(spacing: 12) {
@@ -1460,13 +1616,6 @@ struct ContentView: View {
                         Text(error)
                             .font(.caption)
                             .foregroundColor(.secondary)
-                            
-                        if error.contains("SF3D environment not ready") {
-                            Text("Please restart the app and run the Setup process to install SF3D.")
-                                .font(.caption.bold())
-                                .foregroundColor(.orange)
-                                .padding(.top, 4)
-                        }
                     }
                 }
             }
@@ -1549,14 +1698,44 @@ struct ContentView: View {
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(.secondary)
             }
+
+            if canMoveToNextStep {
+                Button(action: moveToNextStep) {
+                    HStack {
+                        Text(nextStepButtonTitle)
+                        Image(systemName: "chevron.right")
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.blue)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
     }
 
+    private var nextStepButtonTitle: String {
+        switch currentStep {
+        case .input: return "Proceed to Refine"
+        case .refine: return "Proceed to Segment"
+        case .segment: return "Proceed to Generate"
+        case .generate: return "Done"
+        }
+    }
+
+    private func moveToNextStep() {
+        guard let next = WorkflowStep(rawValue: currentStep.rawValue + 1) else { return }
+        withAnimation(.spring()) {
+            currentStep = next
+        }
+    }
+
     // MARK: - File Picker
 
-    private func openFilePicker() {
+    private func selectImage() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image, .png, .jpeg, .tiff, .bmp, .gif, .webP]
         panel.allowsMultipleSelection = false
@@ -1569,6 +1748,27 @@ struct ContentView: View {
     }
 
     // MARK: - Paste Handler
+
+    private func pasteFromClipboard() {
+        let pasteboard = NSPasteboard.general
+        
+        // Try to get image data from clipboard
+        if let imageData = pasteboard.data(forType: .tiff) ?? pasteboard.data(forType: .png),
+           let image = NSImage(data: imageData) {
+            clearAnnotations()
+            saveAndLoad(image: image)
+            return
+        }
+        
+        // Try to get file URL from clipboard
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
+           let url = urls.first,
+           let image = NSImage(contentsOf: url) {
+            clearAnnotations()
+            saveAndLoad(image: image)
+            return
+        }
+    }
 
     private func handlePaste(providers: [NSItemProvider]) {
         guard let provider = providers.first else { return }
@@ -1586,7 +1786,7 @@ struct ContentView: View {
     // MARK: - Gesture Handlers (receive normalized 0-1 coordinates from AppKit)
 
     private func handleTap(at normalized: CGPoint, isNegative: Bool) {
-        guard selectedTab == .segment, !skipSegmentation else { return }
+        guard currentStep == .segment, !skipSegmentation else { return }
         guard inputImage != nil, inputImagePath != nil else { return }
 
         // Handle polygon tool
@@ -2111,18 +2311,13 @@ struct ContentView: View {
 
     /// Update live paint preview mask
     private func updateLivePaintPreview(at point: CGPoint) {
-        guard selectedTab == .segment, selectedTool == .paint, var currentStroke = currentPaintStroke else {
+        guard currentStep == .segment, selectedTool == .paint, var currentStroke = currentPaintStroke else {
             livePaintMask = nil
             return
         }
 
-        // Add point to stroke and generate preview
-        let normalizedPoint = CGPoint(
-            x: point.x / imagePixelSize.width,
-            y: point.y / imagePixelSize.height
-        )
-
-        currentStroke.addPoint(normalizedPoint)
+        // Point is already normalized from ImageCanvasView
+        currentStroke.addPoint(point)
 
         // Generate preview mask from current mask + this stroke
         if let currentMask = maskImage {
@@ -2138,28 +2333,28 @@ struct ContentView: View {
     private func handleDragStart(at point: CGPoint) {
         guard inputImage != nil else { return }
 
-        if selectedTab == .preprocess && selectedPreprocessTool == .crop {
+        if currentStep == .refine && selectedPreprocessTool == .crop {
             cropRect = SAMBox(startPoint: point, endPoint: point)
-        } else if selectedTab == .segment && selectedTool == .boundingBox {
+        } else if currentStep == .segment && selectedTool == .boundingBox {
             currentBox = SAMBox(startPoint: point, endPoint: point)
         }
     }
 
     private func handleDragChange(start: CGPoint, current: CGPoint) {
-        if selectedTab == .preprocess && selectedPreprocessTool == .crop {
+        if currentStep == .refine && selectedPreprocessTool == .crop {
             cropRect?.endPoint = current
-        } else if selectedTab == .segment && selectedTool == .boundingBox {
+        } else if currentStep == .segment && selectedTool == .boundingBox {
             currentBox?.endPoint = current
         }
     }
 
     private func handleDragEnd(start: CGPoint, end: CGPoint) {
-        if selectedTab == .preprocess && selectedPreprocessTool == .crop {
+        if currentStep == .refine && selectedPreprocessTool == .crop {
             // Crop rect stays until user applies or clears
             return
         }
 
-        guard selectedTab == .segment, selectedTool == .boundingBox else { return }
+        guard currentStep == .segment, selectedTool == .boundingBox else { return }
         guard let box = currentBox else { return }
 
         guard box.isValid else {
@@ -2179,28 +2374,34 @@ struct ContentView: View {
     private func handleLassoStart(at point: CGPoint) {
         guard inputImage != nil else { return }
 
-        if selectedTab == .preprocess && selectedPreprocessTool == .lassoDelete {
+        if currentStep == .refine && selectedPreprocessTool == .polygonCrop {
             preprocessLasso = LassoSelection(startPoint: point)
-        } else if selectedTab == .segment && selectedTool == .lasso {
+        } else if currentStep == .segment && selectedTool == .lasso {
             currentLasso = LassoSelection(startPoint: point)
         }
     }
 
     private func handleLassoContinue(at point: CGPoint) {
-        if selectedTab == .preprocess && selectedPreprocessTool == .lassoDelete {
-            preprocessLasso?.addPoint(point)
-        } else if selectedTab == .segment && selectedTool == .lasso {
-            currentLasso?.addPoint(point)
+        if currentStep == .refine && selectedPreprocessTool == .polygonCrop {
+            if var lasso = preprocessLasso {
+                lasso.addPoint(point)
+                preprocessLasso = lasso
+            }
+        } else if currentStep == .segment && selectedTool == .lasso {
+            if var lasso = currentLasso {
+                lasso.addPoint(point)
+                currentLasso = lasso
+            }
         }
     }
 
     private func handleLassoEnd() {
-        if selectedTab == .preprocess && selectedPreprocessTool == .lassoDelete {
-            // Keep the lasso until user applies delete
+        if currentStep == .refine && selectedPreprocessTool == .polygonCrop {
+            // Keep the lasso until user applies crop
             return
         }
 
-        guard selectedTab == .segment, selectedTool == .lasso else { return }
+        guard currentStep == .segment, selectedTool == .lasso else { return }
         guard let lasso = currentLasso, lasso.isValid else {
             currentLasso = nil
             return
@@ -2228,10 +2429,14 @@ struct ContentView: View {
 
     private func handlePaintContinue(at point: CGPoint) {
         guard selectedTool == .paint else { return }
-        currentPaintStroke?.addPoint(point)
+        
+        if var stroke = currentPaintStroke {
+            stroke.addPoint(point)
+            currentPaintStroke = stroke
+        }
 
-        // Update live paint preview
-        updateLivePaintPreview(at: point)
+        // Update live paint preview (optional, can be slow)
+        // updateLivePaintPreview(at: point)
     }
 
     private func handlePaintEnd() {
@@ -2464,7 +2669,6 @@ struct ContentView: View {
                 }
 
                 // Load primary mask (first/highest scored)
-                let primaryMask = primaryMaskURL
                 if loadedMasks.isEmpty {
                     await MainActor.run {
                         self.env.status = "Error: Failed to load masks"
@@ -2553,54 +2757,18 @@ struct ContentView: View {
         generationError = nil
 
         Task {
-            switch selectedGeneratorModel {
-            case .hunyuan:
-                await env.generate3DModel(
-                    imagePath: imagePath,
-                    maskPath: maskPath,
-                    steps: Int(generateSteps),
-                    resolution: Int(generateResolution)
-                ) { progressInfo in
-                    Task { @MainActor in
-                        self.updateGenerationProgress(progressInfo)
-                    }
-                } completion: { result in
-                    Task { @MainActor in
-                        self.handleGenerationResult(result)
-                    }
+            await env.generate3DModel(
+                imagePath: imagePath,
+                maskPath: maskPath,
+                steps: Int(generateSteps),
+                resolution: Int(generateResolution)
+            ) { progressInfo in
+                Task { @MainActor in
+                    self.updateGenerationProgress(progressInfo)
                 }
-            
-            case .sf3d:
-                await env.generateWithSF3D(
-                    imagePath: imagePath,
-                    maskPath: maskPath,
-                    textureResolution: Int(sf3dTextureResolution),
-                    remeshOption: sf3dRemeshOption
-                ) { progressInfo in
-                    Task { @MainActor in
-                        self.updateGenerationProgress(progressInfo)
-                    }
-                } completion: { result in
-                    Task { @MainActor in
-                        self.handleGenerationResult(result)
-                    }
-                }
-            
-            case .both:
-                // For now, just run Hunyuan when "both" selected
-                await env.generate3DModel(
-                    imagePath: imagePath,
-                    maskPath: maskPath,
-                    steps: Int(generateSteps),
-                    resolution: Int(generateResolution)
-                ) { progressInfo in
-                    Task { @MainActor in
-                        self.updateGenerationProgress(progressInfo)
-                    }
-                } completion: { result in
-                    Task { @MainActor in
-                        self.handleGenerationResult(result)
-                    }
+            } completion: { result in
+                Task { @MainActor in
+                    self.handleGenerationResult(result)
                 }
             }
         }
@@ -2894,6 +3062,31 @@ struct ContentView: View {
 
     // MARK: - Preprocess Actions
 
+    private func autoRemoveBackground() {
+        Task {
+            do {
+                // Save current for undo
+                if let image = inputImage {
+                    await MainActor.run {
+                        undoStack.append(.crop(originalImage: image, originalPath: inputImagePath))
+                    }
+                }
+                
+                let url = try await env.removeBackground()
+                await MainActor.run {
+                    loadImage(from: url)
+                    env.status = "Background removed"
+                    // Auto-transition to segmentation
+                    moveToNextStep()
+                }
+            } catch {
+                await MainActor.run {
+                    env.status = "Error: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
     private func applyCrop() {
         guard let image = inputImage,
               let crop = cropRect,
@@ -2943,11 +3136,14 @@ struct ContentView: View {
 
         cropRect = nil
         env.status = "Image cropped"
+        
+        // Auto-transition to segmentation
+        moveToNextStep()
     }
 
 
 
-    private func applyLassoDelete() {
+    private func applyPolygonCrop() {
         guard let image = inputImage,
               let lasso = preprocessLasso,
               lasso.isValid else { return }
@@ -2955,17 +3151,20 @@ struct ContentView: View {
         // Save for undo
         undoStack.append(.crop(originalImage: image, originalPath: inputImagePath))
 
-        // Apply lasso deletion (fill with transparency)
-        if let deletedImage = deleteInsideLasso(image, lasso: lasso) {
-            inputImage = deletedImage
-            saveAndLoad(image: deletedImage)
+        // Apply polygon crop (keep inside, delete outside)
+        if let croppedImage = cropToPolygon(image, lasso: lasso) {
+            inputImage = croppedImage
+            saveAndLoad(image: croppedImage)
         }
 
         preprocessLasso = nil
-        env.status = "Selection deleted"
+        env.status = "Polygon crop applied"
+        
+        // Auto-transition to segmentation
+        moveToNextStep()
     }
 
-    private func deleteInsideLasso(_ image: NSImage, lasso: LassoSelection) -> NSImage? {
+    private func cropToPolygon(_ image: NSImage, lasso: LassoSelection) -> NSImage? {
         // Use the primary CGImage representation to avoid resolution loss
         guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
         
@@ -2992,17 +3191,14 @@ struct ContentView: View {
         let context = NSGraphicsContext(bitmapImageRep: newBitmap)
         NSGraphicsContext.current = context
         
-        let ciContext = CIContext(options: nil)
-        let ciImage = CIImage(cgImage: cgImage)
-        if let cgDrawn = ciContext.createCGImage(ciImage, from: ciImage.extent) {
-            let nsDrawn = NSImage(cgImage: cgDrawn, size: imageSize)
-            nsDrawn.draw(in: NSRect(origin: .zero, size: imageSize))
-        }
+        // Start with a clear background
+        NSColor.clear.set()
+        NSRect(origin: .zero, size: imageSize).fill()
 
         let cgWidth = CGFloat(width)
         let cgHeight = CGFloat(height)
 
-        // Use NSBezierPath to clear the lasso area efficiently
+        // Use NSBezierPath to define the clipping area
         guard lasso.points.count >= 3 else { return image }
 
         let path = NSBezierPath()
@@ -3023,17 +3219,15 @@ struct ContentView: View {
         }
         path.close()
 
-        // Use copy compositing operation to clear pixels with transparent color
-        let originalComposite = context?.compositingOperation
-        context?.compositingOperation = .copy
+        // Set the path as clipping path
+        path.addClip()
 
-        // Fill lasso area with transparent color
-        NSColor.clear.setFill()
-        path.fill()
-
-        // Restore original compositing operation
-        if let originalOp = originalComposite {
-            context?.compositingOperation = originalOp
+        // Draw the original image - only the part inside the clip will be drawn
+        let ciContext = CIContext(options: nil)
+        let ciImage = CIImage(cgImage: cgImage)
+        if let cgDrawn = ciContext.createCGImage(ciImage, from: ciImage.extent) {
+            let nsDrawn = NSImage(cgImage: cgDrawn, size: imageSize)
+            nsDrawn.draw(in: NSRect(origin: .zero, size: imageSize))
         }
 
         NSGraphicsContext.restoreGraphicsState()
@@ -3194,41 +3388,6 @@ struct ContentView: View {
         }
     }
 
-    /// Auto-load the latest 3D model from SF3D output folder for debugging
-    private func loadLatest3DModelForDebug() {
-        let sf3dFolder = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/ModelrV3/sf3d")
-
-        // Find the latest .obj or .glb file
-        let fileManager = FileManager.default
-        guard let files = try? fileManager.contentsOfDirectory(at: sf3dFolder, includingPropertiesForKeys: [.contentModificationDateKey], options: .skipsHiddenFiles) else {
-            env.status = "No SF3D folder found"
-            return
-        }
-
-        let modelFiles = files.filter { url in
-            let ext = url.pathExtension.lowercased()
-            return ext == "obj" || ext == "glb" || ext == "gltf"
-        }
-
-        // Sort by modification date (newest first)
-        let sortedFiles = modelFiles.sorted { url1, url2 in
-            let date1 = (try? url1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast
-            let date2 = (try? url2.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast
-            return date1 > date2
-        }
-
-        guard let latestModel = sortedFiles.first else {
-            env.status = "No 3D models found in SF3D folder"
-            return
-        }
-
-        // Set the model URL and switch to generate tab
-        generated3DModelURL = latestModel
-        selectedTab = .generate
-        env.status = "Loaded: \(latestModel.lastPathComponent)"
-    }
-
     private func loadImage(from url: URL) {
         // Cancel any existing tasks
         currentTasks.forEach { $0.cancel() }
@@ -3315,6 +3474,47 @@ struct ContentView: View {
             }
         } catch {
             self.env.status = "Error: conversion failed"
+        }
+    }
+}
+
+// MARK: - ToolButton Component
+
+struct ToolButton: View {
+    let tool: SAMTool
+    let isSelected: Bool
+    let action: () -> Void
+    
+    @State private var isHovered = false
+    
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: tool.iconName)
+                    .font(.system(size: 16, weight: isSelected ? .semibold : .regular))
+                    .symbolRenderingMode(.hierarchical)
+                
+                Text(tool.rawValue)
+                    .font(.caption2)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 50)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isSelected ? Color.accentColor.opacity(0.2) : (isHovered ? Color.secondary.opacity(0.1) : Color.clear))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(isSelected ? Color.accentColor : Color.clear, lineWidth: 1.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(isSelected ? .accentColor : .primary)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isHovered = hovering
+            }
         }
     }
 }
