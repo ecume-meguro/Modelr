@@ -11,8 +11,18 @@ struct ContentViewSimple: View {
     @State private var imagePixelSize: CGSize = .zero
 
     // Workflow state
-    enum Step { case input, segment, generate }
+    enum Step { case input, segment, touchup, generate }
     @State private var currentStep: Step = .input
+
+    // Touchup state
+    enum BrushMode { case add, remove }
+    @State private var brushMode: BrushMode = .add
+    @State private var brushSize: CGFloat = 30
+    @State private var editableMaskImage: NSImage?
+    @State private var brushPreviewPosition: CGPoint? = nil
+    @State private var showBackWarning: Bool = false
+    @State private var maskHistory: [NSImage] = []  // Undo stack
+    @State private var isStrokeInProgress: Bool = false
 
     // Segmentation state
     @State private var textPrompt: String = ""
@@ -28,6 +38,31 @@ struct ContentViewSimple: View {
     @State private var isGenerating = false
     @State private var generationStatus = ""
     @State private var generated3DModelURL: URL?
+    @State private var compositeImage: NSImage?
+
+    // Multi-stage generation progress
+    @State private var generationStages: [GenerationStage: StageProgress] = [:]
+
+    // Generation stage definitions
+    enum GenerationStage: String, CaseIterable {
+        case extracting = "Extracting"
+        case loading = "Loading Model"
+        case diffusion = "Diffusion Sampling"
+        case volumeDecoding = "Volume Decoding"
+        case saving = "Saving"
+    }
+
+    struct StageProgress {
+        var status: StageStatus = .pending
+        var progress: Double = 0  // 0-1
+        var detail: String = ""
+    }
+
+    enum StageStatus {
+        case pending
+        case inProgress
+        case completed
+    }
 
     // 10 Neon colors for mask regions
     private let maskColors: [Color] = [
@@ -63,6 +98,12 @@ struct ContentViewSimple: View {
         .onDrop(of: [.image, .fileURL], isTargeted: $isDragging) { providers in
             handleDrop(providers: providers)
         }
+        .background(
+            // Hidden button for Command+Z undo
+            Button("") { if currentStep == .touchup { undo() } }
+                .keyboardShortcut("z", modifiers: .command)
+                .hidden()
+        )
     }
 
     // MARK: - Image Area
@@ -73,6 +114,18 @@ struct ContentViewSimple: View {
 
             if currentStep == .generate, let modelURL = generated3DModelURL {
                 ModelViewerContainer(modelURL: modelURL)
+            } else if currentStep == .generate, let composite = compositeImage {
+                // Show composite image preview before/during generation
+                GeometryReader { geo in
+                    let size = fitSize(composite.size, in: geo.size)
+                    VStack {
+                        Image(nsImage: composite)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: size.width, height: size.height)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             } else if let image = inputImage {
                 GeometryReader { geo in
                     let size = fitSize(image.size, in: geo.size)
@@ -83,36 +136,125 @@ struct ContentViewSimple: View {
                             .aspectRatio(contentMode: .fit)
                             .frame(width: size.width, height: size.height)
 
-                        // Show ALL masks - non-selected first, then selected on top
-                        // Non-selected masks
-                        ForEach(Array(allMasks.enumerated()).filter { $0.offset != selectedMaskIndex }, id: \.offset) { index, maskData in
-                            let color = colorForMask(index)
+                        if currentStep == .segment {
+                            // Show ALL masks - non-selected first, then selected on top
+                            // Non-selected masks
+                            ForEach(Array(allMasks.enumerated()).filter { $0.offset != selectedMaskIndex }, id: \.offset) { index, maskData in
+                                let color = colorForMask(index)
 
-                            // Mask fill
+                                // Mask fill
+                                Rectangle()
+                                    .fill(color)
+                                    .frame(width: size.width, height: size.height)
+                                    .mask(
+                                        Image(nsImage: maskData.image)
+                                            .resizable()
+                                            .frame(width: size.width, height: size.height)
+                                    )
+                                    .opacity(0.60)
+                                    .allowsHitTesting(false)
+
+                                // Border
+                                Rectangle()
+                                    .fill(color)
+                                    .frame(width: size.width, height: size.height)
+                                    .mask(
+                                        ZStack {
+                                            Image(nsImage: maskData.image)
+                                                .resizable()
+                                                .frame(width: size.width, height: size.height)
+                                            Image(nsImage: maskData.image)
+                                                .resizable()
+                                                .frame(width: size.width, height: size.height)
+                                                .padding(8)
+                                                .blur(radius: 1)
+                                                .blendMode(.destinationOut)
+                                        }
+                                        .compositingGroup()
+                                    )
+                                    .opacity(1.0)
+                                    .allowsHitTesting(false)
+                            }
+
+                            // Selected mask on top
+                            if selectedMaskIndex < allMasks.count {
+                                let maskData = allMasks[selectedMaskIndex]
+                                let color = colorForMask(selectedMaskIndex)
+
+                                // Mask fill
+                                Rectangle()
+                                    .fill(color)
+                                    .frame(width: size.width, height: size.height)
+                                    .mask(
+                                        Image(nsImage: maskData.image)
+                                            .resizable()
+                                            .frame(width: size.width, height: size.height)
+                                    )
+                                    .opacity(0.90)
+                                    .allowsHitTesting(false)
+
+                                // Border
+                                Rectangle()
+                                    .fill(color)
+                                    .frame(width: size.width, height: size.height)
+                                    .mask(
+                                        ZStack {
+                                            Image(nsImage: maskData.image)
+                                                .resizable()
+                                                .frame(width: size.width, height: size.height)
+                                            Image(nsImage: maskData.image)
+                                                .resizable()
+                                                .frame(width: size.width, height: size.height)
+                                                .padding(12)
+                                                .blur(radius: 1)
+                                                .blendMode(.destinationOut)
+                                        }
+                                        .compositingGroup()
+                                    )
+                                    .opacity(1.0)
+                                    .allowsHitTesting(false)
+                            }
+
+                            // Points overlay
+                            ForEach(selectedPoints) { point in
+                                Circle()
+                                    .fill(point.isPositive ? Color.green : Color.red)
+                                    .frame(width: 14, height: 14)
+                                    .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                                    .position(
+                                        x: point.normalizedCoords.x * size.width,
+                                        y: point.normalizedCoords.y * size.height
+                                    )
+                            }
+                        }
+
+                        // Touchup mode - show editable mask
+                        if currentStep == .touchup, let maskImage = editableMaskImage {
+                            // Mask overlay
                             Rectangle()
-                                .fill(color)
+                                .fill(Color.red)
                                 .frame(width: size.width, height: size.height)
                                 .mask(
-                                    Image(nsImage: maskData.image)
+                                    Image(nsImage: maskImage)
                                         .resizable()
                                         .frame(width: size.width, height: size.height)
                                 )
-                                .opacity(0.60)
+                                .opacity(0.70)
                                 .allowsHitTesting(false)
 
                             // Border
                             Rectangle()
-                                .fill(color)
+                                .fill(Color.red)
                                 .frame(width: size.width, height: size.height)
                                 .mask(
                                     ZStack {
-                                        Image(nsImage: maskData.image)
+                                        Image(nsImage: maskImage)
                                             .resizable()
                                             .frame(width: size.width, height: size.height)
-                                        Image(nsImage: maskData.image)
+                                        Image(nsImage: maskImage)
                                             .resizable()
                                             .frame(width: size.width, height: size.height)
-                                            .padding(8)
+                                            .padding(10)
                                             .blur(radius: 1)
                                             .blendMode(.destinationOut)
                                     }
@@ -120,81 +262,97 @@ struct ContentViewSimple: View {
                                 )
                                 .opacity(1.0)
                                 .allowsHitTesting(false)
-                        }
 
-                        // Selected mask on top
-                        if selectedMaskIndex < allMasks.count {
-                            let maskData = allMasks[selectedMaskIndex]
-                            let color = colorForMask(selectedMaskIndex)
-
-                            // Mask fill
-                            Rectangle()
-                                .fill(color)
-                                .frame(width: size.width, height: size.height)
-                                .mask(
-                                    Image(nsImage: maskData.image)
-                                        .resizable()
-                                        .frame(width: size.width, height: size.height)
-                                )
-                                .opacity(0.90)
-                                .allowsHitTesting(false)
-
-                            // Border
-                            Rectangle()
-                                .fill(color)
-                                .frame(width: size.width, height: size.height)
-                                .mask(
-                                    ZStack {
-                                        Image(nsImage: maskData.image)
-                                            .resizable()
-                                            .frame(width: size.width, height: size.height)
-                                        Image(nsImage: maskData.image)
-                                            .resizable()
-                                            .frame(width: size.width, height: size.height)
-                                            .padding(12)
-                                            .blur(radius: 1)
-                                            .blendMode(.destinationOut)
-                                    }
-                                    .compositingGroup()
-                                )
-                                .opacity(1.0)
-                                .allowsHitTesting(false)
-                        }
-
-                        // Points overlay
-                        ForEach(selectedPoints) { point in
-                            Circle()
-                                .fill(point.isPositive ? Color.green : Color.red)
-                                .frame(width: 14, height: 14)
-                                .overlay(Circle().stroke(Color.white, lineWidth: 2))
-                                .position(
-                                    x: point.normalizedCoords.x * size.width,
-                                    y: point.normalizedCoords.y * size.height
-                                )
+                            // Brush preview circle
+                            if let pos = brushPreviewPosition {
+                                let scaledBrushSize = brushSize * size.width / 500.0
+                                Circle()
+                                    .stroke(brushMode == .add ? Color.green : Color.red, lineWidth: 2)
+                                    .frame(width: scaledBrushSize, height: scaledBrushSize)
+                                    .position(x: pos.x * size.width, y: pos.y * size.height)
+                                    .allowsHitTesting(false)
+                            }
                         }
                     }
                     .frame(width: size.width, height: size.height)
                     .position(x: geo.size.width / 2, y: geo.size.height / 2)
                     .contentShape(Rectangle())
-                    .onTapGesture { location in
-                        if currentStep == .segment {
-                            let normalized = CGPoint(
-                                x: (location.x - (geo.size.width - size.width) / 2) / size.width,
-                                y: (location.y - (geo.size.height - size.height) / 2) / size.height
-                            )
-                            if normalized.x >= 0 && normalized.x <= 1 && normalized.y >= 0 && normalized.y <= 1 {
-                                // If we have masks, try to select one by clicking on it
-                                if !allMasks.isEmpty {
-                                    if let clickedIndex = findMaskAtPoint(normalized, displaySize: size) {
-                                        selectedMaskIndex = clickedIndex
-                                        return
-                                    }
+                    .overlay(
+                        RightClickHandler { location in
+                            if currentStep == .segment {
+                                let normalized = CGPoint(
+                                    x: location.x / size.width,
+                                    y: location.y / size.height
+                                )
+                                if normalized.x >= 0 && normalized.x <= 1 && normalized.y >= 0 && normalized.y <= 1 {
+                                    addPoint(at: normalized)
                                 }
-                                // Otherwise add a point for segmentation
-                                addPoint(at: normalized)
                             }
                         }
+                        .frame(width: size.width, height: size.height)
+                    )
+                    .onTapGesture { location in
+                        let normalized = CGPoint(
+                            x: (location.x - (geo.size.width - size.width) / 2) / size.width,
+                            y: (location.y - (geo.size.height - size.height) / 2) / size.height
+                        )
+                        guard normalized.x >= 0 && normalized.x <= 1 && normalized.y >= 0 && normalized.y <= 1 else { return }
+
+                        if currentStep == .segment && !allMasks.isEmpty {
+                            // Left-click to select existing mask regions
+                            if let clickedIndex = findMaskAtPoint(normalized, displaySize: size) {
+                                selectedMaskIndex = clickedIndex
+                            }
+                        } else if currentStep == .touchup {
+                            // Single click to paint
+                            saveUndoState()
+                            paintOnMask(at: normalized)
+                        }
                     }
+                    .onContinuousHover { phase in
+                        if currentStep == .touchup {
+                            switch phase {
+                            case .active(let location):
+                                let normalized = CGPoint(
+                                    x: (location.x - (geo.size.width - size.width) / 2) / size.width,
+                                    y: (location.y - (geo.size.height - size.height) / 2) / size.height
+                                )
+                                if normalized.x >= 0 && normalized.x <= 1 && normalized.y >= 0 && normalized.y <= 1 {
+                                    brushPreviewPosition = normalized
+                                } else {
+                                    brushPreviewPosition = nil
+                                }
+                            case .ended:
+                                brushPreviewPosition = nil
+                            }
+                        } else {
+                            brushPreviewPosition = nil
+                        }
+                    }
+                    .gesture(
+                        currentStep == .touchup ?
+                        DragGesture(minimumDistance: 1)
+                            .onChanged { value in
+                                // Save mask state at start of stroke
+                                if !isStrokeInProgress {
+                                    isStrokeInProgress = true
+                                    saveUndoState()
+                                }
+
+                                let normalized = CGPoint(
+                                    x: (value.location.x - (geo.size.width - size.width) / 2) / size.width,
+                                    y: (value.location.y - (geo.size.height - size.height) / 2) / size.height
+                                )
+                                if normalized.x >= 0 && normalized.x <= 1 && normalized.y >= 0 && normalized.y <= 1 {
+                                    brushPreviewPosition = normalized
+                                    paintOnMask(at: normalized)
+                                }
+                            }
+                            .onEnded { _ in
+                                isStrokeInProgress = false
+                            }
+                        : nil
+                    )
                 }
             } else {
                 // Drop zone
@@ -243,8 +401,9 @@ struct ContentViewSimple: View {
             }
 
             // Step 2: Segment
-            stepSection(number: 2, title: "Segment", isActive: currentStep == .segment, isDone: !allMasks.isEmpty) {
-                if currentStep == .segment || !allMasks.isEmpty {
+            stepSection(number: 2, title: "Segment", isActive: currentStep == .segment, isDone: currentStep == .touchup || currentStep == .generate) {
+                if currentStep == .segment {
+                    // Full segment controls when active
                     VStack(alignment: .leading, spacing: 8) {
                         // Text prompt
                         HStack {
@@ -256,7 +415,7 @@ struct ContentViewSimple: View {
                                 .disabled(textPrompt.isEmpty || env.isProcessing)
                         }
 
-                        Text("Or click on the object")
+                        Text("Or right-click on the object")
                             .font(.caption)
                             .foregroundColor(.secondary)
 
@@ -335,41 +494,127 @@ struct ContentViewSimple: View {
                             }
                         }
                     }
+                } else if currentStep == .touchup || currentStep == .generate {
+                    // Locked state - show selected region info only
+                    HStack {
+                        Circle()
+                            .fill(colorForMask(selectedMaskIndex))
+                            .frame(width: 10, height: 10)
+                        Text("Region \(selectedMaskIndex + 1) selected")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
 
-            // Step 3: Generate
-            stepSection(number: 3, title: "Generate 3D", isActive: currentStep == .generate, isDone: generated3DModelURL != nil) {
-                if currentStep == .generate {
-                    if isGenerating {
-                        HStack {
-                            ProgressView().scaleEffect(0.7)
-                            Text(generationStatus)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    } else if generated3DModelURL != nil {
-                        HStack {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
-                            Text("Done!")
-                                .font(.caption)
+            // Step 3: Touchup
+            stepSection(number: 3, title: "Touchup", isActive: currentStep == .touchup, isDone: currentStep == .generate) {
+                if currentStep == .touchup {
+                    VStack(alignment: .leading, spacing: 10) {
+                        // Brush mode toggle
+                        Text("Brush mode:")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+
+                        HStack(spacing: 8) {
+                            Button(action: { brushMode = .add }) {
+                                HStack {
+                                    Image(systemName: "plus.circle.fill")
+                                    Text("Add")
+                                }
+                                .padding(.vertical, 6)
+                                .padding(.horizontal, 12)
+                                .background(brushMode == .add ? Color.green.opacity(0.2) : Color.clear)
+                                .cornerRadius(6)
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundColor(brushMode == .add ? .green : .secondary)
+
+                            Button(action: { brushMode = .remove }) {
+                                HStack {
+                                    Image(systemName: "minus.circle.fill")
+                                    Text("Remove")
+                                }
+                                .padding(.vertical, 6)
+                                .padding(.horizontal, 12)
+                                .background(brushMode == .remove ? Color.red.opacity(0.2) : Color.clear)
+                                .cornerRadius(6)
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundColor(brushMode == .remove ? .red : .secondary)
                         }
 
-                        Button("Show in Finder") {
-                            if let url = generated3DModelURL {
-                                NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
+                        // Brush size slider
+                        HStack {
+                            Text("Brush size:")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text("\(Int(brushSize))px")
+                                .font(.caption.monospacedDigit())
+                                .foregroundColor(.primary)
+                        }
+
+                        HStack(spacing: 8) {
+                            Text("1")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                            Slider(value: $brushSize, in: 1...150)
+                                .controlSize(.small)
+                            Text("150")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+
+                        Text("Paint on the image to refine the mask")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
+            // Step 4: Generate
+            stepSection(number: 4, title: "Generate 3D", isActive: currentStep == .generate, isDone: generated3DModelURL != nil) {
+                if currentStep == .generate {
+                    if isGenerating {
+                        // Multi-stage progress UI
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(GenerationStage.allCases, id: \.self) { stage in
+                                stageProgressRow(stage: stage)
                             }
                         }
-                        .font(.caption)
+                        .padding(.vertical, 4)
+                    } else if generated3DModelURL != nil {
+                        // Completed state
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                                    .font(.caption)
+                                Text("Generation Complete")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                            }
+
+                            Button(action: {
+                                if let url = generated3DModelURL {
+                                    NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
+                                }
+                            }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "folder")
+                                    Text("Show in Finder")
+                                }
+                                .font(.caption)
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundColor(.accentColor)
+                        }
                     }
                 }
             }
 
             Spacer()
-
-            // Action button
-            actionButton
 
             // Status
             if env.isProcessing {
@@ -381,12 +626,8 @@ struct ContentViewSimple: View {
                 }
             }
 
-            // Reset
-            if inputImage != nil {
-                Button("Start Over") { clearAll() }
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
+            // Action buttons stack: Next (blue), Back (gray), Start Over (red)
+            actionButtons
         }
         .padding()
         .background(Color(NSColor.windowBackgroundColor))
@@ -426,33 +667,168 @@ struct ContentViewSimple: View {
     }
 
     @ViewBuilder
-    private var actionButton: some View {
-        switch currentStep {
-        case .input:
-            EmptyView()
+    private func stageProgressRow(stage: GenerationStage) -> some View {
+        let stageData = generationStages[stage] ?? StageProgress()
 
-        case .segment:
-            Button(action: { currentStep = .generate }) {
-                Text("Generate 3D")
-                    .frame(maxWidth: .infinity)
+        HStack(spacing: 8) {
+            // Status indicator
+            ZStack {
+                Circle()
+                    .fill(stageData.status == .completed ? Color.green :
+                          stageData.status == .inProgress ? Color.accentColor.opacity(0.2) :
+                          Color.gray.opacity(0.15))
+                    .frame(width: 18, height: 18)
+
+                switch stageData.status {
+                case .completed:
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.white)
+                case .inProgress:
+                    ProgressView()
+                        .scaleEffect(0.5)
+                case .pending:
+                    Circle()
+                        .fill(Color.gray.opacity(0.3))
+                        .frame(width: 6, height: 6)
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(allMasks.isEmpty)
 
-        case .generate:
-            if generated3DModelURL == nil && !isGenerating {
-                Button(action: { generate3D() }) {
-                    Text("Generate")
+            // Stage info
+            VStack(alignment: .leading, spacing: 2) {
+                Text(stage.rawValue)
+                    .font(.caption)
+                    .fontWeight(stageData.status == .inProgress ? .medium : .regular)
+                    .foregroundColor(stageData.status == .pending ? .secondary : .primary)
+
+                // Progress bar for stages with progress
+                if stageData.status == .inProgress && stageData.progress > 0 {
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Color.gray.opacity(0.2))
+                                .frame(height: 4)
+
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Color.accentColor)
+                                .frame(width: geo.size.width * stageData.progress, height: 4)
+                        }
+                    }
+                    .frame(height: 4)
+                }
+
+                // Detail text
+                if !stageData.detail.isEmpty && stageData.status == .inProgress {
+                    Text(stageData.detail)
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Spacer()
+
+            // Percentage for active stages
+            if stageData.status == .inProgress && stageData.progress > 0 {
+                Text("\(Int(stageData.progress * 100))%")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private var actionButtons: some View {
+        VStack(spacing: 8) {
+            // Next button (blue)
+            switch currentStep {
+            case .input:
+                EmptyView()
+
+            case .segment:
+                Button(action: { startTouchup() }) {
+                    Text("Next: Touchup")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-            } else if generated3DModelURL != nil {
-                Button(action: { generated3DModelURL = nil; generate3D() }) {
-                    Text("Regenerate")
+                .disabled(allMasks.isEmpty)
+
+            case .touchup:
+                Button(action: {
+                    createCompositeImage()
+                    currentStep = .generate
+                }) {
+                    Text("Next: Generate 3D")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+
+            case .generate:
+                if generated3DModelURL == nil && !isGenerating {
+                    Button(action: { generate3D() }) {
+                        Text("Generate")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else if generated3DModelURL != nil {
+                    Button(action: { generated3DModelURL = nil; generate3D() }) {
+                        Text("Regenerate")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+
+            // Back button (gray) - only show if not on first step
+            if currentStep != .input {
+                Button(action: {
+                    if currentStep == .touchup {
+                        showBackWarning = true
+                    } else {
+                        goBack()
+                    }
+                }) {
+                    Text("Back")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
+                .foregroundColor(.secondary)
+                .alert("Discard Touchup Changes?", isPresented: $showBackWarning) {
+                    Button("Cancel", role: .cancel) { }
+                    Button("Discard", role: .destructive) {
+                        goBack()
+                    }
+                } message: {
+                    Text("Your touchup edits will be lost if you go back to the Segment step.")
+                }
             }
+
+            // Start Over button (red) - only show if we have an image
+            if inputImage != nil {
+                Button(action: { clearAll() }) {
+                    Text("Start Over")
+                        .foregroundColor(.red)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+            }
+        }
+    }
+
+    private func goBack() {
+        switch currentStep {
+        case .input:
+            break
+        case .segment:
+            currentStep = .input
+        case .touchup:
+            editableMaskImage = nil
+            maskHistory.removeAll()
+            currentStep = .segment
+        case .generate:
+            compositeImage = nil
+            currentStep = .touchup
         }
     }
 
@@ -466,6 +842,9 @@ struct ContentViewSimple: View {
         selectedPoints.removeAll()
         textPrompt = ""
         textSearchPerformed = false
+        editableMaskImage = nil
+        maskHistory.removeAll()
+        compositeImage = nil
         generated3DModelURL = nil
         currentStep = .input
     }
@@ -476,6 +855,211 @@ struct ContentViewSimple: View {
         selectedPoints.removeAll()
         textPrompt = ""
         textSearchPerformed = false
+        editableMaskImage = nil
+    }
+
+    // MARK: - Touchup Functions
+
+    private func startTouchup() {
+        guard selectedMaskIndex < allMasks.count else { return }
+
+        // Copy the selected mask to editable mask
+        let selectedMask = allMasks[selectedMaskIndex].image
+        editableMaskImage = selectedMask.copy() as? NSImage
+        maskHistory.removeAll()  // Clear undo history
+        currentStep = .touchup
+    }
+
+    private func paintOnMask(at normalizedPoint: CGPoint) {
+        guard let maskImage = editableMaskImage,
+              let cgImage = maskImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+
+        let width = cgImage.width
+        let height = cgImage.height
+
+        // Create a mutable bitmap context
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ) else { return }
+
+        // Draw existing mask
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        // Calculate pixel position (flip Y for CoreGraphics coordinate system)
+        let pixelX = normalizedPoint.x * CGFloat(width)
+        let pixelY = (1.0 - normalizedPoint.y) * CGFloat(height)
+
+        // Scale brush size relative to image size
+        let scaledBrushSize = brushSize * CGFloat(width) / 500.0
+
+        // Draw circle at position
+        let rect = CGRect(
+            x: pixelX - scaledBrushSize / 2,
+            y: pixelY - scaledBrushSize / 2,
+            width: scaledBrushSize,
+            height: scaledBrushSize
+        )
+
+        if brushMode == .add {
+            // Add to mask - draw white with full alpha
+            context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            context.fillEllipse(in: rect)
+        } else {
+            // Remove from mask - clear the area
+            context.setBlendMode(.clear)
+            context.fillEllipse(in: rect)
+            context.setBlendMode(.normal)
+        }
+
+        // Create new image from context
+        guard let newCGImage = context.makeImage() else { return }
+
+        // Update the editable mask
+        let newImage = NSImage(cgImage: newCGImage, size: NSSize(width: width, height: height))
+        editableMaskImage = newImage
+    }
+
+    private func saveTouchupMask() -> URL? {
+        guard let maskImage = editableMaskImage,
+              let cgImage = maskImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+
+        let tempPath = NSTemporaryDirectory() + "touchup_mask_\(UUID().uuidString).png"
+        let url = URL(fileURLWithPath: tempPath)
+
+        let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
+        guard let pngData = bitmapRep.representation(using: .png, properties: [:]) else { return nil }
+
+        do {
+            try pngData.write(to: url)
+            return url
+        } catch {
+            print("Failed to save touchup mask: \(error)")
+            return nil
+        }
+    }
+
+    // MARK: - Undo Functions
+
+    private func saveUndoState() {
+        guard let maskImage = editableMaskImage,
+              let copy = maskImage.copy() as? NSImage else { return }
+        maskHistory.append(copy)
+        // Limit history to 50 states to avoid memory issues
+        if maskHistory.count > 50 {
+            maskHistory.removeFirst()
+        }
+    }
+
+    private func undo() {
+        guard !maskHistory.isEmpty else { return }
+        editableMaskImage = maskHistory.removeLast()
+    }
+
+    private func createCompositeImage() {
+        guard let sourceImage = inputImage,
+              let sourceCG = sourceImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+
+        // Get the mask - use touchup mask if available, otherwise selected mask
+        let maskImage: NSImage?
+        if let touchup = editableMaskImage {
+            maskImage = touchup
+        } else if selectedMaskIndex < allMasks.count {
+            maskImage = allMasks[selectedMaskIndex].image
+        } else {
+            maskImage = nil
+        }
+
+        guard let mask = maskImage,
+              let maskCG = mask.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+
+        let width = sourceCG.width
+        let height = sourceCG.height
+
+        // Use non-premultiplied alpha to avoid color artifacts
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue)
+
+        // Create context for source image (non-premultiplied)
+        guard let sourceContext = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo.rawValue
+        ) else { return }
+
+        // Draw the source image
+        sourceContext.draw(sourceCG, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        // Create context for mask (scaled to source size)
+        guard let maskContext = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return }
+
+        // Draw mask scaled to source size
+        maskContext.draw(maskCG, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        // Get pixel data
+        guard let sourceData = sourceContext.data,
+              let maskData = maskContext.data else { return }
+
+        // Create output context with alpha
+        guard let outputContext = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return }
+
+        guard let outputData = outputContext.data else { return }
+
+        let sourcePixels = sourceData.bindMemory(to: UInt8.self, capacity: width * height * 4)
+        let maskPixels = maskData.bindMemory(to: UInt8.self, capacity: width * height * 4)
+        let outputPixels = outputData.bindMemory(to: UInt8.self, capacity: width * height * 4)
+
+        // Composite: copy source RGB where mask alpha > 0, set alpha from mask
+        for i in 0..<(width * height) {
+            let offset = i * 4
+            let maskAlpha = maskPixels[offset + 3]  // Alpha channel of mask
+
+            if maskAlpha > 0 {
+                // Inside mask: copy source colors with mask alpha
+                outputPixels[offset + 0] = sourcePixels[offset + 0]  // R
+                outputPixels[offset + 1] = sourcePixels[offset + 1]  // G
+                outputPixels[offset + 2] = sourcePixels[offset + 2]  // B
+                outputPixels[offset + 3] = maskAlpha                  // A
+            } else {
+                // Outside mask: fully transparent
+                outputPixels[offset + 0] = 0
+                outputPixels[offset + 1] = 0
+                outputPixels[offset + 2] = 0
+                outputPixels[offset + 3] = 0
+            }
+        }
+
+        // Create final image
+        guard let finalImage = outputContext.makeImage() else { return }
+
+        compositeImage = NSImage(cgImage: finalImage, size: NSSize(width: width, height: height))
     }
 
     private func selectImage() {
@@ -667,43 +1251,156 @@ struct ContentViewSimple: View {
     }
 
     private func generate3D() {
-        guard let imagePath = inputImagePath, !allMasks.isEmpty else { return }
-
-        // Use the selected mask
-        let maskPath = selectedMaskURL?.path ?? NSTemporaryDirectory() + "mask_for_3d.png"
-        if let mask = selectedMask, selectedMaskURL == nil {
-            if let tiff = mask.tiffRepresentation,
-               let bitmap = NSBitmapImageRep(data: tiff),
-               let png = bitmap.representation(using: .png, properties: [:]) {
-                try? png.write(to: URL(fileURLWithPath: maskPath))
+        // Use the exact composite image that was shown in preview
+        // This ensures what user sees is what gets generated
+        guard let composite = compositeImage else {
+            // Fallback: create composite if not already created
+            createCompositeImage()
+            guard compositeImage != nil else {
+                print("ERROR: No composite image available for 3D generation")
+                return
             }
+            return generate3D() // Retry with newly created composite
+        }
+
+        // Save composite image to temp file (PNG preserves alpha channel)
+        let tempPath = NSTemporaryDirectory() + "composite_for_3d_\(UUID().uuidString).png"
+        guard let cgImage = composite.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            print("ERROR: Failed to get CGImage from composite")
+            return
+        }
+
+        let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
+        guard let pngData = bitmapRep.representation(using: .png, properties: [:]) else {
+            print("ERROR: Failed to create PNG data from composite")
+            return
+        }
+
+        do {
+            try pngData.write(to: URL(fileURLWithPath: tempPath))
+            print("============================================================")
+            print("[3D Generation] COMPOSITE IMAGE SAVED")
+            print("[3D Generation] Path: \(tempPath)")
+            print("[3D Generation] Size: \(cgImage.width) x \(cgImage.height)")
+            print("[3D Generation] This is the EXACT image being sent to 3D model")
+            print("============================================================")
+        } catch {
+            print("ERROR: Failed to save composite image: \(error)")
+            return
         }
 
         isGenerating = true
         generationStatus = "Starting..."
 
+        // Initialize all stages to pending
+        generationStages = [:]
+        for stage in GenerationStage.allCases {
+            generationStages[stage] = StageProgress()
+        }
+
         Task {
+            print("[3D Generation] Calling generate3DModel with:")
+            print("[3D Generation]   imagePath: \(tempPath)")
+            print("[3D Generation]   maskPath: (empty - composite has alpha)")
+
+            // Pass composite as image with empty mask (composite already has alpha)
             await env.generate3DModel(
-                imagePath: imagePath,
-                maskPath: maskPath,
+                imagePath: tempPath,
+                maskPath: "",  // No mask needed - composite already has transparency
                 steps: 30,
                 resolution: 256,
                 progress: { status in
-                    DispatchQueue.main.async { generationStatus = status }
+                    DispatchQueue.main.async {
+                        self.generationStatus = status
+                        self.updateGenerationStage(from: status)
+                    }
                 },
                 completion: { result in
                     DispatchQueue.main.async {
-                        isGenerating = false
+                        // Mark all stages as completed on success
+                        if case .success = result {
+                            for stage in GenerationStage.allCases {
+                                self.generationStages[stage] = StageProgress(status: .completed, progress: 1.0, detail: "")
+                            }
+                        }
+
+                        self.isGenerating = false
                         switch result {
                         case .success(let url):
-                            generated3DModelURL = url
+                            self.generated3DModelURL = url
                         case .failure(let error):
-                            generationStatus = "Error: \(error.localizedDescription)"
+                            self.generationStatus = "Error: \(error.localizedDescription)"
                         }
                     }
                 }
             )
         }
+    }
+
+    private func updateGenerationStage(from status: String) {
+        // Parse status string and update appropriate stage
+        // Progress strings from PythonEnvironment:
+        // - "Extracting foreground..."
+        // - "Loading model..."
+        // - "Generating 3D shape..." (treated as loading)
+        // - "Diffusion Sampling: XX% | step/total | time"
+        // - "Volume Decoding: XX% | step/total | time"
+        // - "Saving model..."
+
+        if status.contains("Extracting") {
+            markPreviousStagesCompleted(before: .extracting)
+            generationStages[.extracting] = StageProgress(status: .inProgress, progress: 0, detail: "")
+        } else if status.contains("Loading") || status.contains("Generating 3D shape") {
+            markPreviousStagesCompleted(before: .loading)
+            generationStages[.extracting] = StageProgress(status: .completed, progress: 1.0, detail: "")
+            generationStages[.loading] = StageProgress(status: .inProgress, progress: 0, detail: "")
+        } else if status.contains("Diffusion Sampling") {
+            markPreviousStagesCompleted(before: .diffusion)
+            let (progress, detail) = parseProgressString(status)
+            generationStages[.diffusion] = StageProgress(status: .inProgress, progress: progress, detail: detail)
+        } else if status.contains("Volume Decoding") {
+            markPreviousStagesCompleted(before: .volumeDecoding)
+            generationStages[.diffusion] = StageProgress(status: .completed, progress: 1.0, detail: "")
+            let (progress, detail) = parseProgressString(status)
+            generationStages[.volumeDecoding] = StageProgress(status: .inProgress, progress: progress, detail: detail)
+        } else if status.contains("Saving") {
+            markPreviousStagesCompleted(before: .saving)
+            generationStages[.volumeDecoding] = StageProgress(status: .completed, progress: 1.0, detail: "")
+            generationStages[.saving] = StageProgress(status: .inProgress, progress: 0, detail: "")
+        }
+    }
+
+    private func markPreviousStagesCompleted(before stage: GenerationStage) {
+        let allStages = GenerationStage.allCases
+        guard let targetIndex = allStages.firstIndex(of: stage) else { return }
+
+        for i in 0..<targetIndex {
+            let prevStage = allStages[i]
+            if generationStages[prevStage]?.status != .completed {
+                generationStages[prevStage] = StageProgress(status: .completed, progress: 1.0, detail: "")
+            }
+        }
+    }
+
+    private func parseProgressString(_ status: String) -> (Double, String) {
+        // Parse strings like "Diffusion Sampling: 50% | 15/30 | 00:06<00:06"
+        var progress: Double = 0
+        var detail = ""
+
+        // Extract percentage
+        if let percentRange = status.range(of: #"(\d+)%"#, options: .regularExpression) {
+            let percentStr = status[percentRange].dropLast() // Remove %
+            if let percent = Double(percentStr) {
+                progress = percent / 100.0
+            }
+        }
+
+        // Extract step info like "15/30"
+        if let stepRange = status.range(of: #"\d+/\d+"#, options: .regularExpression) {
+            detail = String(status[stepRange])
+        }
+
+        return (progress, detail)
     }
 
     private func fitSize(_ imageSize: CGSize, in containerSize: CGSize) -> CGSize {
@@ -722,4 +1419,35 @@ struct ContentViewSimple: View {
 
 #Preview {
     ContentViewSimple()
+}
+
+// MARK: - Right Click Handler
+
+struct RightClickHandler: NSViewRepresentable {
+    let onRightClick: (CGPoint) -> Void
+
+    func makeNSView(context: Context) -> RightClickView {
+        let view = RightClickView()
+        view.onRightClick = onRightClick
+        return view
+    }
+
+    func updateNSView(_ nsView: RightClickView, context: Context) {
+        nsView.onRightClick = onRightClick
+    }
+
+    class RightClickView: NSView {
+        var onRightClick: ((CGPoint) -> Void)?
+
+        override func rightMouseDown(with event: NSEvent) {
+            let location = convert(event.locationInWindow, from: nil)
+            // Flip Y coordinate for SwiftUI
+            let flippedLocation = CGPoint(x: location.x, y: bounds.height - location.y)
+            onRightClick?(flippedLocation)
+        }
+
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+            return true
+        }
+    }
 }

@@ -737,15 +737,23 @@ class PythonEnvironment: ObservableObject {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: finalUvPath)
-        process.arguments = [
+
+        // Build arguments - only include mask if provided
+        var args = [
             "run", hunyuanScript,
             "--image", imagePath,
-            "--mask", maskPath,
             "--output", outputPath.path,
             "--output-dir", hunyuanDir.path,
             "--steps", "\(steps)",
             "--resolution", "\(resolution)"
         ]
+
+        // Only add mask argument if a mask path is provided
+        if !maskPath.isEmpty {
+            args.insert(contentsOf: ["--mask", maskPath], at: 4)
+        }
+
+        process.arguments = args
         process.currentDirectoryURL = hunyuanDir
 
         var currentEnv = ProcessInfo.processInfo.environment
