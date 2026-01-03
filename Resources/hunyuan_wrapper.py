@@ -20,9 +20,25 @@ import numpy as np
 from PIL import Image
 
 try:
-    from config import ModelConfig, PerformanceConfig, metrics
-    from device_utils import get_device, check_gpu_available, health_check
-    from logging_config import get_logger
+    from modelrv3_core import (
+        get_logger,
+        validate_image_path,
+        validate_output_dir,
+        validate_mask_compatibility,
+        get_device,
+        check_gpu_available,
+        health_check,
+        ModelConfig,
+        PerformanceConfig,
+        metrics,
+    )
+    from modelrv3_core.logging import log_info, log_error, log_debug, log_warning
+    from modelrv3_core.exceptions import (
+        ModelLoadError,
+        ImageValidationError,
+        GenerationError,
+        OutOfMemoryError,
+    )
 
     logger = get_logger("hunyuan_wrapper")
 
@@ -30,6 +46,53 @@ try:
     HUNYUAN_CACHE_DIR = ModelConfig.get_hunyuan_cache_dir()
 except ImportError:
     logger = None
+    log_info = lambda x: print(x, file=sys.stderr)
+    log_error = lambda x: print(f"ERROR: {x}", file=sys.stderr)
+    log_warning = lambda x: print(f"WARNING: {x}", file=sys.stderr)
+    log_debug = lambda x: None
+    get_device = lambda: (
+        "mps"
+        if torch.backends.mps.is_available()
+        else "cuda"
+        if torch.cuda.is_available()
+        else "cpu"
+    )
+    check_gpu_available = (
+        lambda: torch.backends.mps.is_available() or torch.cuda.is_available()
+    )
+    ModelLoadError = Exception
+    ImageValidationError = Exception
+    GenerationError = Exception
+    OutOfMemoryError = Exception
+
+    def validate_image_path(path):
+        if not os.path.exists(path):
+            raise ImageValidationError(f"File not found: {path}")
+
+    def validate_output_dir(path):
+        os.makedirs(path, exist_ok=True)
+
+    def validate_mask_compatibility(image_path, mask_path):
+        pass
+
+    ModelConfig = type(
+        "ModelConfig",
+        (),
+        {
+            "get_checkpoint_dir": lambda: Path.home()
+            / "Library"
+            / "Application Support"
+            / "ModelrV3",
+            "get_hunyuan_cache_dir": lambda: Path.home()
+            / "Library"
+            / "Application Support"
+            / "ModelrV3"
+            / "Hunyuan3D",
+        },
+    )()
+    PerformanceConfig = type("PerformanceConfig", (), {"ENABLE_METRICS": False})()
+    metrics = {}
+
     APP_SUPPORT_DIR = os.path.expanduser("~/Library/Application Support/ModelrV3")
     HUNYUAN_CACHE_DIR = Path(os.path.join(APP_SUPPORT_DIR, "Hunyuan3D"))
 
@@ -39,93 +102,6 @@ os.environ["HY3DGEN_MODELS"] = str(HUNYUAN_CACHE_DIR)
 os.environ["HF_HOME"] = str(HUNYUAN_CACHE_DIR / "hf_home")
 os.environ["HUGGINGFACE_HUB_CACHE"] = str(HUNYUAN_CACHE_DIR / "hf_cache")
 os.environ["TORCH_HOME"] = str(HUNYUAN_CACHE_DIR / "torch_home")
-
-
-class ModelLoadError(Exception):
-    pass
-
-
-class ImageValidationError(Exception):
-    pass
-
-
-class GenerationError(Exception):
-    pass
-
-
-class OutOfMemoryError(Exception):
-    pass
-
-
-def log_info(message: str) -> None:
-    if logger:
-        logger.info(message)
-    else:
-        print(message, file=sys.stderr)
-
-
-def log_error(message: str) -> None:
-    if logger:
-        logger.error(message)
-    else:
-        print(f"ERROR: {message}", file=sys.stderr)
-
-
-def log_debug(message: str) -> None:
-    if logger:
-        logger.debug(message)
-
-
-def log_warning(message: str) -> None:
-    if logger:
-        logger.warning(message)
-    else:
-        print(f"WARNING: {message}", file=sys.stderr)
-
-
-def validate_image_path(image_path: str) -> None:
-    if not image_path:
-        raise ImageValidationError("Image path cannot be empty")
-
-    path = Path(image_path)
-    if not path.exists():
-        raise ImageValidationError(f"Image file not found: {image_path}")
-
-    if not path.is_file():
-        raise ImageValidationError(f"Path is not a file: {image_path}")
-
-    valid_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
-    if path.suffix.lower() not in valid_extensions:
-        raise ImageValidationError(f"Invalid image format: {path.suffix}")
-
-
-def validate_output_dir(output_dir: str) -> None:
-    path = Path(output_dir)
-    if not path.exists():
-        try:
-            path.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            raise ImageValidationError(f"Failed to create output directory: {e}")
-
-    if not path.is_dir():
-        raise ImageValidationError(f"Output path is not a directory: {output_dir}")
-
-
-def validate_mask_compatibility(image_path: str, mask_path: str) -> None:
-    try:
-        with Image.open(image_path) as img, Image.open(mask_path) as mask:
-            img_size = img.size
-            mask_size = mask.size
-
-            if (
-                abs(img_size[0] - mask_size[0]) > 10
-                or abs(img_size[1] - mask_size[1]) > 10
-            ):
-                log_warning(
-                    f"Image size {img_size} and mask size {mask_size} differ significantly"
-                )
-    except Exception as e:
-        raise ImageValidationError(f"Failed to validate mask compatibility: {e}")
 
 
 def load_pipeline(model_variant: str = "mini", device: str = "mps"):
@@ -179,7 +155,6 @@ def extract_foreground_with_mask(
         image = Image.open(image_path).convert("RGBA")
         mask_img = Image.open(mask_path).convert("RGBA")
 
-        # Resize mask to match image if needed
         if mask_img.size != image.size:
             log_debug(f"Resizing mask from {mask_img.size} to {image.size}")
             mask_img = mask_img.resize(image.size, Image.Resampling.LANCZOS)
@@ -187,15 +162,12 @@ def extract_foreground_with_mask(
         image_array = np.array(image)
         mask_array = np.array(mask_img)
 
-        # SAM2 mask: alpha channel IS the mask (0=background, 255=foreground)
         alpha_mask = mask_array[:, :, 3]
 
-        # Apply mask as alpha channel to original image
         image_array[:, :, 3] = alpha_mask
 
         result = Image.fromarray(image_array, "RGBA")
 
-        # Save composite for debugging
         if output_dir:
             validate_output_dir(output_dir)
             composite_path = os.path.join(output_dir, "self_test_composite.png")
@@ -229,7 +201,6 @@ def generate_3d_model(
         if progress_callback:
             progress_callback("Loading model", 0.0)
 
-        # Load shape generation pipeline
         pipeline = load_pipeline(model_variant, device)
 
         if progress_callback:
@@ -250,7 +221,6 @@ def generate_3d_model(
         if progress_callback:
             progress_callback("Exporting model", 0.9)
 
-        # Export to GLB
         mesh.export(output_path)
 
         if progress_callback:
@@ -259,7 +229,6 @@ def generate_3d_model(
         log_info(f"Shape generation took {shape_time:.1f}s")
         log_info(f"Model saved to: {output_path}")
 
-        # Track metrics if available
         if (
             logger
             and hasattr(PerformanceConfig, "ENABLE_METRICS")
@@ -280,9 +249,7 @@ def run_self_test(
     output_dir: str,
     model_variant: str = "mini",
 ) -> str:
-    """
-    Run self-test: generate 3D model from masked self-test image.
-    """
+    """Run self-test: generate 3D model from masked self-test image."""
     try:
         validate_image_path(mask_path)
         validate_image_path(original_image_path)
@@ -295,23 +262,20 @@ def run_self_test(
         )
         log_info(f"Self-test using device: {device}")
 
-        # Use .obj format for SceneKit compatibility (GLB not supported by ModelIO)
         output_path = os.path.join(output_dir, "self_test_model.obj")
 
-        # Extract foreground using SAM2 mask (saves composite for debugging)
         log_info("Extracting foreground with mask...")
         foreground = extract_foreground_with_mask(
             original_image_path, mask_path, output_dir=output_dir
         )
 
-        # Generate 3D model (shape only, reduced quality for faster self-test)
         generate_3d_model(
             image=foreground,
             output_path=output_path,
             model_variant=model_variant,
             device=device,
-            num_steps=35,  # High feature quality
-            octree_resolution=150,  # Lower mesh resolution for faster generation
+            num_steps=35,
+            octree_resolution=150,
         )
 
         print(f"SELF_TEST_MODEL_PATH:{output_path}", flush=True)

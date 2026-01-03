@@ -10,6 +10,8 @@ struct ZoomableImageView<Content: View>: NSViewRepresentable {
 
     // Gesture callbacks (normalized 0-1 coordinates)
     var onTap: ((CGPoint) -> Void)?
+    var onOptionTap: ((CGPoint) -> Void)?  // Option+Click for negative points
+    var onRightClick: ((CGPoint) -> Void)?  // Right-click for deletion
     var onDragStart: ((CGPoint) -> Void)?
     var onDragChange: ((CGPoint, CGPoint) -> Void)?
     var onDragEnd: ((CGPoint, CGPoint) -> Void)?
@@ -24,6 +26,10 @@ struct ZoomableImageView<Content: View>: NSViewRepresentable {
     var onLassoContinue: ((CGPoint) -> Void)?
     var onLassoEnd: (() -> Void)?
 
+    // Mouse tracking for brush cursor
+    var onMouseMoved: ((CGPoint) -> Void)?
+    var onMouseExited: (() -> Void)?
+
     // Tool mode determines gesture behavior
     var toolMode: SAMTool
 
@@ -35,6 +41,8 @@ struct ZoomableImageView<Content: View>: NSViewRepresentable {
     init(
         magnification: Binding<CGFloat>,
         onTap: ((CGPoint) -> Void)? = nil,
+        onOptionTap: ((CGPoint) -> Void)? = nil,
+        onRightClick: ((CGPoint) -> Void)? = nil,
         onDragStart: ((CGPoint) -> Void)? = nil,
         onDragChange: ((CGPoint, CGPoint) -> Void)? = nil,
         onDragEnd: ((CGPoint, CGPoint) -> Void)? = nil,
@@ -44,6 +52,8 @@ struct ZoomableImageView<Content: View>: NSViewRepresentable {
         onLassoStart: ((CGPoint) -> Void)? = nil,
         onLassoContinue: ((CGPoint) -> Void)? = nil,
         onLassoEnd: (() -> Void)? = nil,
+        onMouseMoved: ((CGPoint) -> Void)? = nil,
+        onMouseExited: (() -> Void)? = nil,
         toolMode: SAMTool = .point,
         contentSize: CGSize,
         contentID: String = "",
@@ -51,6 +61,8 @@ struct ZoomableImageView<Content: View>: NSViewRepresentable {
     ) {
         self._magnification = magnification
         self.onTap = onTap
+        self.onOptionTap = onOptionTap
+        self.onRightClick = onRightClick
         self.onDragStart = onDragStart
         self.onDragChange = onDragChange
         self.onDragEnd = onDragEnd
@@ -60,6 +72,8 @@ struct ZoomableImageView<Content: View>: NSViewRepresentable {
         self.onLassoStart = onLassoStart
         self.onLassoContinue = onLassoContinue
         self.onLassoEnd = onLassoEnd
+        self.onMouseMoved = onMouseMoved
+        self.onMouseExited = onMouseExited
         self.toolMode = toolMode
         self.contentSize = contentSize
         self.contentID = contentID
@@ -90,6 +104,8 @@ struct ZoomableImageView<Content: View>: NSViewRepresentable {
         canvasView.frame = NSRect(origin: .zero, size: contentSize)
         canvasView.toolMode = toolMode
         canvasView.onTap = onTap
+        canvasView.onOptionTap = onOptionTap
+        canvasView.onRightClick = onRightClick
         canvasView.onDragStart = onDragStart
         canvasView.onDragChange = onDragChange
         canvasView.onDragEnd = onDragEnd
@@ -99,6 +115,8 @@ struct ZoomableImageView<Content: View>: NSViewRepresentable {
         canvasView.onLassoStart = onLassoStart
         canvasView.onLassoContinue = onLassoContinue
         canvasView.onLassoEnd = onLassoEnd
+        canvasView.onMouseMoved = onMouseMoved
+        canvasView.onMouseExited = onMouseExited
 
         // Create hosting view for SwiftUI content
         let hostingView = NSHostingView(rootView: content())
@@ -132,6 +150,8 @@ struct ZoomableImageView<Content: View>: NSViewRepresentable {
         coordinator.canvasView.toolMode = toolMode
         coordinator.canvasView.magnification = magnification
         coordinator.canvasView.onTap = onTap
+        coordinator.canvasView.onOptionTap = onOptionTap
+        coordinator.canvasView.onRightClick = onRightClick
         coordinator.canvasView.onDragStart = onDragStart
         coordinator.canvasView.onDragChange = onDragChange
         coordinator.canvasView.onDragEnd = onDragEnd
@@ -141,6 +161,8 @@ struct ZoomableImageView<Content: View>: NSViewRepresentable {
         coordinator.canvasView.onLassoStart = onLassoStart
         coordinator.canvasView.onLassoContinue = onLassoContinue
         coordinator.canvasView.onLassoEnd = onLassoEnd
+        coordinator.canvasView.onMouseMoved = onMouseMoved
+        coordinator.canvasView.onMouseExited = onMouseExited
 
         // Update magnification if changed externally
         if abs(scrollView.magnification - magnification) > 0.01 {
@@ -220,6 +242,8 @@ class ImageCanvasView: NSView {
     var magnification: CGFloat = 1.0  // Track magnification from NSScrollView
 
     var onTap: ((CGPoint) -> Void)?
+    var onOptionTap: ((CGPoint) -> Void)?  // Option+Click for negative points
+    var onRightClick: ((CGPoint) -> Void)?  // Right-click for deletion
     var onDragStart: ((CGPoint) -> Void)?
     var onDragChange: ((CGPoint, CGPoint) -> Void)?
     var onDragEnd: ((CGPoint, CGPoint) -> Void)?
@@ -234,6 +258,10 @@ class ImageCanvasView: NSView {
     var onLassoContinue: ((CGPoint) -> Void)?
     var onLassoEnd: (() -> Void)?
 
+    // Mouse tracking for brush cursor
+    var onMouseMoved: ((CGPoint) -> Void)?
+    var onMouseExited: (() -> Void)?
+
     private var isDragging = false
     private var dragStartPoint: CGPoint?
 
@@ -242,11 +270,16 @@ class ImageCanvasView: NSView {
     override func mouseDown(with event: NSEvent) {
         let location = convert(event.locationInWindow, from: nil)
         let normalized = normalizePoint(location)
+        let isOptionPressed = event.modifierFlags.contains(.option)
 
         switch toolMode {
         case .point:
-            // Single click for point placement
-            onTap?(normalized)
+            // Option+Click for negative point, regular click for positive
+            if isOptionPressed {
+                onOptionTap?(normalized)
+            } else {
+                onTap?(normalized)
+            }
         case .boundingBox:
             // Start drag for bounding box
             isDragging = true
@@ -260,7 +293,16 @@ class ImageCanvasView: NSView {
             // Start paint stroke
             isDragging = true
             onPaintStart?(normalized)
+        case .polygon:
+            // Polygon uses tap to add vertices
+            onTap?(normalized)
         }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        let location = convert(event.locationInWindow, from: nil)
+        let normalized = normalizePoint(location)
+        onRightClick?(normalized)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -268,8 +310,8 @@ class ImageCanvasView: NSView {
         let normalized = normalizePoint(location)
 
         switch toolMode {
-        case .point:
-            break  // No drag for point mode
+        case .point, .polygon:
+            break  // No drag for point or polygon mode
         case .boundingBox:
             guard isDragging, let start = dragStartPoint else { return }
             onDragChange?(start, normalized)
@@ -282,12 +324,22 @@ class ImageCanvasView: NSView {
         }
     }
 
+    override func mouseMoved(with event: NSEvent) {
+        let location = convert(event.locationInWindow, from: nil)
+        let normalized = normalizePoint(location)
+        onMouseMoved?(normalized)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onMouseExited?()
+    }
+
     override func mouseUp(with event: NSEvent) {
         let location = convert(event.locationInWindow, from: nil)
         let normalized = normalizePoint(location)
 
         switch toolMode {
-        case .point:
+        case .point, .polygon:
             break
         case .boundingBox:
             if isDragging, let start = dragStartPoint {
@@ -313,10 +365,10 @@ class ImageCanvasView: NSView {
         for area in trackingAreas {
             removeTrackingArea(area)
         }
-        // Add new tracking area for cursor changes
+        // Add new tracking area for cursor changes and mouse movement
         let area = NSTrackingArea(
             rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInKeyWindow, .cursorUpdate],
+            options: [.mouseEnteredAndExited, .activeInKeyWindow, .cursorUpdate, .mouseMoved],
             owner: self,
             userInfo: nil
         )
@@ -327,9 +379,10 @@ class ImageCanvasView: NSView {
         switch toolMode {
         case .point:
             NSCursor.pointingHand.set()
-        case .boundingBox, .lasso:
+        case .boundingBox, .lasso, .polygon:
             NSCursor.crosshair.set()
         case .paint:
+            // Hide cursor for paint mode - we show brush preview instead
             NSCursor.crosshair.set()
         }
     }

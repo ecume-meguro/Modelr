@@ -122,13 +122,13 @@ final class SF3DTests: XCTestCase {
     
     func testMockGeneratorSelection() async throws {
         let mockService = MockPythonService()
-        
+
         // Mock service should work regardless of generator selection
         let imageSize = CGSize(width: 100, height: 100)
         let points = [SAMPoint(normalizedCoords: CGPoint(x: 0.5, y: 0.5))]
-        
-        let maskURL = try await mockService.predict(points: points, box: nil, imageSize: imageSize)
-        XCTAssertTrue(maskURL.path.contains("mask.png"))
+
+        let (_, primaryMask, _, _) = try await mockService.predict(points: points, box: nil, imageSize: imageSize)
+        XCTAssertTrue(primaryMask.path.contains("mask.png"))
     }
     
     func testMockServiceGenerate3DModel() async throws {

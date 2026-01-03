@@ -4,6 +4,13 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @StateObject private var env = PythonEnvironment()
 
+    // Debug mode: auto-load latest 3D model and go to generate tab
+    let autoLoadLatest3DModel: Bool
+
+    init(autoLoadLatest3DModel: Bool = false) {
+        self.autoLoadLatest3DModel = autoLoadLatest3DModel
+    }
+
     // Image state
     @State private var inputImage: NSImage?
     @State private var inputImagePath: String?
@@ -11,6 +18,25 @@ struct ContentView: View {
     @State private var isDragging = false
     @State private var imagePixelSize: CGSize = .zero
     @State private var cachedDisplaySize: CGSize = .zero
+
+    // Multi-mask selection state
+    @State private var maskOptions: [NSImage] = []
+    @State private var maskScores: [Double] = []
+    @State private var selectedMaskIndex: Int = 0
+    @State private var maskOptionsPaths: [String] = []
+    @State private var processedMaskCache: [Int: NSImage] = [:]  // Pre-processed masks for instant switching
+
+    // Confidence overlay state
+    @State private var confidenceOverlay: NSImage?
+    @State private var showConfidenceOverlay: Bool = false
+
+    // Real-time paint preview state
+    @State private var livePaintMask: NSImage?
+
+    // Alpha channel cache for filtering segmentation on transparent areas
+    @State private var sourceAlphaData: [UInt8] = []
+    @State private var sourceAlphaWidth: Int = 0
+    @State private var sourceAlphaHeight: Int = 0
 
     // Multi-point state
     @State private var selectedPoints: [SAMPoint] = []
@@ -20,6 +46,10 @@ struct ContentView: View {
     // Lasso state
     @State private var lassoSelections: [LassoSelection] = []
     @State private var currentLasso: LassoSelection?
+
+    // Polygon tool state
+    @State private var polygonSelections: [PolygonSelection] = []
+    @State private var currentPolygon: PolygonSelection?
 
     // Paint tool state
     @State private var paintStrokes: [PaintStroke] = []
@@ -33,12 +63,24 @@ struct ContentView: View {
     @State private var cropRect: SAMBox?
     @State private var preprocessLasso: LassoSelection?
 
-    // Undo history
+    // Undo/Redo history
     @State private var undoStack: [UndoAction] = []
+    @State private var redoStack: [UndoAction] = []
 
     // Tool state
     @State private var selectedTool: SAMTool = .point
     @State private var selectedTab: SidebarTab = .preprocess
+
+    // Skip segmentation mode (for pre-cutout images)
+    @State private var skipSegmentation: Bool = false
+
+    // Selection state for annotations
+    @State private var selectedPointId: UUID?
+    @State private var selectedBoxId: UUID?
+    @State private var selectedLassoId: UUID?
+
+    // Mask display options
+    @State private var maskOpacity: Double = 0.6
 
     // Zoom state
     @State private var magnification: CGFloat = 1.0
@@ -80,12 +122,70 @@ struct ContentView: View {
         .onChange(of: selectedPoints.count) { _, _ in triggerReInference() }
         .onChange(of: boundingBoxes.count) { _, _ in triggerReInference() }
         .onChange(of: lassoSelections.count) { _, _ in triggerReInference() }
-        // Hidden button for Cmd+Z undo keyboard shortcut
+        // State persistence for tab switching
+        .onChange(of: selectedTab) { oldTab, newTab in
+            if oldTab == .segment && newTab != .segment {
+                saveSegmentationState()
+            }
+            if newTab == .segment && oldTab != .segment {
+                restoreSegmentationState()
+            }
+        }
+        // Keyboard shortcuts
         .background(
-            Button("") { performUndo() }
-                .keyboardShortcut("z", modifiers: .command)
-                .opacity(0)
+            Group {
+                // Undo: Cmd+Z
+                Button("") { performUndo() }
+                    .keyboardShortcut("z", modifiers: .command)
+                    .opacity(0)
+
+                // Redo: Cmd+Shift+Z
+                Button("") { performRedo() }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+                    .opacity(0)
+
+                // Tool shortcuts (1-4)
+                Button("") { if selectedTab == .segment { selectedTool = .point } }
+                    .keyboardShortcut("1", modifiers: [])
+                    .opacity(0)
+
+                Button("") { if selectedTab == .segment { selectedTool = .boundingBox } }
+                    .keyboardShortcut("2", modifiers: [])
+                    .opacity(0)
+
+                Button("") { if selectedTab == .segment { selectedTool = .lasso } }
+                    .keyboardShortcut("3", modifiers: [])
+                    .opacity(0)
+
+                Button("") { if selectedTab == .segment { selectedTool = .paint } }
+                    .keyboardShortcut("4", modifiers: [])
+                    .opacity(0)
+
+                Button("") { if selectedTab == .segment { selectedTool = .polygon } }
+                    .keyboardShortcut("5", modifiers: [])
+                    .opacity(0)
+
+                // Delete selected annotation: Backspace/Delete
+                Button("") { deleteSelectedAnnotation() }
+                    .keyboardShortcut(.delete, modifiers: [])
+                    .opacity(0)
+
+                // Cancel polygon drawing: Escape
+                Button("") { cancelPolygon() }
+                    .keyboardShortcut(.escape, modifiers: [])
+                    .opacity(0)
+
+                // Toggle erase mode: E
+                Button("") { if selectedTool == .paint { isErasing.toggle() } }
+                    .keyboardShortcut("e", modifiers: [])
+                    .opacity(0)
+            }
         )
+        .onAppear {
+            if autoLoadLatest3DModel {
+                loadLatest3DModelForDebug()
+            }
+        }
     }
 
     // MARK: - Main Editor View
@@ -160,7 +260,13 @@ struct ContentView: View {
                 ZoomableImageView(
                     magnification: $magnification,
                     onTap: { normalized in
-                        handleTap(at: normalized)
+                        handleTap(at: normalized, isNegative: false)
+                    },
+                    onOptionTap: { normalized in
+                        handleTap(at: normalized, isNegative: true)
+                    },
+                    onRightClick: { normalized in
+                        handleRightClick(at: normalized)
                     },
                     onDragStart: { point in
                         handleDragStart(at: point)
@@ -189,6 +295,12 @@ struct ContentView: View {
                     onLassoEnd: {
                         handleLassoEnd()
                     },
+                    onMouseMoved: { point in
+                        brushCursorPosition = point
+                    },
+                    onMouseExited: {
+                        brushCursorPosition = nil
+                    },
                     toolMode: effectiveToolMode,
                     contentSize: displaySize,
                     contentID: "\(inputImagePath ?? "")_v\(imageVersion)"
@@ -199,13 +311,32 @@ struct ContentView: View {
                             .aspectRatio(contentMode: .fit)
                             .frame(width: displaySize.width, height: displaySize.height)
 
-                        // Only show mask in segment/generate modes
+                        // Only show mask in segment/generate modes (or skip segmentation mode)
                         if selectedTab != .preprocess, let maskImage = maskImage {
                             Image(nsImage: maskImage)
                                 .resizable()
                                 .frame(width: displaySize.width, height: displaySize.height)
                                 .allowsHitTesting(false)
+                                .opacity(maskOpacity)
+                        }
+
+                        // Live paint preview (shows mask while painting)
+                        if selectedTab == .segment, selectedTool == .paint, let liveMask = livePaintMask {
+                            Image(nsImage: liveMask)
+                                .resizable()
+                                .frame(width: displaySize.width, height: displaySize.height)
+                                .allowsHitTesting(false)
+                                .opacity(maskOpacity * 0.8)
+                        }
+
+                        // Confidence overlay (shows per-pixel uncertainty heatmap from SAM2 logits)
+                        if selectedTab != .preprocess, showConfidenceOverlay, let confidence = confidenceOverlay {
+                            Image(nsImage: confidence)
+                                .resizable()
+                                .frame(width: displaySize.width, height: displaySize.height)
+                                .blendMode(.screen)
                                 .opacity(0.6)
+                                .allowsHitTesting(false)
                         }
 
                         // Paint strokes overlay (segment mode)
@@ -229,6 +360,16 @@ struct ContentView: View {
                             .frame(width: displaySize.width, height: displaySize.height)
                         }
 
+                        // Polygon overlay for segment mode - always show completed polygons, show current only in polygon mode
+                        if selectedTab == .segment && !skipSegmentation {
+                            PolygonOverlay(
+                                polygons: polygonSelections,
+                                currentPolygon: selectedTool == .polygon ? currentPolygon : nil,
+                                displayedSize: displaySize
+                            )
+                            .frame(width: displaySize.width, height: displaySize.height)
+                        }
+
                         // Preprocess overlays
                         if selectedTab == .preprocess {
                             if selectedPreprocessTool == .crop {
@@ -245,18 +386,45 @@ struct ContentView: View {
                             }
                         }
 
-                        // Points overlay (segment mode)
-                        if selectedTab == .segment {
-                            PointsOverlay(points: selectedPoints, displayedSize: displaySize)
-                                .frame(width: displaySize.width, height: displaySize.height)
+                        // Points overlay (segment mode) - supports tap to select, drag to move
+                        if selectedTab == .segment && !skipSegmentation {
+                            PointsOverlay(
+                                points: selectedPoints,
+                                displayedSize: displaySize,
+                                selectedPointId: selectedPointId,
+                                onPointTap: { point in
+                                    if selectedPointId == point.id {
+                                        selectedPointId = nil
+                                    } else {
+                                        selectedPointId = point.id
+                                        selectedBoxId = nil
+                                        selectedLassoId = nil
+                                    }
+                                },
+                                onPointDragEnd: { originalPoint, newPosition in
+                                    handlePointDragEnd(point: originalPoint, newPosition: newPosition)
+                                }
+                            )
+                            .frame(width: displaySize.width, height: displaySize.height)
                         }
 
                         // Bounding box overlay (segment mode)
-                        if selectedTab == .segment {
+                        if selectedTab == .segment && !skipSegmentation {
                             BoundingBoxOverlay(
                                 boxes: boundingBoxes,
                                 currentBox: currentBox,
-                                displayedSize: displaySize
+                                displayedSize: displaySize,
+                                imagePixelSize: imagePixelSize,
+                                selectedBoxId: selectedBoxId,
+                                onBoxTap: { box in
+                                    if selectedBoxId == box.id {
+                                        selectedBoxId = nil
+                                    } else {
+                                        selectedBoxId = box.id
+                                        selectedPointId = nil
+                                        selectedLassoId = nil
+                                    }
+                                }
                             )
                             .frame(width: displaySize.width, height: displaySize.height)
                         }
@@ -266,7 +434,8 @@ struct ContentView: View {
                             BrushCursorPreview(
                                 brushSize: brushSize,
                                 isErasing: isErasing,
-                                displayedSize: displaySize
+                                displayedSize: displaySize,
+                                cursorPosition: brushCursorPosition
                             )
                             .frame(width: displaySize.width, height: displaySize.height)
                         }
@@ -500,14 +669,9 @@ struct ContentView: View {
 
     var sidebarView: some View {
         VStack(spacing: 0) {
-            // Tab picker
-            Picker("", selection: $selectedTab) {
-                ForEach(SidebarTab.allCases, id: \.self) { tab in
-                    Text(tab.rawValue).tag(tab)
-                }
-            }
-            .pickerStyle(.segmented)
-            .padding()
+            // Workflow stepper
+            workflowStepper
+                .padding()
 
             Divider()
 
@@ -525,10 +689,76 @@ struct ContentView: View {
 
             Divider()
 
-            // Status footer
-            statusFooter
+            // Status footer with undo/redo
+            enhancedStatusFooter
         }
         .background(Color(NSColor.windowBackgroundColor))
+    }
+
+    // MARK: - Workflow Stepper
+
+    var workflowStepper: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(SidebarTab.allCases.enumerated()), id: \.element) { index, tab in
+                Button(action: { selectedTab = tab }) {
+                    HStack(spacing: 6) {
+                        // Step number/checkmark
+                        ZStack {
+                            Circle()
+                                .fill(stepColor(for: tab))
+                                .frame(width: 22, height: 22)
+
+                            if isStepComplete(tab) {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(.white)
+                            } else {
+                                Text("\(index + 1)")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(selectedTab == tab ? .white : .primary)
+                            }
+                        }
+
+                        Text(tab.rawValue)
+                            .font(.system(size: 12, weight: selectedTab == tab ? .semibold : .regular))
+                            .foregroundColor(selectedTab == tab ? .primary : .secondary)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(selectedTab == tab ? Color.accentColor.opacity(0.15) : Color.clear)
+                    .cornerRadius(6)
+                }
+                .buttonStyle(.plain)
+
+                if index < SidebarTab.allCases.count - 1 {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 4)
+                }
+            }
+        }
+    }
+
+    private func stepColor(for tab: SidebarTab) -> Color {
+        if isStepComplete(tab) {
+            return .green
+        } else if selectedTab == tab {
+            return .accentColor
+        } else {
+            return Color.gray.opacity(0.3)
+        }
+    }
+
+    private func isStepComplete(_ tab: SidebarTab) -> Bool {
+        switch tab {
+        case .preprocess:
+            return selectedTab != .preprocess  // Complete when we've moved past it
+        case .segment:
+            return maskImage != nil || skipSegmentation
+        case .generate:
+            return generated3DModelURL != nil
+        }
     }
 
     // MARK: - Preprocess Tab
@@ -661,153 +891,354 @@ struct ContentView: View {
         .padding()
     }
 
+    // MARK: - Multi-Mask Selection View
+    @ViewBuilder
+    private var multiMaskSelectionView: some View {
+        Divider()
+
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Mask Options")
+                    .font(.headline)
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text("\(maskOptions.count) found")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            ForEach(0..<maskOptions.count, id: \.self) { index in
+                maskOptionRow(index: index)
+            }
+
+            Button(action: clearMaskOptions) {
+                Label("Clear Masks", systemImage: "xmark.circle")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    @ViewBuilder
+    private func maskOptionRow(index: Int) -> some View {
+        Button(action: { selectMask(at: index) }) {
+            HStack(spacing: 8) {
+                maskScoreIndicator(index: index)
+                maskPreviewThumbnail(index: index)
+                maskScoreText(index: index)
+                Spacer()
+                selectionCheckmark(index: index)
+            }
+            .padding(8)
+            .background(selectedMaskIndex == index ? Color.accentColor.opacity(0.1) : Color.clear)
+            .cornerRadius(8)
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func maskScoreIndicator(index: Int) -> some View {
+        ZStack {
+            Circle()
+                .stroke(Color.gray.opacity(0.3), lineWidth: 2)
+                .frame(width: 24, height: 24)
+
+            Circle()
+                .trim(from: 0, to: maskScores[safe: index] ?? 0)
+                .stroke(
+                    Color(red: 1.0 - (maskScores[safe: index] ?? 0),
+                          green: (maskScores[safe: index] ?? 0),
+                          blue: 0),
+                    style: StrokeStyle(lineWidth: 2, lineCap: .round)
+                )
+                .frame(width: 24, height: 24)
+                .rotationEffect(.degrees(-90))
+
+            Text("\(index + 1)")
+                .font(.caption2)
+                .fontWeight(.bold)
+        }
+    }
+
+    @ViewBuilder
+    private func maskPreviewThumbnail(index: Int) -> some View {
+        Group {
+            if let image = maskOptions[safe: index] {
+                Image(nsImage: image)
+                    .resizable()
+                    .frame(width: 32, height: 32)
+                    .cornerRadius(4)
+                    .scaleEffect(1.0)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(selectedMaskIndex == index ? Color.accentColor : Color.clear, lineWidth: 2)
+                    )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func maskScoreText(index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Mask \(index + 1)")
+                .font(.caption)
+                .fontWeight(selectedMaskIndex == index ? .semibold : .regular)
+            Text(String(format: "Score: %.2f", maskScores[safe: index] ?? 0))
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func selectionCheckmark(index: Int) -> some View {
+        Group {
+            if selectedMaskIndex == index {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(.accentColor)
+            }
+        }
+    }
+
     // MARK: - Segment Tab
 
     var segmentTabContent: some View {
         VStack(alignment: .leading, spacing: 16) {
-            // Tool Selection
+            // Skip Segmentation Toggle
             VStack(alignment: .leading, spacing: 8) {
-                Text("Tool")
-                    .font(.headline)
-                    .foregroundColor(.secondary)
-
-                Picker("Tool", selection: $selectedTool) {
-                    ForEach(SAMTool.allCases) { tool in
-                        Label(tool.rawValue, systemImage: tool.iconName)
-                            .tag(tool)
+                Toggle(isOn: $skipSegmentation) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Skip Segmentation")
+                            .font(.subheadline.bold())
+                        Text("Use if image is already cut out")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                 }
-                .pickerStyle(.segmented)
+                .toggleStyle(.switch)
+                .onChange(of: skipSegmentation) { _, newValue in
+                    if newValue {
+                        // Create full-image mask when skipping segmentation
+                        createFullImageMask()
+                    } else {
+                        maskImage = nil
+                    }
+                }
             }
+            .padding(10)
+            .background(Color.accentColor.opacity(0.1))
+            .cornerRadius(8)
 
-            // Paint Tool Options
-            if selectedTool == .paint {
+            if !skipSegmentation {
+                // Tool Selection
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Tool")
+                            .font(.headline)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("1-4")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.secondary.opacity(0.2))
+                            .cornerRadius(4)
+                    }
+
+                    Picker("Tool", selection: $selectedTool) {
+                        ForEach(SAMTool.allCases) { tool in
+                            Label(tool.rawValue, systemImage: tool.iconName)
+                                .tag(tool)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                // Paint Tool Options
+                if selectedTool == .paint {
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Brush Settings")
+                            .font(.headline)
+                            .foregroundColor(.secondary)
+
+                        // Brush size slider
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("Brush Size")
+                                Spacer()
+                                Text("\(Int(brushSize * 100))%")
+                                    .foregroundColor(.secondary)
+                            }
+                            .font(.subheadline)
+
+                            Slider(value: $brushSize, in: 0.01...0.15, step: 0.005)
+
+                            Text("Size relative to image width")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+
+                        // Erase toggle
+                        HStack {
+                            Toggle(isOn: $isErasing) {
+                                HStack {
+                                    Image(systemName: isErasing ? "eraser.fill" : "paintbrush.pointed.fill")
+                                        .foregroundColor(isErasing ? .red : Color(red: 50/255, green: 100/255, blue: 200/255))
+                                    Text(isErasing ? "Erase Mode" : "Add Mode")
+                                }
+                            }
+                            .toggleStyle(.switch)
+
+                            Spacer()
+
+                            Text("E")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.secondary.opacity(0.2))
+                                .cornerRadius(4)
+                        }
+
+                        // Clear paint button (auto-apply on stroke end)
+                        if !paintStrokes.isEmpty {
+                            Button(action: clearPaintStrokes) {
+                                Label("Clear Strokes", systemImage: "xmark.circle")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                }
+
                 Divider()
 
+                // Mask Display Options
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Brush Settings")
+                    Text("Mask Display")
                         .font(.headline)
                         .foregroundColor(.secondary)
 
-                    // Brush size slider
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
-                            Text("Brush Size")
+                            Text("Opacity")
                             Spacer()
-                            Text("\(Int(brushSize * 100))%")
+                            Text("\(Int(maskOpacity * 100))%")
                                 .foregroundColor(.secondary)
                         }
                         .font(.subheadline)
 
-                        Slider(value: $brushSize, in: 0.01...0.15, step: 0.005)
-
-                        Text("Size relative to image width")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
+                        Slider(value: $maskOpacity, in: 0.1...1.0, step: 0.1)
                     }
 
-                    // Erase toggle - use SAM2 mask color for add mode
-                    Toggle(isOn: $isErasing) {
-                        HStack {
-                            Image(systemName: isErasing ? "eraser.fill" : "paintbrush.pointed.fill")
-                                .foregroundColor(isErasing ? .red : Color(red: 50/255, green: 100/255, blue: 200/255))
-                            Text(isErasing ? "Erase Mode" : "Add Mode")
+                    // Confidence overlay toggle
+                    if !maskScores.isEmpty {
+                        Toggle(isOn: $showConfidenceOverlay) {
+                            HStack {
+                                Image(systemName: "chart.bar.fill")
+                                    .foregroundColor(.orange)
+                                Text("Confidence Overlay")
+                            }
                         }
-                    }
-                    .toggleStyle(.switch)
-
-                    // Apply/Clear paint buttons
-                    HStack(spacing: 8) {
-                        Button(action: applyPaintToMask) {
-                            Label("Apply", systemImage: "checkmark.circle")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(paintStrokes.isEmpty)
-
-                        Button(action: clearPaintStrokes) {
-                            Label("Clear", systemImage: "xmark.circle")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(paintStrokes.isEmpty)
+                        .toggleStyle(.switch)
+                        .padding(.top, 4)
                     }
                 }
-            }
 
-            Divider()
+                // Multi-Mask Selection
+                if !maskOptions.isEmpty {
+                    multiMaskSelectionView
+                }
 
-            // Annotations
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Annotations")
-                    .font(.headline)
-                    .foregroundColor(.secondary)
+                Divider()
 
-                HStack {
-                    VStack(alignment: .leading) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "hand.point.up.left.fill")
-                                .foregroundColor(.red)
-                            Text("\(selectedPoints.count) points")
-                        }
-                        HStack(spacing: 4) {
-                            Image(systemName: "rectangle.dashed")
-                                .foregroundColor(.blue)
-                            Text("\(boundingBoxes.count) boxes")
-                        }
-                        HStack(spacing: 4) {
-                            Image(systemName: "lasso")
-                                .foregroundColor(Color(red: 50/255, green: 100/255, blue: 200/255))
-                            Text("\(lassoSelections.count) lassos")
-                        }
-                        HStack(spacing: 4) {
-                            Image(systemName: "paintbrush.pointed.fill")
-                                .foregroundColor(Color(red: 50/255, green: 100/255, blue: 200/255))
-                            Text("\(paintStrokes.count) strokes")
+                // Annotations with deletion
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Annotations")
+                            .font(.headline)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        if hasSelection {
+                            Button(action: deleteSelectedAnnotation) {
+                                Image(systemName: "trash")
+                                    .foregroundColor(.red)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Delete selected (Backspace)")
                         }
                     }
-                    .font(.subheadline)
 
-                    Spacer()
+                    VStack(alignment: .leading, spacing: 4) {
+                        annotationRow(icon: "plus.circle.fill", color: .green, label: "\(selectedPoints.filter { $0.isPositive }.count) positive")
+                        annotationRow(icon: "minus.circle.fill", color: .red, label: "\(selectedPoints.filter { $0.isNegative }.count) negative")
+                        annotationRow(icon: "rectangle.dashed", color: .blue, label: "\(boundingBoxes.count) boxes")
+                        annotationRow(icon: "lasso", color: Color(red: 50/255, green: 100/255, blue: 200/255), label: "\(lassoSelections.count) lassos")
+                        annotationRow(icon: "paintbrush.pointed.fill", color: Color(red: 50/255, green: 100/255, blue: 200/255), label: "\(paintStrokes.count) strokes")
+                    }
+                    .font(.caption)
 
                     if !selectedPoints.isEmpty || !boundingBoxes.isEmpty || !lassoSelections.isEmpty || !paintStrokes.isEmpty {
-                        Button("Clear") {
-                            clearAnnotations()
+                        Button(action: clearAnnotations) {
+                            Label("Clear All", systemImage: "trash")
+                                .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
                     }
                 }
-            }
 
-            Divider()
+                Divider()
 
-            // Instructions
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Instructions")
-                    .font(.headline)
-                    .foregroundColor(.secondary)
+                // Instructions
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Tips")
+                        .font(.headline)
+                        .foregroundColor(.secondary)
 
-                Group {
-                    switch selectedTool {
-                    case .point:
-                        Text("• Click to add points on the object")
-                        Text("• Multiple points refine the selection")
-                    case .boundingBox:
-                        Text("• Drag to draw a bounding box")
-                        Text("• Box should contain the object")
-                    case .lasso:
-                        Text("• Drag to draw a freeform selection")
-                        Text("• Lasso should surround the object")
-                        Text("• Uses bounding box for SAM2 inference")
-                    case .paint:
-                        Text("• Drag to paint on the mask")
-                        Text("• Use Add mode to extend selection")
-                        Text("• Use Erase mode to remove areas")
-                        Text("• Click Apply to update the mask")
+                    Group {
+                        switch selectedTool {
+                        case .point:
+                            Text("• Click to add include points")
+                            Text("• Option+Click to add exclude points")
+                            Text("• Click annotation to select, Delete to remove")
+                        case .boundingBox:
+                            Text("• Drag to draw a bounding box")
+                            Text("• Box should contain the object")
+                        case .lasso:
+                            Text("• Drag to draw a freeform selection")
+                            Text("• Lasso should surround the object")
+                        case .polygon:
+                            Text("• Click to add vertices")
+                            Text("• Click first vertex (green) to close polygon")
+                            Text("• Press Escape to cancel")
+                        case .paint:
+                            Text("• Drag to paint on the mask")
+                            Text("• Press E to toggle erase mode")
+                            Text("• Strokes auto-apply when released")
+                        }
                     }
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                 }
-                .font(.caption)
-                .foregroundColor(.secondary)
+            } else {
+                // Skip segmentation mode - show info
+                VStack(spacing: 12) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 40))
+                        .foregroundColor(.green)
+
+                    Text("Ready for 3D Generation")
+                        .font(.headline)
+
+                    Text("Your pre-cutout image will be used directly. Switch to Generate tab when ready.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 30)
             }
 
             Spacer()
@@ -820,6 +1251,18 @@ struct ContentView: View {
             .buttonStyle(.bordered)
         }
         .padding()
+    }
+
+    private func annotationRow(icon: String, color: Color, label: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .foregroundColor(color)
+            Text(label)
+        }
+    }
+
+    private var hasSelection: Bool {
+        selectedPointId != nil || selectedBoxId != nil || selectedLassoId != nil
     }
 
     // MARK: - Generate Tab
@@ -1051,6 +1494,66 @@ struct ContentView: View {
         .padding(8)
     }
 
+    // MARK: - Enhanced Status Footer with Undo/Redo
+
+    var enhancedStatusFooter: some View {
+        HStack(spacing: 12) {
+            // Undo/Redo buttons
+            HStack(spacing: 4) {
+                Button(action: performUndo) {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 12))
+                }
+                .buttonStyle(.borderless)
+                .disabled(undoStack.isEmpty)
+                .help("Undo (Cmd+Z)")
+
+                Button(action: performRedo) {
+                    Image(systemName: "arrow.uturn.forward")
+                        .font(.system(size: 12))
+                }
+                .buttonStyle(.borderless)
+                .disabled(redoStack.isEmpty)
+                .help("Redo (Cmd+Shift+Z)")
+
+                if !undoStack.isEmpty || !redoStack.isEmpty {
+                    Text("\(undoStack.count)")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.secondary.opacity(0.2))
+                        .cornerRadius(3)
+                }
+            }
+
+            Divider()
+                .frame(height: 16)
+
+            // Status
+            if env.isProcessing {
+                ProgressView()
+                    .scaleEffect(0.6)
+                    .frame(width: 12, height: 12)
+            }
+            Text(env.status)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+
+            Spacer()
+
+            // Image dimensions
+            if imagePixelSize != .zero {
+                Text("\(Int(imagePixelSize.width))×\(Int(imagePixelSize.height))")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
     // MARK: - File Picker
 
     private func openFilePicker() {
@@ -1082,17 +1585,554 @@ struct ContentView: View {
 
     // MARK: - Gesture Handlers (receive normalized 0-1 coordinates from AppKit)
 
-    private func handleTap(at normalized: CGPoint) {
-        guard selectedTab == .segment, selectedTool == .point else { return }
+    private func handleTap(at normalized: CGPoint, isNegative: Bool) {
+        guard selectedTab == .segment, !skipSegmentation else { return }
         guard inputImage != nil, inputImagePath != nil else { return }
 
+        // Handle polygon tool
+        if selectedTool == .polygon {
+            handlePolygonTap(at: normalized)
+            return
+        }
+
+        // Handle point tool
+        guard selectedTool == .point else { return }
+
+        // Reject points on transparent areas
+        if isTransparentAt(normalized: normalized) {
+            env.status = "Cannot place point on transparent area"
+            return
+        }
+
         // Coordinates are already normalized 0-1 from ImageCanvasView
-        let point = SAMPoint(normalizedCoords: normalized)
+        // label: 1 = foreground (include), 0 = background (exclude)
+        let point = SAMPoint(normalizedCoords: normalized, label: isNegative ? 0 : 1)
 
         withAnimation(.spring(response: 0.3)) {
             selectedPoints.append(point)
             undoStack.append(.addPoint(point))
+            redoStack.removeAll()  // Clear redo stack on new action
         }
+
+        // Clear selection
+        selectedPointId = nil
+        selectedBoxId = nil
+        selectedLassoId = nil
+    }
+
+    private func handleRightClick(at normalized: CGPoint) {
+        // Find and delete the nearest annotation at this position
+        let threshold: CGFloat = 0.05  // 5% of image size
+
+        // Check points
+        if let nearest = selectedPoints.first(where: { point in
+            let dx = point.normalizedCoords.x - normalized.x
+            let dy = point.normalizedCoords.y - normalized.y
+            return sqrt(dx*dx + dy*dy) < threshold
+        }) {
+            withAnimation {
+                selectedPoints.removeAll { $0.id == nearest.id }
+                undoStack.append(.addPoint(nearest))
+                redoStack.removeAll()
+            }
+            triggerReInference()
+            return
+        }
+
+        // Check if click is inside a box
+        if let box = boundingBoxes.first(where: { box in
+            let rect = box.normalizedRect
+            return rect.contains(normalized)
+        }) {
+            withAnimation {
+                boundingBoxes.removeAll { $0.id == box.id }
+                undoStack.append(.addBox(box))
+                redoStack.removeAll()
+            }
+            triggerReInference()
+            return
+        }
+    }
+
+    private func deleteSelectedAnnotation() {
+        if let pointId = selectedPointId,
+           let point = selectedPoints.first(where: { $0.id == pointId }) {
+            withAnimation {
+                selectedPoints.removeAll { $0.id == pointId }
+                undoStack.append(.addPoint(point))
+                redoStack.removeAll()
+                selectedPointId = nil
+            }
+            triggerReInference()
+        } else if let boxId = selectedBoxId,
+                  let box = boundingBoxes.first(where: { $0.id == boxId }) {
+            withAnimation {
+                boundingBoxes.removeAll { $0.id == boxId }
+                undoStack.append(.addBox(box))
+                redoStack.removeAll()
+                selectedBoxId = nil
+            }
+            triggerReInference()
+        } else if let lassoId = selectedLassoId,
+                  let lasso = lassoSelections.first(where: { $0.id == lassoId }) {
+            withAnimation {
+                lassoSelections.removeAll { $0.id == lassoId }
+                undoStack.append(.addLasso(lasso))
+                redoStack.removeAll()
+                selectedLassoId = nil
+            }
+            triggerReInference()
+        }
+    }
+
+    private func createFullImageMask() {
+        guard let image = inputImage else { return }
+
+        // Create a mask that respects the alpha channel of the input image
+        // Only non-transparent pixels should be included in the mask
+        let width = Int(image.size.width)
+        let height = Int(image.size.height)
+
+        guard width > 0 && height > 0 else {
+            env.status = "Invalid image dimensions"
+            return
+        }
+
+        // Get CGImage from NSImage
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            env.status = "Failed to get CGImage"
+            return
+        }
+
+        // Create a context to draw the source image in a known RGBA format
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bytesPerPixel = 4
+        let bytesPerRow = bytesPerPixel * width
+        var sourcePixels = [UInt8](repeating: 0, count: height * bytesPerRow)
+
+        guard let sourceContext = CGContext(
+            data: &sourcePixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            env.status = "Failed to create source context"
+            return
+        }
+
+        // Draw source image into context (converts to known RGBA format)
+        sourceContext.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        // Create output mask pixels
+        var maskPixels = [UInt8](repeating: 0, count: height * bytesPerRow)
+
+        // SAM2 mask color: RGB(50, 100, 200)
+        let maskR: UInt8 = 50
+        let maskG: UInt8 = 100
+        let maskB: UInt8 = 200
+
+        // Process each pixel - check alpha from source, apply mask color where opaque
+        var opaquePixels = 0
+        for y in 0..<height {
+            for x in 0..<width {
+                let offset = (y * bytesPerRow) + (x * bytesPerPixel)
+                // Source is RGBA (premultiplied), alpha is at offset+3
+                let sourceAlpha = sourcePixels[offset + 3]
+
+                if sourceAlpha > 2 {  // More than ~1% alpha (255 * 0.01 ≈ 2.55)
+                    // Set mask color with full opacity
+                    maskPixels[offset + 0] = maskR
+                    maskPixels[offset + 1] = maskG
+                    maskPixels[offset + 2] = maskB
+                    maskPixels[offset + 3] = 255
+                    opaquePixels += 1
+                } else {
+                    // Fully transparent
+                    maskPixels[offset + 0] = 0
+                    maskPixels[offset + 1] = 0
+                    maskPixels[offset + 2] = 0
+                    maskPixels[offset + 3] = 0
+                }
+            }
+        }
+
+        // Create mask CGImage from pixels
+        guard let maskContext = CGContext(
+            data: &maskPixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ),
+        let maskCGImage = maskContext.makeImage() else {
+            env.status = "Failed to create mask image"
+            return
+        }
+
+        // Create NSImage from CGImage
+        let size = NSSize(width: width, height: height)
+        let newMask = NSImage(cgImage: maskCGImage, size: size)
+        maskImage = newMask
+
+        // Save mask to disk
+        maskIsDirty = true
+        flushMaskToDisk()
+
+        let coverage = Double(opaquePixels) / Double(width * height) * 100
+        env.status = String(format: "Mask from alpha channel (%.1f%% coverage)", coverage)
+    }
+
+    /// Cache the alpha channel data from the input image for quick lookups
+    private func cacheSourceAlpha() {
+        guard let image = inputImage,
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            sourceAlphaData = []
+            sourceAlphaWidth = 0
+            sourceAlphaHeight = 0
+            return
+        }
+
+        let width = cgImage.width
+        let height = cgImage.height
+
+        guard width > 0 && height > 0 else {
+            sourceAlphaData = []
+            sourceAlphaWidth = 0
+            sourceAlphaHeight = 0
+            return
+        }
+
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bytesPerPixel = 4
+        let bytesPerRow = bytesPerPixel * width
+        var pixels = [UInt8](repeating: 0, count: height * bytesPerRow)
+
+        guard let context = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            sourceAlphaData = []
+            sourceAlphaWidth = 0
+            sourceAlphaHeight = 0
+            return
+        }
+
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        // Extract just the alpha channel
+        var alphaData = [UInt8](repeating: 0, count: width * height)
+        for i in 0..<(width * height) {
+            alphaData[i] = pixels[i * 4 + 3]  // Alpha is at offset 3 in RGBA
+        }
+
+        sourceAlphaData = alphaData
+        sourceAlphaWidth = width
+        sourceAlphaHeight = height
+    }
+
+    /// Check if a normalized coordinate (0-1) is on a transparent pixel
+    /// Returns true if the pixel is transparent (should be excluded from segmentation)
+    private func isTransparentAt(normalized: CGPoint) -> Bool {
+        guard !sourceAlphaData.isEmpty,
+              sourceAlphaWidth > 0,
+              sourceAlphaHeight > 0 else {
+            return false  // No alpha data means image has no transparency
+        }
+
+        // Convert normalized coords to pixel coords
+        // Note: CGImage coordinates have origin at top-left
+        let x = Int(normalized.x * CGFloat(sourceAlphaWidth))
+        let y = Int(normalized.y * CGFloat(sourceAlphaHeight))
+
+        // Clamp to valid range
+        let clampedX = max(0, min(x, sourceAlphaWidth - 1))
+        let clampedY = max(0, min(y, sourceAlphaHeight - 1))
+
+        let index = clampedY * sourceAlphaWidth + clampedX
+        guard index >= 0 && index < sourceAlphaData.count else {
+            return false
+        }
+
+        // Consider transparent if alpha < ~1% (2.55)
+        return sourceAlphaData[index] < 3
+    }
+
+    /// Apply the source alpha mask to a generated mask image
+    /// This removes any mask pixels that are over transparent source areas
+    private func applyAlphaMaskToMask(_ mask: NSImage) -> NSImage {
+        guard !sourceAlphaData.isEmpty,
+              sourceAlphaWidth > 0,
+              sourceAlphaHeight > 0 else {
+            return mask  // No alpha data, return unchanged
+        }
+
+        guard let cgImage = mask.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return mask
+        }
+
+        let width = cgImage.width
+        let height = cgImage.height
+
+        // Ensure dimensions match
+        guard width == sourceAlphaWidth && height == sourceAlphaHeight else {
+            return mask  // Dimension mismatch, return unchanged
+        }
+
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bytesPerPixel = 4
+        let bytesPerRow = bytesPerPixel * width
+        var pixels = [UInt8](repeating: 0, count: height * bytesPerRow)
+
+        guard let context = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return mask
+        }
+
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        // Clear mask pixels where source is transparent
+        for y in 0..<height {
+            for x in 0..<width {
+                let alphaIndex = y * width + x
+                if alphaIndex < sourceAlphaData.count && sourceAlphaData[alphaIndex] < 3 {
+                    // Source is transparent here, clear the mask
+                    let pixelOffset = (y * bytesPerRow) + (x * bytesPerPixel)
+                    pixels[pixelOffset + 0] = 0  // R
+                    pixels[pixelOffset + 1] = 0  // G
+                    pixels[pixelOffset + 2] = 0  // B
+                    pixels[pixelOffset + 3] = 0  // A
+                }
+            }
+        }
+
+        guard let outputContext = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ),
+        let outputCGImage = outputContext.makeImage() else {
+            return mask
+        }
+
+        return NSImage(cgImage: outputCGImage, size: NSSize(width: width, height: height))
+    }
+
+    /// Thread-safe version of applyAlphaMaskToMask for background processing
+    /// Takes alpha data as parameters to avoid accessing @State from background
+    private func applyAlphaMaskToMaskBackground(
+        _ mask: NSImage,
+        alphaData: [UInt8],
+        alphaWidth: Int,
+        alphaHeight: Int
+    ) -> NSImage {
+        guard !alphaData.isEmpty, alphaWidth > 0, alphaHeight > 0 else {
+            return mask  // No alpha data, return unchanged
+        }
+
+        guard let cgImage = mask.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return mask
+        }
+
+        let width = cgImage.width
+        let height = cgImage.height
+
+        // Ensure dimensions match
+        guard width == alphaWidth && height == alphaHeight else {
+            return mask  // Dimension mismatch, return unchanged
+        }
+
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bytesPerPixel = 4
+        let bytesPerRow = bytesPerPixel * width
+        var pixels = [UInt8](repeating: 0, count: height * bytesPerRow)
+
+        guard let context = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return mask
+        }
+
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        // Clear mask pixels where source is transparent
+        for y in 0..<height {
+            for x in 0..<width {
+                let alphaIndex = y * width + x
+                if alphaIndex < alphaData.count && alphaData[alphaIndex] < 3 {
+                    // Source is transparent here, clear the mask
+                    let pixelOffset = (y * bytesPerRow) + (x * bytesPerPixel)
+                    pixels[pixelOffset + 0] = 0  // R
+                    pixels[pixelOffset + 1] = 0  // G
+                    pixels[pixelOffset + 2] = 0  // B
+                    pixels[pixelOffset + 3] = 0  // A
+                }
+            }
+        }
+
+        guard let outputContext = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ),
+        let outputCGImage = outputContext.makeImage() else {
+            return mask
+        }
+
+        return NSImage(cgImage: outputCGImage, size: NSSize(width: width, height: height))
+    }
+
+    // MARK: - Multi-Mask Selection
+
+    /// Generate confidence overlay visualization based on mask scores
+    private func generateConfidenceOverlay(from scores: [Double]) {
+        guard !scores.isEmpty else {
+            confidenceOverlay = nil
+            return
+        }
+
+        // Create a visual representation of confidence
+        // Higher scores = more green, lower scores = more red
+        let maxScore = scores.max() ?? 1.0
+        let minScore = scores.min() ?? 0.0
+        let scoreRange = maxScore - minScore
+
+        let width = 256
+        let height = 32 * scores.count
+
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bytesPerPixel = 4
+        let bytesPerRow = bytesPerPixel * width
+        var pixels = [UInt8](repeating: 0, count: height * bytesPerRow)
+
+        for (index, score) in scores.enumerated() {
+            let normalizedScore = scoreRange > 0 ? (score - minScore) / scoreRange : 1.0
+
+            // Green to Red gradient based on confidence
+            let red = UInt8((1.0 - normalizedScore) * 255)
+            let green = UInt8(normalizedScore * 255)
+
+            for y in 0..<32 {
+                for x in 0..<width {
+                    let pixelOffset = ((index * 32 + y) * bytesPerRow) + (x * bytesPerPixel)
+
+                    // Bar on the left, gradient on the right
+                    if x < 32 {
+                        pixels[pixelOffset + 0] = red
+                        pixels[pixelOffset + 1] = green
+                        pixels[pixelOffset + 2] = 0
+                        pixels[pixelOffset + 3] = 255
+                    } else {
+                        let alpha = Float(x - 32) / Float(width - 32)
+                        pixels[pixelOffset + 0] = red
+                        pixels[pixelOffset + 1] = green
+                        pixels[pixelOffset + 2] = 0
+                        pixels[pixelOffset + 3] = UInt8(alpha * 200)
+                    }
+                }
+            }
+        }
+
+        guard let context = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let cgImage = context.makeImage() else {
+            confidenceOverlay = nil
+            return
+        }
+
+        confidenceOverlay = NSImage(cgImage: cgImage, size: NSSize(width: width, height: height))
+    }
+
+    /// Select a different mask from the available options
+    private func selectMask(at index: Int) {
+        guard index >= 0 && index < maskOptions.count else { return }
+
+        selectedMaskIndex = index
+
+        // Use pre-processed cache for instant switching (no disk I/O or reprocessing)
+        if let cachedMask = processedMaskCache[index] {
+            maskImage = cachedMask
+            maskIsDirty = true
+        } else {
+            // Fallback: process on-demand if cache miss (shouldn't happen normally)
+            maskImage = applyAlphaMaskToMask(maskOptions[index])
+            processedMaskCache[index] = maskImage
+            maskIsDirty = true
+        }
+    }
+
+    /// Clear all mask options
+    private func clearMaskOptions() {
+        maskOptions = []
+        maskOptionsPaths = []
+        maskScores = []
+        selectedMaskIndex = 0
+        confidenceOverlay = nil
+        processedMaskCache = [:]  // Clear the pre-processed cache
+    }
+
+    // MARK: - Real-Time Paint Preview
+
+    /// Update live paint preview mask
+    private func updateLivePaintPreview(at point: CGPoint) {
+        guard selectedTab == .segment, selectedTool == .paint, var currentStroke = currentPaintStroke else {
+            livePaintMask = nil
+            return
+        }
+
+        // Add point to stroke and generate preview
+        let normalizedPoint = CGPoint(
+            x: point.x / imagePixelSize.width,
+            y: point.y / imagePixelSize.height
+        )
+
+        currentStroke.addPoint(normalizedPoint)
+
+        // Generate preview mask from current mask + this stroke
+        if let currentMask = maskImage {
+            livePaintMask = applyStrokesToMask(currentMask, strokes: [currentStroke])
+        }
+    }
+
+    /// Clear live paint preview
+    private func clearLivePaintPreview() {
+        livePaintMask = nil
     }
 
     private func handleDragStart(at point: CGPoint) {
@@ -1189,10 +2229,17 @@ struct ContentView: View {
     private func handlePaintContinue(at point: CGPoint) {
         guard selectedTool == .paint else { return }
         currentPaintStroke?.addPoint(point)
+
+        // Update live paint preview
+        updateLivePaintPreview(at: point)
     }
 
     private func handlePaintEnd() {
         guard selectedTool == .paint else { return }
+
+        // Clear live preview
+        clearLivePaintPreview()
+
         guard let stroke = currentPaintStroke, stroke.points.count >= 1 else {
             currentPaintStroke = nil
             return
@@ -1202,6 +2249,36 @@ struct ContentView: View {
             paintStrokes.append(stroke)
             currentPaintStroke = nil
         }
+
+        // Auto-apply paint strokes to mask after each stroke
+        autoApplyPaintStroke(stroke)
+    }
+
+    /// Auto-apply a single paint stroke to the mask (called after each stroke ends)
+    private func autoApplyPaintStroke(_ stroke: PaintStroke) {
+        guard let currentMask = maskImage else {
+            // If no mask exists yet, need to create one first via SAM2
+            if selectedPoints.isEmpty && boundingBoxes.isEmpty && lassoSelections.isEmpty {
+                env.status = "Create initial mask with Point or Box first"
+                // Remove the stroke since we can't apply it
+                paintStrokes.removeAll { $0.id == stroke.id }
+            }
+            return
+        }
+
+        // Apply just this stroke to the existing mask
+        let modifiedMask = applyStrokesToMask(currentMask, strokes: [stroke])
+        maskImage = modifiedMask
+
+        // Mark mask as dirty
+        maskIsDirty = true
+
+        // Clear applied stroke from the overlay (keep it in history for undo)
+        paintStrokes.removeAll { $0.id == stroke.id }
+        undoStack.append(.addPaintStroke(stroke))
+        redoStack.removeAll()
+
+        env.status = stroke.isErasing ? "Erased from mask" : "Added to mask"
     }
 
     private func clearPaintStrokes() {
@@ -1274,17 +2351,19 @@ struct ContentView: View {
             let path = NSBezierPath()
 
             // Convert normalized points to pixel coordinates (pre-allocated for efficiency)
+            // Note: Flip Y coordinate because Core Graphics origin is bottom-left, specific to the valid implementation of NSGraphicsContext
+            // but SwiftUI/Input coordinates are top-left normalized
             let firstPoint = stroke.points[0]
             path.move(to: CGPoint(
                 x: firstPoint.x * cgWidth,
-                y: firstPoint.y * cgHeight
+                y: (1.0 - firstPoint.y) * cgHeight
             ))
 
             for i in 1..<stroke.points.count {
                 let point = stroke.points[i]
                 path.line(to: CGPoint(
                     x: point.x * cgWidth,
-                    y: point.y * cgHeight
+                    y: (1.0 - point.y) * cgHeight
                 ))
             }
 
@@ -1307,7 +2386,7 @@ struct ContentView: View {
             for point in stroke.points {
                 let circle = NSBezierPath(ovalIn: NSRect(
                     x: point.x * cgWidth - brushRadius,
-                    y: point.y * cgHeight - brushRadius,
+                    y: (1.0 - point.y) * cgHeight - brushRadius,
                     width: brushRadius * 2,
                     height: brushRadius * 2
                 ))
@@ -1324,7 +2403,9 @@ struct ContentView: View {
 
         let newImage = NSImage(size: imageSize)
         newImage.addRepresentation(newBitmap)
-        return newImage
+
+        // Apply alpha filtering to exclude transparent source areas
+        return applyAlphaMaskToMask(newImage)
     }
 
     private func saveMaskImage(_ mask: NSImage) {
@@ -1359,22 +2440,80 @@ struct ContentView: View {
 
         let task = Task.detached(priority: .userInitiated) {
             do {
-                let pixelSize = try await env.setImage(path: path)
+                // Use setImageIfNeeded to skip redundant SAM image encoding
+                let pixelSize = try await env.setImageIfNeeded(path: path)
                 await MainActor.run {
                     guard !Task.isCancelled else { return }
                     self.imagePixelSize = pixelSize
                 }
 
-                 let maskURL = try await env.predict(
+                 let (maskURLs, primaryMaskURL, scores, confidenceMapURL) = try await env.predict(
                     points: selectedPoints,
                     box: effectiveBox,
                     imageSize: pixelSize
                 )
 
-                if let newMask = NSImage(contentsOf: maskURL) {
+                // Load all mask options
+                var loadedMasks: [NSImage] = []
+                var loadedPaths: [String] = []
+                for url in maskURLs {
+                    if let mask = NSImage(contentsOf: url) {
+                        loadedMasks.append(mask)
+                        loadedPaths.append(url.path)
+                    }
+                }
+
+                // Load primary mask (first/highest scored)
+                let primaryMask = primaryMaskURL
+                if loadedMasks.isEmpty {
                     await MainActor.run {
-                        guard !Task.isCancelled else { return }
-                        self.maskImage = newMask
+                        self.env.status = "Error: Failed to load masks"
+                    }
+                    return
+                }
+
+                // Pre-process all masks in background for instant switching
+                // Capture sourceAlphaData for background processing
+                let alphaData = await MainActor.run { self.sourceAlphaData }
+                let alphaWidth = await MainActor.run { self.sourceAlphaWidth }
+                let alphaHeight = await MainActor.run { self.sourceAlphaHeight }
+
+                var processedCache: [Int: NSImage] = [:]
+                for (index, mask) in loadedMasks.enumerated() {
+                    // Apply alpha mask processing in background
+                    let processed = self.applyAlphaMaskToMaskBackground(
+                        mask,
+                        alphaData: alphaData,
+                        alphaWidth: alphaWidth,
+                        alphaHeight: alphaHeight
+                    )
+                    processedCache[index] = processed
+                }
+
+                // Load confidence heatmap if available
+                var loadedConfidenceMap: NSImage?
+                if let confURL = confidenceMapURL {
+                    loadedConfidenceMap = NSImage(contentsOf: confURL)
+                }
+
+                await MainActor.run {
+                    guard !Task.isCancelled else { return }
+                    // Store all mask options
+                    self.maskOptions = loadedMasks
+                    self.maskOptionsPaths = loadedPaths
+                    self.maskScores = scores
+                    self.selectedMaskIndex = 0
+                    self.processedMaskCache = processedCache
+
+                    // Use pre-processed first mask for instant display
+                    self.maskImage = processedCache[0] ?? loadedMasks.first!
+
+                    // Use real per-pixel confidence heatmap from SAM2 logits
+                    if let confMap = loadedConfidenceMap {
+                        self.confidenceOverlay = confMap
+                    } else {
+                        // Fallback to score-based visualization if heatmap not available
+                        self.generateConfidenceOverlay(from: scores)
                     }
                 }
             } catch {
@@ -1553,7 +2692,13 @@ struct ContentView: View {
     }
 
     private func getMaskPath() -> String? {
-        // The mask is saved by the predict function as mask.png
+        // If mask hasn't been edited, use the original SAM2 mask directly
+        // This preserves the proper alpha channel from SAM2's save_mask function
+        if !maskIsDirty, !maskOptionsPaths.isEmpty, selectedMaskIndex < maskOptionsPaths.count {
+            return maskOptionsPaths[selectedMaskIndex]
+        }
+        
+        // If mask was edited, use the flushed mask.png
         let maskURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/ModelrV3/mask.png")
         return FileManager.default.fileExists(atPath: maskURL.path) ? maskURL.path : nil
@@ -1570,12 +2715,76 @@ struct ContentView: View {
             currentLasso = nil
             paintStrokes.removeAll()
             currentPaintStroke = nil
+            polygonSelections.removeAll()
+            currentPolygon = nil
             maskImage = nil
             undoStack.removeAll()
         }
     }
 
-    // MARK: - Undo
+    // MARK: - Polygon Tool Handling
+
+    /// Handle tap for polygon tool - add vertices or close polygon
+    private func handlePolygonTap(at normalized: CGPoint) {
+        if var current = currentPolygon {
+            // Check if clicking near first vertex to close polygon
+            if current.vertices.count >= 3 {
+                let firstVertex = current.vertices[0]
+                let distance = hypot(normalized.x - firstVertex.x, normalized.y - firstVertex.y)
+                // Consider "close" if within 3% of image size
+                if distance < 0.03 {
+                    current.close()
+                    polygonSelections.append(current)
+                    currentPolygon = nil
+
+                    // Use polygon's bounding box for SAM inference
+                    if let box = current.boundingBox {
+                        boundingBoxes.append(box)
+                        // Trigger re-inference with the polygon's bounding box
+                        triggerReInference()
+                    }
+                    return
+                }
+            }
+
+            // Add new vertex
+            current.addVertex(normalized)
+            currentPolygon = current
+        } else {
+            // Start new polygon
+            currentPolygon = PolygonSelection(vertices: [normalized])
+        }
+    }
+
+    /// Cancel current polygon drawing
+    private func cancelPolygon() {
+        currentPolygon = nil
+    }
+
+    // MARK: - Point Drag Handling
+
+    /// Handle when a point is dragged to a new position
+    private func handlePointDragEnd(point: SAMPoint, newPosition: CGPoint) {
+        // Create the new point with the same label but updated position
+        let updatedPoint = SAMPoint(normalizedCoords: newPosition, label: point.label)
+
+        // Find and replace the point in the array
+        if let index = selectedPoints.firstIndex(where: { $0.id == point.id }) {
+            selectedPoints[index] = updatedPoint
+
+            // Record for undo (store original -> new for reversal)
+            undoStack.append(.movePoint(from: point, to: updatedPoint))
+            redoStack.removeAll()
+
+            // Select the moved point
+            selectedPointId = updatedPoint.id
+
+            // Trigger re-inference with the updated point position
+            triggerReInference()
+        }
+    }
+
+    // MARK: - Undo/Redo
 
     private func performUndo() {
         guard !undoStack.isEmpty else { return }
@@ -1584,20 +2793,102 @@ struct ContentView: View {
         withAnimation(.easeOut(duration: 0.2)) {
             switch action {
             case .addPoint(let point):
-                selectedPoints.removeAll { $0.id == point.id }
+                // If point exists, remove it; if not, add it back (was a delete)
+                if selectedPoints.contains(where: { $0.id == point.id }) {
+                    selectedPoints.removeAll { $0.id == point.id }
+                    redoStack.append(.addPoint(point))
+                } else {
+                    selectedPoints.append(point)
+                    redoStack.append(.addPoint(point))
+                }
             case .addBox(let box):
-                boundingBoxes.removeAll { $0.id == box.id }
+                if boundingBoxes.contains(where: { $0.id == box.id }) {
+                    boundingBoxes.removeAll { $0.id == box.id }
+                    redoStack.append(.addBox(box))
+                } else {
+                    boundingBoxes.append(box)
+                    redoStack.append(.addBox(box))
+                }
             case .addLasso(let lasso):
-                lassoSelections.removeAll { $0.id == lasso.id }
+                if lassoSelections.contains(where: { $0.id == lasso.id }) {
+                    lassoSelections.removeAll { $0.id == lasso.id }
+                    redoStack.append(.addLasso(lasso))
+                } else {
+                    lassoSelections.append(lasso)
+                    redoStack.append(.addLasso(lasso))
+                }
             case .addPaintStroke(let stroke):
                 paintStrokes.removeAll { $0.id == stroke.id }
+                redoStack.append(.addPaintStroke(stroke))
             case .crop(let originalImage, let originalPath):
+                // Store current state for redo
+                if let currentImage = inputImage, let currentPath = inputImagePath {
+                    redoStack.append(.crop(originalImage: currentImage, originalPath: currentPath))
+                }
                 inputImage = originalImage
                 inputImagePath = originalPath
+            case .movePoint(let originalPoint, let movedPoint):
+                // Undo: replace the moved point with the original
+                if let index = selectedPoints.firstIndex(where: { $0.id == movedPoint.id }) {
+                    selectedPoints[index] = originalPoint
+                    redoStack.append(.movePoint(from: originalPoint, to: movedPoint))
+                }
             }
         }
 
         // Trigger re-inference after undo
+        triggerReInference()
+    }
+
+    private func performRedo() {
+        guard !redoStack.isEmpty else { return }
+        let action = redoStack.removeLast()
+
+        withAnimation(.easeOut(duration: 0.2)) {
+            switch action {
+            case .addPoint(let point):
+                if selectedPoints.contains(where: { $0.id == point.id }) {
+                    selectedPoints.removeAll { $0.id == point.id }
+                    undoStack.append(.addPoint(point))
+                } else {
+                    selectedPoints.append(point)
+                    undoStack.append(.addPoint(point))
+                }
+            case .addBox(let box):
+                if boundingBoxes.contains(where: { $0.id == box.id }) {
+                    boundingBoxes.removeAll { $0.id == box.id }
+                    undoStack.append(.addBox(box))
+                } else {
+                    boundingBoxes.append(box)
+                    undoStack.append(.addBox(box))
+                }
+            case .addLasso(let lasso):
+                if lassoSelections.contains(where: { $0.id == lasso.id }) {
+                    lassoSelections.removeAll { $0.id == lasso.id }
+                    undoStack.append(.addLasso(lasso))
+                } else {
+                    lassoSelections.append(lasso)
+                    undoStack.append(.addLasso(lasso))
+                }
+            case .addPaintStroke(let stroke):
+                paintStrokes.append(stroke)
+                undoStack.append(.addPaintStroke(stroke))
+            case .crop(let originalImage, let originalPath):
+                if let currentImage = inputImage, let currentPath = inputImagePath {
+                    undoStack.append(.crop(originalImage: currentImage, originalPath: currentPath))
+                }
+                inputImage = originalImage
+                inputImagePath = originalPath
+            case .movePoint(let originalPoint, let movedPoint):
+                // Redo: replace original with the moved point
+                if let index = selectedPoints.firstIndex(where: { $0.id == originalPoint.id }) {
+                    selectedPoints[index] = movedPoint
+                    undoStack.append(.movePoint(from: originalPoint, to: movedPoint))
+                }
+            }
+        }
+
+        // Trigger re-inference after redo
         triggerReInference()
     }
 
@@ -1647,6 +2938,7 @@ struct ContentView: View {
         
         self.inputImage = croppedImage
         self.imagePixelSize = CGSize(width: cgImage.width, height: cgImage.height)
+        self.cacheSourceAlpha()  // Cache alpha for transparency filtering
         saveAndLoad(image: croppedImage)
 
         cropRect = nil
@@ -1759,6 +3051,61 @@ struct ContentView: View {
         preprocessLasso = nil
     }
 
+    // MARK: - State Persistence for Tab Switching
+
+    /// Structure to hold segmentation state for persistence
+    private struct SegmentationStateData: Codable {
+        let points: [SAMPoint]
+        let boxes: [SAMBox]
+        let polygons: [PolygonSelection]
+        let selectedMaskIndex: Int
+        let maskScores: [Double]
+    }
+
+    private static let segmentationStateKey = "com.modelr.segmentationState"
+
+    /// Save segmentation state when leaving segment tab
+    private func saveSegmentationState() {
+        let state = SegmentationStateData(
+            points: selectedPoints,
+            boxes: boundingBoxes,
+            polygons: polygonSelections,
+            selectedMaskIndex: selectedMaskIndex,
+            maskScores: maskScores
+        )
+        if let data = try? JSONEncoder().encode(state) {
+            UserDefaults.standard.set(data, forKey: Self.segmentationStateKey)
+        }
+    }
+
+    /// Restore segmentation state when returning to segment tab
+    private func restoreSegmentationState() {
+        guard let data = UserDefaults.standard.data(forKey: Self.segmentationStateKey),
+              let state = try? JSONDecoder().decode(SegmentationStateData.self, from: data) else {
+            return
+        }
+
+        // Only restore if we have the same image loaded (compare by checking if we have an image)
+        guard inputImage != nil else { return }
+
+        // Restore points, boxes, and polygons
+        if selectedPoints.isEmpty && !state.points.isEmpty {
+            selectedPoints = state.points
+        }
+        if boundingBoxes.isEmpty && !state.boxes.isEmpty {
+            boundingBoxes = state.boxes
+        }
+        if polygonSelections.isEmpty && !state.polygons.isEmpty {
+            polygonSelections = state.polygons
+        }
+
+        // Restore mask selection state if we have masks
+        if !maskOptions.isEmpty && state.selectedMaskIndex < maskOptions.count {
+            selectedMaskIndex = state.selectedMaskIndex
+            selectMask(at: selectedMaskIndex)
+        }
+    }
+
     private func clearAll() {
         // Cancel all running tasks
         currentTasks.forEach { $0.cancel() }
@@ -1847,6 +3194,41 @@ struct ContentView: View {
         }
     }
 
+    /// Auto-load the latest 3D model from SF3D output folder for debugging
+    private func loadLatest3DModelForDebug() {
+        let sf3dFolder = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/ModelrV3/sf3d")
+
+        // Find the latest .obj or .glb file
+        let fileManager = FileManager.default
+        guard let files = try? fileManager.contentsOfDirectory(at: sf3dFolder, includingPropertiesForKeys: [.contentModificationDateKey], options: .skipsHiddenFiles) else {
+            env.status = "No SF3D folder found"
+            return
+        }
+
+        let modelFiles = files.filter { url in
+            let ext = url.pathExtension.lowercased()
+            return ext == "obj" || ext == "glb" || ext == "gltf"
+        }
+
+        // Sort by modification date (newest first)
+        let sortedFiles = modelFiles.sorted { url1, url2 in
+            let date1 = (try? url1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast
+            let date2 = (try? url2.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast
+            return date1 > date2
+        }
+
+        guard let latestModel = sortedFiles.first else {
+            env.status = "No 3D models found in SF3D folder"
+            return
+        }
+
+        // Set the model URL and switch to generate tab
+        generated3DModelURL = latestModel
+        selectedTab = .generate
+        env.status = "Loaded: \(latestModel.lastPathComponent)"
+    }
+
     private func loadImage(from url: URL) {
         // Cancel any existing tasks
         currentTasks.forEach { $0.cancel() }
@@ -1873,6 +3255,7 @@ struct ContentView: View {
                 self.maskImage = nil
                 self.generated3DModelURL = nil
                 self.imageVersion += 1
+                self.cacheSourceAlpha()  // Cache alpha for transparency filtering
                 self.env.status = "Loaded: \(url.lastPathComponent)"
 
                 let safeExtensions = ["png", "jpg", "jpeg", "bmp", "webp", "tiff"]

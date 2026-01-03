@@ -1,6 +1,14 @@
 import Foundation
 import SwiftUI
 
+// MARK: - Safe Array Subscript
+
+extension Array {
+    subscript(safe index: Index) -> Element? {
+        return indices.contains(index) ? self[index] : nil
+    }
+}
+
 enum ModelError: Error, LocalizedError {
     case invalidCommand(String)
     case missingRequiredField(String)
@@ -27,20 +35,33 @@ enum ModelError: Error, LocalizedError {
     }
 }
 
-// MARK: - Point Model (Positive points only)
-struct SAMPoint: Hashable, Identifiable, Equatable {
-    let id = UUID()
+// MARK: - Point Model (Supports positive and negative points)
+struct SAMPoint: Hashable, Identifiable, Equatable, Codable {
+    let id: UUID
     let normalizedCoords: CGPoint  // 0-1 range, relative to image
-    let dateAdded = Date()
+    let label: Int  // 1 = foreground (include), 0 = background (exclude)
+    let dateAdded: Date
+
+    init(normalizedCoords: CGPoint, label: Int = 1) {
+        self.id = UUID()
+        self.normalizedCoords = normalizedCoords
+        self.label = label
+        self.dateAdded = Date()
+    }
+
+    var isPositive: Bool { label == 1 }
+    var isNegative: Bool { label == 0 }
 
     static func == (lhs: SAMPoint, rhs: SAMPoint) -> Bool {
         lhs.normalizedCoords.x == rhs.normalizedCoords.x &&
-        lhs.normalizedCoords.y == rhs.normalizedCoords.y
+        lhs.normalizedCoords.y == rhs.normalizedCoords.y &&
+        lhs.label == rhs.label
     }
 
     func hash(into hasher: inout Hasher) {
         hasher.combine(normalizedCoords.x)
         hasher.combine(normalizedCoords.y)
+        hasher.combine(label)
     }
 
     /// Convert normalized coords to pixel coords for Python backend
@@ -50,14 +71,45 @@ struct SAMPoint: Hashable, Identifiable, Equatable {
             y: Int(normalizedCoords.y * imageSize.height)
         )
     }
+
+    // Custom Codable for CGPoint
+    enum CodingKeys: String, CodingKey {
+        case id, label, dateAdded, coordX, coordY
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        label = try container.decode(Int.self, forKey: .label)
+        dateAdded = try container.decode(Date.self, forKey: .dateAdded)
+        let x = try container.decode(CGFloat.self, forKey: .coordX)
+        let y = try container.decode(CGFloat.self, forKey: .coordY)
+        normalizedCoords = CGPoint(x: x, y: y)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(label, forKey: .label)
+        try container.encode(dateAdded, forKey: .dateAdded)
+        try container.encode(normalizedCoords.x, forKey: .coordX)
+        try container.encode(normalizedCoords.y, forKey: .coordY)
+    }
 }
 
 // MARK: - Bounding Box Model
-struct SAMBox: Hashable, Identifiable, Equatable {
-    let id = UUID()
+struct SAMBox: Hashable, Identifiable, Equatable, Codable {
+    let id: UUID
     var startPoint: CGPoint  // Normalized 0-1
     var endPoint: CGPoint    // Normalized 0-1
-    let dateAdded = Date()
+    let dateAdded: Date
+
+    init(startPoint: CGPoint, endPoint: CGPoint) {
+        self.id = UUID()
+        self.startPoint = startPoint
+        self.endPoint = endPoint
+        self.dateAdded = Date()
+    }
 
     static func == (lhs: SAMBox, rhs: SAMBox) -> Bool {
         lhs.startPoint.x == rhs.startPoint.x &&
@@ -98,6 +150,33 @@ struct SAMBox: Hashable, Identifiable, Equatable {
         let rect = normalizedRect
         return rect.width > 0.05 && rect.height > 0.05
     }
+
+    // Custom Codable for CGPoints
+    enum CodingKeys: String, CodingKey {
+        case id, dateAdded, startX, startY, endX, endY
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        dateAdded = try container.decode(Date.self, forKey: .dateAdded)
+        let sx = try container.decode(CGFloat.self, forKey: .startX)
+        let sy = try container.decode(CGFloat.self, forKey: .startY)
+        let ex = try container.decode(CGFloat.self, forKey: .endX)
+        let ey = try container.decode(CGFloat.self, forKey: .endY)
+        startPoint = CGPoint(x: sx, y: sy)
+        endPoint = CGPoint(x: ex, y: ey)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(dateAdded, forKey: .dateAdded)
+        try container.encode(startPoint.x, forKey: .startX)
+        try container.encode(startPoint.y, forKey: .startY)
+        try container.encode(endPoint.x, forKey: .endX)
+        try container.encode(endPoint.y, forKey: .endY)
+    }
 }
 
 // MARK: - Tool Selection
@@ -106,6 +185,7 @@ enum SAMTool: String, CaseIterable, Identifiable {
     case boundingBox = "Box"
     case lasso = "Lasso"
     case paint = "Paint"
+    case polygon = "Polygon"
 
     var id: String { rawValue }
 
@@ -115,7 +195,104 @@ enum SAMTool: String, CaseIterable, Identifiable {
         case .boundingBox: return "rectangle.dashed"
         case .lasso: return "lasso"
         case .paint: return "paintbrush.pointed"
+        case .polygon: return "pentagon"
         }
+    }
+}
+
+// MARK: - Polygon Selection Model
+struct PolygonSelection: Identifiable, Equatable, Codable {
+    let id: UUID
+    var vertices: [CGPoint]  // Normalized 0-1 coordinates
+    var isClosed: Bool
+    let dateAdded: Date
+
+    init(vertices: [CGPoint] = [], isClosed: Bool = false) {
+        self.id = UUID()
+        self.vertices = vertices
+        self.isClosed = isClosed
+        self.dateAdded = Date()
+    }
+
+    mutating func addVertex(_ point: CGPoint) {
+        vertices.append(point)
+    }
+
+    mutating func close() {
+        isClosed = true
+    }
+
+    /// Check if polygon is valid (has at least 3 vertices)
+    var isValid: Bool {
+        vertices.count >= 3
+    }
+
+    /// Get bounding box of polygon for SAM
+    var boundingBox: SAMBox? {
+        guard isValid else { return nil }
+        let xs = vertices.map { $0.x }
+        let ys = vertices.map { $0.y }
+        guard let minX = xs.min(), let maxX = xs.max(),
+              let minY = ys.min(), let maxY = ys.max() else { return nil }
+        return SAMBox(startPoint: CGPoint(x: minX, y: minY), endPoint: CGPoint(x: maxX, y: maxY))
+    }
+
+    /// Convert polygon to a mask image using Core Graphics
+    func toMask(size: CGSize) -> NSImage? {
+        guard isValid else { return nil }
+
+        let image = NSImage(size: size)
+        image.lockFocus()
+
+        // Fill with transparent
+        NSColor.clear.setFill()
+        NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
+
+        // Draw polygon filled with white
+        let path = NSBezierPath()
+        let scaledVertices = vertices.map { CGPoint(x: $0.x * size.width, y: (1 - $0.y) * size.height) }
+
+        if let first = scaledVertices.first {
+            path.move(to: first)
+            for vertex in scaledVertices.dropFirst() {
+                path.line(to: vertex)
+            }
+            path.close()
+        }
+
+        NSColor.white.setFill()
+        path.fill()
+
+        image.unlockFocus()
+        return image
+    }
+
+    // Custom Codable for [CGPoint] array
+    enum CodingKeys: String, CodingKey {
+        case id, isClosed, dateAdded, vertices
+    }
+
+    struct CodablePoint: Codable {
+        let x: CGFloat
+        let y: CGFloat
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        isClosed = try container.decode(Bool.self, forKey: .isClosed)
+        dateAdded = try container.decode(Date.self, forKey: .dateAdded)
+        let codableVertices = try container.decode([CodablePoint].self, forKey: .vertices)
+        vertices = codableVertices.map { CGPoint(x: $0.x, y: $0.y) }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(isClosed, forKey: .isClosed)
+        try container.encode(dateAdded, forKey: .dateAdded)
+        let codableVertices = vertices.map { CodablePoint(x: $0.x, y: $0.y) }
+        try container.encode(codableVertices, forKey: .vertices)
     }
 }
 
@@ -223,15 +400,17 @@ struct SAMRequest: Codable {
     let command: String  // "set_image", "predict", "reset"
     let imagePath: String?
     let points: [[Int]]?  // [[x, y], [x, y], ...]
+    let labels: [Int]?    // [1, 1, 0, ...] - 1=foreground, 0=background
     let box: [Int]?       // [x1, y1, x2, y2]
     let model: String?
 
-    init(command: String, imagePath: String? = nil, points: [[Int]]? = nil, box: [Int]? = nil, model: String? = nil) {
+    init(command: String, imagePath: String? = nil, points: [[Int]]? = nil, labels: [Int]? = nil, box: [Int]? = nil, model: String? = nil) {
         self.messageId = UUID().uuidString
         self.version = Self.version
         self.command = command
         self.imagePath = imagePath
         self.points = points
+        self.labels = labels
         self.box = box
         self.model = model
     }
@@ -289,11 +468,23 @@ struct SAMResponse: Codable {
     let messageId: String?
     let version: String?
     let success: Bool
-    let maskPath: String?
+    let masks: [String]?      // Multiple mask paths
+    let scores: [Double]?     // Confidence scores for each mask
+    let selectedIndex: Int?   // Currently selected mask index
+    let maskPath: String?     // Legacy single mask path
     let error: String?
     let inferenceTimeMs: Int?
     let ready: Bool?
-    let score: Double?
+    let score: Double?        // Legacy field, use scores instead
+    let confidenceMapPath: String?  // Per-pixel confidence heatmap
+
+    var primaryMaskPath: String? {
+        return masks?.first ?? maskPath
+    }
+
+    var primaryScore: Double? {
+        return scores?.first ?? score
+    }
 
     func validate() throws {
         if version != nil && version != SAMRequest.version {

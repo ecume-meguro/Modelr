@@ -15,7 +15,6 @@ import gc
 from typing import Optional, Callable
 from pathlib import Path
 
-# Set MPS fallback before importing torch
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 import torch
@@ -23,9 +22,25 @@ import numpy as np
 from PIL import Image
 
 try:
-    from config import ModelConfig, PerformanceConfig, metrics
-    from device_utils import get_device, check_gpu_available, health_check
-    from logging_config import get_logger
+    from modelrv3_core import (
+        get_logger,
+        validate_image_path,
+        validate_output_dir,
+        validate_mask_compatibility,
+        get_device,
+        check_gpu_available,
+        health_check,
+        ModelConfig,
+        PerformanceConfig,
+        metrics,
+    )
+    from modelrv3_core.logging import log_info, log_error, log_debug, log_warning
+    from modelrv3_core.exceptions import (
+        ModelLoadError,
+        ImageValidationError,
+        GenerationError,
+        OutOfMemoryError,
+    )
 
     logger = get_logger("sf3d_wrapper")
 
@@ -33,127 +48,79 @@ try:
     SF3D_CACHE_DIR = Path(os.path.join(APP_SUPPORT_DIR, "SF3D"))
 except ImportError:
     logger = None
+    log_info = lambda x: print(x, file=sys.stderr)
+    log_error = lambda x: print(f"ERROR: {x}", file=sys.stderr)
+    log_warning = lambda x: print(f"WARNING: {x}", file=sys.stderr)
+    log_debug = lambda x: None
+    get_device = lambda: (
+        "mps"
+        if torch.backends.mps.is_available()
+        else "cuda"
+        if torch.cuda.is_available()
+        else "cpu"
+    )
+    check_gpu_available = (
+        lambda: torch.backends.mps.is_available() or torch.cuda.is_available()
+    )
+    ModelLoadError = Exception
+    ImageValidationError = Exception
+    GenerationError = Exception
+    OutOfMemoryError = Exception
+
+    def validate_image_path(path):
+        if not os.path.exists(path):
+            raise ImageValidationError(f"File not found: {path}")
+
+    def validate_output_dir(path):
+        os.makedirs(path, exist_ok=True)
+
+    def validate_mask_compatibility(image_path, mask_path):
+        pass
+
+    ModelConfig = type(
+        "ModelConfig",
+        (),
+        {
+            "get_checkpoint_dir": lambda: Path.home()
+            / "Library"
+            / "Application Support"
+            / "ModelrV3"
+        },
+    )()
+    PerformanceConfig = type("PerformanceConfig", (), {"ENABLE_METRICS": False})()
+    metrics = {}
+
     APP_SUPPORT_DIR = os.path.expanduser("~/Library/Application Support/ModelrV3")
     SF3D_CACHE_DIR = Path(os.path.join(APP_SUPPORT_DIR, "SF3D"))
 
 SF3D_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-# Set HuggingFace cache to our app directory
 os.environ["HF_HOME"] = str(SF3D_CACHE_DIR / "hf_home")
 os.environ["HUGGINGFACE_HUB_CACHE"] = str(SF3D_CACHE_DIR / "hf_cache")
 os.environ["TORCH_HOME"] = str(SF3D_CACHE_DIR / "torch_home")
 
 
-class ModelLoadError(Exception):
-    pass
-
-
-class ImageValidationError(Exception):
-    pass
-
-
-class GenerationError(Exception):
-    pass
-
-
-class OutOfMemoryError(Exception):
-    pass
-
-
-def log_info(message: str) -> None:
-    if logger:
-        logger.info(message)
-    else:
-        print(message, file=sys.stderr)
-
-
-def log_error(message: str) -> None:
-    if logger:
-        logger.error(message)
-    else:
-        print(f"ERROR: {message}", file=sys.stderr)
-
-
-def log_debug(message: str) -> None:
-    if logger:
-        logger.debug(message)
-
-
-def log_warning(message: str) -> None:
-    if logger:
-        logger.warning(message)
-    else:
-        print(f"WARNING: {message}", file=sys.stderr)
-
-
-def validate_image_path(image_path: str) -> None:
-    if not image_path:
-        raise ImageValidationError("Image path cannot be empty")
-
-    path = Path(image_path)
-    if not path.exists():
-        raise ImageValidationError(f"Image file not found: {image_path}")
-
-    if not path.is_file():
-        raise ImageValidationError(f"Path is not a file: {image_path}")
-
-    valid_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
-    if path.suffix.lower() not in valid_extensions:
-        raise ImageValidationError(f"Invalid image format: {path.suffix}")
-
-
-def validate_output_dir(output_dir: str) -> None:
-    path = Path(output_dir)
-    if not path.exists():
-        try:
-            path.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            raise ImageValidationError(f"Failed to create output directory: {e}")
-
-    if not path.is_dir():
-        raise ImageValidationError(f"Output path is not a directory: {output_dir}")
-
-
-def validate_mask_compatibility(image_path: str, mask_path: str) -> None:
-    try:
-        with Image.open(image_path) as img, Image.open(mask_path) as mask:
-            img_size = img.size
-            mask_size = mask.size
-
-            if (
-                abs(img_size[0] - mask_size[0]) > 10
-                or abs(img_size[1] - mask_size[1]) > 10
-            ):
-                log_warning(
-                    f"Image size {img_size} and mask size {mask_size} differ significantly"
-                )
-    except Exception as e:
-        raise ImageValidationError(f"Failed to validate mask compatibility: {e}")
-
-
 def load_sf3d_model(device: str = "mps"):
     """Load the SF3D model from HuggingFace."""
     try:
-        # Add stable-fast-3d to path - check multiple locations
         script_dir = Path(__file__).parent
-        
-        # Location 1: stable-fast-3d in same directory as script (when copied to SF3D folder)
+
         sf3d_repo_path = script_dir / "stable-fast-3d"
-        
-        # Location 2: stable-fast-3d in parent directory (project root)
+
         if not sf3d_repo_path.exists():
             sf3d_repo_path = script_dir.parent / "stable-fast-3d"
-        
-        # Location 3: stable-fast-3d two levels up (from Resources/)
+
         if not sf3d_repo_path.exists():
             sf3d_repo_path = script_dir.parent.parent / "stable-fast-3d"
-        
+
         if sf3d_repo_path.exists():
             log_info(f"Adding SF3D repo to path: {sf3d_repo_path}")
             sys.path.insert(0, str(sf3d_repo_path))
         else:
-            log_warning(f"stable-fast-3d not found in expected locations, trying import anyway")
-        
+            log_warning(
+                f"stable-fast-3d not found in expected locations, trying import anyway"
+            )
+
         from sf3d.system import SF3D
 
         log_info("Loading SF3D model from zimengxiong/Modelr-SF3D...")
@@ -180,10 +147,7 @@ def load_sf3d_model(device: str = "mps"):
 def extract_foreground_with_mask(
     image_path: str, mask_path: str, output_dir: Optional[str] = None
 ) -> Image.Image:
-    """
-    Extract foreground from image using a SAM2 mask.
-    SAM2 mask is RGBA where the alpha channel contains the actual mask (0-255).
-    """
+    """Extract foreground from image using a SAM2 mask."""
     try:
         validate_image_path(image_path)
         validate_image_path(mask_path)
@@ -194,7 +158,6 @@ def extract_foreground_with_mask(
         image = Image.open(image_path).convert("RGBA")
         mask_img = Image.open(mask_path).convert("RGBA")
 
-        # Resize mask to match image if needed
         if mask_img.size != image.size:
             log_debug(f"Resizing mask from {mask_img.size} to {image.size}")
             mask_img = mask_img.resize(image.size, Image.Resampling.LANCZOS)
@@ -202,15 +165,12 @@ def extract_foreground_with_mask(
         image_array = np.array(image)
         mask_array = np.array(mask_img)
 
-        # SAM2 mask: alpha channel IS the mask (0=background, 255=foreground)
         alpha_mask = mask_array[:, :, 3]
 
-        # Apply mask as alpha channel to original image
         image_array[:, :, 3] = alpha_mask
 
         result = Image.fromarray(image_array, "RGBA")
 
-        # Save composite for debugging
         if output_dir:
             validate_output_dir(output_dir)
             composite_path = os.path.join(output_dir, "self_test_composite.png")
@@ -246,17 +206,14 @@ def generate_3d_model(
         if progress_callback:
             progress_callback("Loading SF3D model", 0.0)
 
-        # Load SF3D model
         model = load_sf3d_model(device)
 
-        # Import rembg for foreground processing
         import rembg
         from sf3d.utils import resize_foreground
 
         if progress_callback:
             progress_callback("Processing image", 0.2)
 
-        # Resize foreground to proper ratio
         log_info(f"Resizing foreground with ratio {foreground_ratio}...")
         processed_image = resize_foreground(image, foreground_ratio)
 
@@ -268,12 +225,11 @@ def generate_3d_model(
         )
 
         with torch.no_grad():
-            # SF3D run_image expects a list of images
             mesh, glob_dict = model.run_image(
                 [processed_image],
                 bake_resolution=texture_resolution,
                 remesh=remesh_option,
-                vertex_count=-1,  # No vertex reduction
+                vertex_count=-1,
             )
 
         generation_time = time.time() - start_time
@@ -281,9 +237,8 @@ def generate_3d_model(
         if progress_callback:
             progress_callback("Exporting model", 0.9)
 
-        # Export to OBJ with MTL and texture files for SceneKit compatibility
-        # Using scene export writes the OBJ, MTL, and texture image files
         import trimesh
+
         scene = trimesh.Scene(geometry=mesh)
         scene.export(output_path)
 
@@ -293,7 +248,6 @@ def generate_3d_model(
         log_info(f"SF3D generation took {generation_time:.1f}s")
         log_info(f"Model saved to: {output_path}")
 
-        # Track metrics if available
         if (
             logger
             and hasattr(PerformanceConfig, "ENABLE_METRICS")
@@ -313,9 +267,7 @@ def run_self_test(
     original_image_path: str,
     output_dir: str,
 ) -> str:
-    """
-    Run self-test: generate 3D model from masked self-test image.
-    """
+    """Run self-test: generate 3D model from masked self-test image."""
     try:
         validate_image_path(mask_path)
         validate_image_path(original_image_path)
@@ -328,21 +280,18 @@ def run_self_test(
         )
         log_info(f"SF3D Self-test using device: {device}")
 
-        # SF3D outputs OBJ format with MTL and texture files for SceneKit compatibility
         output_path = os.path.join(output_dir, "self_test_model_sf3d.obj")
 
-        # Extract foreground using SAM2 mask
         log_info("Extracting foreground with mask...")
         foreground = extract_foreground_with_mask(
             original_image_path, mask_path, output_dir=output_dir
         )
 
-        # Generate 3D model with SF3D
         generate_3d_model(
             image=foreground,
             output_path=output_path,
             device=device,
-            texture_resolution=1024,  # Higher resolution for quality
+            texture_resolution=1024,
             remesh_option="none",
         )
 

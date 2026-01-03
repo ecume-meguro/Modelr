@@ -15,11 +15,14 @@ build: generate
 # Usage: make run
 run: build
 	./build/Build/Products/Debug/ModelrV3.app/Contents/MacOS/ModelrV3
+	
+debug3d: build
+	./build/Build/Products/Debug/ModelrV3.app/Contents/MacOS/ModelrV3 --debug-3d-viewer
 
 # Run unit and integration tests
 # Usage: make test
 test: generate
-	xcodebuild -project ModelrV3.xcodeproj -scheme ModelrV3Tests -configuration Debug -derivedDataPath build test
+	xcodebuild -project ModelrV3.xcodeproj -scheme ModelrV3Tests -configuration Debug -derivedDataPath build test -destination 'platform=macOS'
 
 # Clean build artifacts and generated Xcode project
 # Usage: make clean

@@ -63,10 +63,10 @@ final class PythonEnvironmentTests: XCTestCase {
     func testPredictSuccess() async throws {
         let imageSize = CGSize(width: 100, height: 100)
         let points = [SAMPoint(normalizedCoords: CGPoint(x: 0.5, y: 0.5))]
-        
-        let maskURL = try await mockService.predict(points: points, box: nil, imageSize: imageSize)
-        
-        XCTAssertTrue(maskURL.path.contains("mask.png"))
+
+        let (_, primaryMask, _, _) = try await mockService.predict(points: points, box: nil, imageSize: imageSize)
+
+        XCTAssertTrue(primaryMask.path.contains("mask.png"))
         XCTAssertEqual(mockService.status, "Mock ready")
     }
     
@@ -238,12 +238,12 @@ final class PythonEnvironmentTests: XCTestCase {
     
     func testEmptyPointsPredict() async throws {
         let imageSize = CGSize(width: 100, height: 100)
-        
-        let url = try await mockService.predict(points: [], box: nil, imageSize: imageSize)
-        
-        XCTAssertTrue(url.path.contains("mask.png"))
+
+        let (_, primaryMask, _, _) = try await mockService.predict(points: [], box: nil, imageSize: imageSize)
+
+        XCTAssertTrue(primaryMask.path.contains("mask.png"))
     }
-    
+
     func testMultiplePointsPredict() async throws {
         let imageSize = CGSize(width: 100, height: 100)
         let points = [
@@ -251,34 +251,34 @@ final class PythonEnvironmentTests: XCTestCase {
             SAMPoint(normalizedCoords: CGPoint(x: 0.5, y: 0.5)),
             SAMPoint(normalizedCoords: CGPoint(x: 0.8, y: 0.8))
         ]
-        
-        let url = try await mockService.predict(points: points, box: nil, imageSize: imageSize)
-        
-        XCTAssertTrue(url.path.contains("mask.png"))
+
+        let (_, primaryMask, _, _) = try await mockService.predict(points: points, box: nil, imageSize: imageSize)
+
+        XCTAssertTrue(primaryMask.path.contains("mask.png"))
     }
-    
+
     func testPredictWithBox() async throws {
         let imageSize = CGSize(width: 100, height: 100)
         let box = SAMBox(startPoint: CGPoint(x: 0.1, y: 0.1), endPoint: CGPoint(x: 0.9, y: 0.9))
-        
-        let url = try await mockService.predict(points: [], box: box, imageSize: imageSize)
-        
-        XCTAssertTrue(url.path.contains("mask.png"))
+
+        let (_, primaryMask, _, _) = try await mockService.predict(points: [], box: box, imageSize: imageSize)
+
+        XCTAssertTrue(primaryMask.path.contains("mask.png"))
     }
-    
+
     func testConcurrentPredictions() async throws {
         let imageSize = CGSize(width: 100, height: 100)
         let points1 = [SAMPoint(normalizedCoords: CGPoint(x: 0.3, y: 0.3))]
         let points2 = [SAMPoint(normalizedCoords: CGPoint(x: 0.7, y: 0.7))]
-        
+
         mockService.delayMs = 100
-        
+
         async let result1 = mockService.predict(points: points1, box: nil, imageSize: imageSize)
         async let result2 = mockService.predict(points: points2, box: nil, imageSize: imageSize)
-        
-        let (url1, url2) = try await (result1, result2)
-        
-        XCTAssertTrue(url1.path.contains("mask.png"))
-        XCTAssertTrue(url2.path.contains("mask.png"))
+
+        let ((_, primaryMask1, _, _), (_, primaryMask2, _, _)) = try await (result1, result2)
+
+        XCTAssertTrue(primaryMask1.path.contains("mask.png"))
+        XCTAssertTrue(primaryMask2.path.contains("mask.png"))
     }
 }

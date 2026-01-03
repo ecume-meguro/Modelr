@@ -16,32 +16,43 @@ class MockPythonService: PythonServiceProtocol {
         status = "Mock setup complete"
     }
     
+    private var currentImagePath: String?
+
     func setImage(path: String) async throws -> CGSize {
         try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
-        
+
         if shouldThrowError, let error = errorToThrow {
             throw error
         }
-        
+
+        currentImagePath = path
         return CGSize(width: 100, height: 100)
     }
-    
-    func predict(points: [SAMPoint], box: SAMBox?, imageSize: CGSize) async throws -> URL {
+
+    func setImageIfNeeded(path: String) async throws -> CGSize {
+        if path == currentImagePath {
+            return CGSize(width: 100, height: 100)
+        }
+        return try await setImage(path: path)
+    }
+
+    func predict(points: [SAMPoint], box: SAMBox?, imageSize: CGSize) async throws -> (masks: [URL], primaryMask: URL, scores: [Double], confidenceMap: URL?) {
         isProcessing = true
         status = "Mock predicting..."
-        
+
         try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
-        
+
         if shouldThrowError, let error = errorToThrow {
             isProcessing = false
             status = "Mock error"
             throw error
         }
-        
+
         isProcessing = false
         status = "Mock ready"
-        
-        return mockMaskURL ?? URL(fileURLWithPath: "/tmp/mock_mask.png")
+
+        let url = mockMaskURL ?? URL(fileURLWithPath: "/tmp/mock_mask.png")
+        return (masks: [url], primaryMask: url, scores: [0.95], confidenceMap: nil)
     }
     
     func resetPredictor() async throws {

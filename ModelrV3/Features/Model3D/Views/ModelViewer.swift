@@ -3,92 +3,44 @@ import SceneKit
 import ModelIO
 import SceneKit.ModelIO
 
-// Model cache for efficient reuse
-class ModelCache {
-    static let shared = ModelCache()
-    private let cache = NSCache<NSString, MDLAsset>()
-    private let materialCache = NSCache<NSString, SCNMaterial>()
+// MARK: - SceneKit 3D Viewer (Headlamp Lighting)
 
-    init() {
-        cache.countLimit = 5
-        cache.totalCostLimit = 500 * 1024 * 1024 // 500MB
-        materialCache.countLimit = 20
-        materialCache.totalCostLimit = 10 * 1024 * 1024 // 10MB
-    }
-
-    func getAsset(for url: URL) -> MDLAsset? {
-        let key = url.path as NSString
-        if let asset = cache.object(forKey: key) {
-            return asset
-        }
-        let asset = MDLAsset(url: url)
-        asset.loadTextures()
-        cache.setObject(asset, forKey: key)
-        return asset
-    }
-
-    func getCachedSCNMaterial(for key: String) -> SCNMaterial? {
-        return materialCache.object(forKey: key as NSString)
-    }
-
-    func setCachedSCNMaterial(_ material: SCNMaterial, for key: String) {
-        materialCache.setObject(material, forKey: key as NSString)
-    }
-
-    func clear() {
-        cache.removeAllObjects()
-        materialCache.removeAllObjects()
-    }
-}
-
-/// Interactive 3D model viewer using SceneKit with improved camera controls
+/// A robust 3D viewer that uses a camera-attached light ("Headlamp") 
+/// to ensure the model is always visible from the user's angle.
 struct ModelViewer: NSViewRepresentable {
     let modelURL: URL?
 
     func makeNSView(context: Context) -> SCNView {
         let scnView = SCNView()
+        
+        // 1. Basic Setup
         scnView.allowsCameraControl = true
-        scnView.autoenablesDefaultLighting = false // Disable default lighting to prevent back-face bias
-        scnView.backgroundColor = .black // Pure black for better contrast perception
+        scnView.autoenablesDefaultLighting = false
+        scnView.backgroundColor = NSColor(calibratedWhite: 0.12, alpha: 1.0)
         scnView.antialiasingMode = .multisampling4X
         
-        // Configure camera control behavior for smoother interaction
-        scnView.defaultCameraController.interactionMode = .orbitTurntable
-        scnView.defaultCameraController.inertiaEnabled = true
-        scnView.defaultCameraController.inertiaFriction = 0.9
-        scnView.defaultCameraController.maximumVerticalAngle = 89
-        scnView.defaultCameraController.minimumVerticalAngle = -89
-
-        // Create scene
+        // 2. Scene Setup
         let scene = SCNScene()
-        
-        // Add global ambient light
-        let ambientNode = SCNNode()
-        ambientNode.light = SCNLight()
-        ambientNode.light?.type = .ambient
-        ambientNode.light?.intensity = 300 // Soft fill light
-        ambientNode.light?.temperature = 6500
-        scene.rootNode.addChildNode(ambientNode)
-        
         scnView.scene = scene
-
-        // Load model if available
+        
+        // 3. Camera & Headlamp Setup
+        setupCameraAndLighting(scene: scene, view: scnView)
+        
+        // 4. Load Model
         if let url = modelURL {
-            loadModel(url: url, into: scene, scnView: scnView)
+            context.coordinator.loadModel(url: url, into: scene, view: scnView)
         }
 
         return scnView
     }
 
-    func updateNSView(_ nsView: SCNView, context: Context) {
-        if let url = modelURL,
-           context.coordinator.currentModelURL != url {
-            context.coordinator.currentModelURL = url
-            if let scene = nsView.scene {
-                scene.rootNode.childNodes
-                    .filter { $0.name == "loadedModel" || $0.name == "cameraNode" }
-                    .forEach { $0.removeFromParentNode() }
-                loadModel(url: url, into: scene, scnView: nsView)
+    func updateNSView(_ scnView: SCNView, context: Context) {
+        if let url = modelURL, context.coordinator.currentModelURL != url {
+            if let scene = scnView.scene {
+                // Remove old model
+                scene.rootNode.childNode(withName: "loadedModel", recursively: true)?.removeFromParentNode()
+                // Load new
+                context.coordinator.loadModel(url: url, into: scene, view: scnView)
             }
         }
     }
@@ -97,172 +49,120 @@ struct ModelViewer: NSViewRepresentable {
         Coordinator()
     }
 
-    private func loadModel(url: URL, into scene: SCNScene, scnView: SCNView) {
-        print("Loading 3D model from: \(url.path)")
-
-        DispatchQueue.global(qos: .userInitiated).async {
-            // Try loading from cache first
-            let asset = ModelCache.shared.getAsset(for: url) ?? MDLAsset(url: url)
-            asset.loadTextures()
-
-            guard asset.count > 0 else {
-                print("MDLAsset has no objects")
-                return
-            }
-
-            print("MDLAsset loaded with \(asset.count) objects")
-
-            // Convert to SceneKit
-            let loadedScene = SCNScene(mdlAsset: asset)
-
-            DispatchQueue.main.async {
-                let containerNode = SCNNode()
-                containerNode.name = "loadedModel"
-
-                // Clone all children from loaded scene and apply default material
-                for child in loadedScene.rootNode.childNodes {
-                    let cloned = child.clone()
-                    self.applyDefaultMaterial(to: cloned)
-                    containerNode.addChildNode(cloned)
-                    print("Added child node: \(child.name ?? "unnamed"), geometry: \(child.geometry != nil)")
-                }
-
-                // Add to scene first to get proper bounding box
-                scene.rootNode.addChildNode(containerNode)
-
-                // Get bounding box
-                let (min, max) = containerNode.boundingBox
-                print("Bounding box: min=\(min), max=\(max)")
-
-                let sizeX = max.x - min.x
-                let sizeY = max.y - min.y
-                let sizeZ = max.z - min.z
-                let maxSize = Swift.max(sizeX, Swift.max(sizeY, sizeZ))
-
-                print("Model size: \(sizeX) x \(sizeY) x \(sizeZ), maxSize: \(maxSize)")
-
-                guard maxSize > 0 && maxSize.isFinite else {
-                    print("Invalid model size, trying alternative approach")
-                    // Try to find geometry nodes recursively
-                    var hasGeometry = false
-                    containerNode.enumerateChildNodes { node, _ in
-                        if node.geometry != nil {
-                            hasGeometry = true
-                            print("Found geometry in: \(node.name ?? "unnamed")")
-                        }
-                    }
-                    if !hasGeometry {
-                        print("No geometry found in model")
-                    }
-                    return
-                }
-
-                // Center the model at origin
-                let centerX = (min.x + max.x) / 2
-                let centerY = (min.y + max.y) / 2
-                let centerZ = (min.z + max.z) / 2
-
-                // Create a pivot to center the model at origin
-                containerNode.pivot = SCNMatrix4MakeTranslation(centerX, centerY, centerZ)
-                containerNode.position = SCNVector3(0, 0, 0)
-
-                // Scale to fit in a 2-unit box
-                let scale = 2.0 / maxSize
-                containerNode.scale = SCNVector3(scale, scale, scale)
-
-                print("Applied scale: \(scale)")
-
-                // Create camera with proper settings for orbit control
-                let cameraNode = SCNNode()
-                cameraNode.name = "cameraNode"
-                cameraNode.camera = SCNCamera()
-                cameraNode.camera?.automaticallyAdjustsZRange = true
-                cameraNode.camera?.fieldOfView = 45
-                // Set reasonable z-range for zooming
-                cameraNode.camera?.zNear = 0.01
-                cameraNode.camera?.zFar = 1000
-                // Add "Headlamp" - Directional light attached to camera
-                // This ensures the model is always lit from the viewer's perspective
-                let headlampNode = SCNNode()
-                headlampNode.light = SCNLight()
-                headlampNode.light?.type = .directional
-                headlampNode.light?.intensity = 1500
-                headlampNode.light?.castsShadow = true
-                cameraNode.addChildNode(headlampNode)
-                
-                // Enable HDR for better color reproduction (fixed faded look)
-                if #available(macOS 10.15, *) {
-                    cameraNode.camera?.wantsHDR = true
-                    cameraNode.camera?.exposureOffset = -0.5 // Slight negative exposure to deepen shadows
-                    cameraNode.camera?.averageGray = 0.18
-                    cameraNode.camera?.wantsExposureAdaptation = false
-                }
-
-                // Position camera at a good viewing distance
-                let cameraDistance: Float = 5.0
-                cameraNode.position = SCNVector3(0, 0, cameraDistance)
-                cameraNode.look(at: SCNVector3(0, 0, 0))
-                scene.rootNode.addChildNode(cameraNode)
-                scnView.pointOfView = cameraNode
-
-                print("Model loaded successfully")
-            }
-        }
+    private func setupCameraAndLighting(scene: SCNScene, view: SCNView) {
+        // Create a dedicated camera node
+        let cameraNode = SCNNode()
+        cameraNode.name = "cameraNode"
+        cameraNode.camera = SCNCamera()
+        cameraNode.camera?.zNear = 0.01
+        cameraNode.camera?.zFar = 1000
+        cameraNode.position = SCNVector3(0, 0, 2) // Start slightly back
+        
+        // --- HEADLAMP SETUP ---
+        // Attach lights TO THE CAMERA so they move with it.
+        // This ensures the "front" of the model is always lit.
+        
+        // 1. Key Light (The Headlamp)
+        let keyLightNode = SCNNode()
+        keyLightNode.light = SCNLight()
+        keyLightNode.light?.type = .directional
+        keyLightNode.light?.intensity = 900
+        keyLightNode.light?.color = NSColor.white
+        keyLightNode.light?.castsShadow = true
+        // Point slightly down relative to camera view
+        keyLightNode.eulerAngles = SCNVector3(-0.2, 0, 0) 
+        cameraNode.addChildNode(keyLightNode)
+        
+        // 2. Fill Light (Softer, fills shadows)
+        let fillLightNode = SCNNode()
+        fillLightNode.light = SCNLight()
+        fillLightNode.light?.type = .directional
+        fillLightNode.light?.intensity = 400
+        fillLightNode.light?.color = NSColor(white: 0.9, alpha: 1.0)
+        fillLightNode.light?.castsShadow = false
+        // Angle from the side
+        fillLightNode.eulerAngles = SCNVector3(0, -0.4, 0)
+        cameraNode.addChildNode(fillLightNode)
+        
+        // Add Camera (with lights attached) to Scene
+        scene.rootNode.addChildNode(cameraNode)
+        
+        // Set as view's point of view (allows orbit control)
+        view.pointOfView = cameraNode
+        
+        // --- GLOBAL LIGHTING ---
+        
+        // 3. Ambient Light (Base visibility for everything)
+        let ambientNode = SCNNode()
+        ambientNode.light = SCNLight()
+        ambientNode.light?.type = .ambient
+        ambientNode.light?.intensity = 300 // Moderate ambient
+        ambientNode.light?.color = NSColor(white: 0.8, alpha: 1.0)
+        scene.rootNode.addChildNode(ambientNode)
+        
+        // 4. Environment (Reflections)
+        // Neutral studio gray for PBR reflections
+        scene.lightingEnvironment.contents = NSColor(white: 0.5, alpha: 1.0)
+        scene.lightingEnvironment.intensity = 1.0
     }
 
     class Coordinator {
         var currentModelURL: URL?
-    }
-
-    /// Apply a neutral gray material to geometry nodes only if they have no valid materials/textures
-    private func applyDefaultMaterial(to node: SCNNode) {
-        if let geometry = node.geometry {
-            // Check if geometry has existing textures or valid PBR materials
-            let hasValidMaterial = geometry.materials.contains { mat in
-                // Check for any texture content (diffuse, normal, roughness, metalness, etc.)
-                // NSImage or any non-nil texture maps indicate valid materials
-                if mat.diffuse.contents is NSImage ||
-                   mat.normal.contents != nil ||
-                   mat.metalness.contents != nil ||
-                   mat.roughness.contents != nil ||
-                   mat.emission.contents != nil {
-                    return true
-                }
-                // Check for non-white colors (actual colored materials)
-                if let diffuse = mat.diffuse.contents as? NSColor {
-                    return diffuse.brightnessComponent < 0.9
-                }
-                return false
-            }
+        
+        func loadModel(url: URL, into scene: SCNScene, view: SCNView) {
+            currentModelURL = url
             
-            // Only apply default material if no valid textures/materials exist
-            if !hasValidMaterial && (geometry.materials.isEmpty || geometry.materials.allSatisfy { mat in
-                guard let diffuse = mat.diffuse.contents as? NSColor else { return true }
-                return diffuse.brightnessComponent > 0.9
-            }) {
-                // Use cached material if available
-                let cacheKey = "default_neutral_gray"
-                if let cachedMaterial = ModelCache.shared.getCachedSCNMaterial(for: cacheKey) {
-                    geometry.materials = [cachedMaterial]
-                } else {
-                    // Create new material and cache it
-                    let material = SCNMaterial()
-                    // Neutral clay-like gray for good shape visibility
-                    material.diffuse.contents = NSColor(calibratedRed: 0.6, green: 0.6, blue: 0.65, alpha: 1.0)
-                    material.specular.contents = NSColor(calibratedWhite: 0.3, alpha: 1.0)
-                    material.shininess = 0.2
-                    material.lightingModel = .physicallyBased
-                    material.roughness.contents = 0.7
-                    material.metalness.contents = 0.0
-                    geometry.materials = [material]
-                    ModelCache.shared.setCachedSCNMaterial(material, for: cacheKey)
+            DispatchQueue.global(qos: .userInitiated).async {
+                let asset = MDLAsset(url: url)
+                asset.loadTextures() // Ensure textures are loaded
+                
+                guard asset.count > 0 else { return }
+                
+                let loadedScene = SCNScene(mdlAsset: asset)
+                
+                DispatchQueue.main.async {
+                    let containerNode = SCNNode()
+                    containerNode.name = "loadedModel"
+                    
+                    for child in loadedScene.rootNode.childNodes {
+                        let cloned = child.clone()
+                        self.fixMaterials(node: cloned)
+                        containerNode.addChildNode(cloned)
+                    }
+                    
+                    scene.rootNode.addChildNode(containerNode)
+                    
+                    // Center and Scale
+                    let (min, max) = containerNode.boundingBox
+                    let size = SCNVector3(max.x - min.x, max.y - min.y, max.z - min.z)
+                    let maxDim = Swift.max(size.x, Swift.max(size.y, size.z))
+                    
+                    if maxDim > 0 {
+                        let scale = 1.5 / maxDim // Scale to fit nicely
+                        containerNode.scale = SCNVector3(scale, scale, scale)
+                        
+                        let center = SCNVector3((min.x + max.x) / 2, (min.y + max.y) / 2, (min.z + max.z) / 2)
+                        containerNode.pivot = SCNMatrix4MakeTranslation(center.x, center.y, center.z)
+                        containerNode.position = SCNVector3(0, 0, 0)
+                    }
                 }
             }
         }
-
-        // Recursively apply to children
-        for child in node.childNodes {
-            applyDefaultMaterial(to: child)
+        
+        func fixMaterials(node: SCNNode) {
+            node.geometry?.materials.forEach { material in
+                // Force double-sided to avoid holes in single-sided meshes
+                material.isDoubleSided = true
+                
+                // Ensure the material responds to lighting
+                if material.lightingModel == .constant {
+                    material.lightingModel = .physicallyBased
+                }
+            }
+            
+            for child in node.childNodes {
+                fixMaterials(node: child)
+            }
         }
     }
 }
@@ -273,15 +173,17 @@ struct ModelViewerContainer: View {
 
     var body: some View {
         ZStack {
+            // Background
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color(NSColor(calibratedWhite: 0.15, alpha: 1.0)))
+                .fill(Color(NSColor(calibratedWhite: 0.12, alpha: 1.0)))
 
             if let url = modelURL {
                 ModelViewer(modelURL: url)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
 
+                // Interaction hint
                 VStack {
                     Spacer()
-
                     HStack {
                         Spacer()
                         Text("Drag to rotate • Scroll to zoom")

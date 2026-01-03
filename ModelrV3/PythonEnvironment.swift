@@ -722,8 +722,8 @@ class PythonEnvironment: ObservableObject {
         let point = SAMPoint(normalizedCoords: normalizedPoint)
 
         do {
-            let maskURL = try await predict(points: [point], box: nil, imageSize: imagePixelSize)
-            let maskImage = NSImage(contentsOf: maskURL)
+            let (maskURLs, primaryMaskURL, scores, _) = try await predict(points: [point], box: nil, imageSize: imagePixelSize)
+            let maskImage = NSImage(contentsOf: primaryMaskURL)
 
             await MainActor.run {
                 selfTestMask = maskImage
@@ -732,7 +732,7 @@ class PythonEnvironment: ObservableObject {
 
             // Compare with reference mask
             let referenceMaskURL = appSupportDir.appendingPathComponent("correct_self_test_mask.png")
-            let similarity = compareMasks(maskURL: maskURL, referenceURL: referenceMaskURL)
+            let similarity = compareMasks(maskURL: primaryMaskURL, referenceURL: referenceMaskURL)
             print("Mask similarity to reference: \(String(format: "%.1f", similarity * 100))%")
 
             // If less than 90% similar (i.e., more than 10% different), ask to retry
@@ -756,13 +756,13 @@ class PythonEnvironment: ObservableObject {
             let generator = await MainActor.run { selectedGenerator }
             switch generator {
             case .hunyuan:
-                await runHunyuanSelfTest(finalUvPath: uvPath, maskPath: maskURL.path, imagePath: testImgPath)
+                await runHunyuanSelfTest(finalUvPath: uvPath, maskPath: primaryMaskURL.path, imagePath: testImgPath)
             case .sf3d:
-                await runSF3DSelfTest(finalUvPath: uvPath, maskPath: maskURL.path, imagePath: testImgPath)
+                await runSF3DSelfTest(finalUvPath: uvPath, maskPath: primaryMaskURL.path, imagePath: testImgPath)
             case .both:
                 // Run Hunyuan first, then SF3D
-                await runHunyuanSelfTest(finalUvPath: uvPath, maskPath: maskURL.path, imagePath: testImgPath)
-                await runSF3DSelfTest(finalUvPath: uvPath, maskPath: maskURL.path, imagePath: testImgPath)
+                await runHunyuanSelfTest(finalUvPath: uvPath, maskPath: primaryMaskURL.path, imagePath: testImgPath)
+                await runSF3DSelfTest(finalUvPath: uvPath, maskPath: primaryMaskURL.path, imagePath: testImgPath)
             }
 
         } catch {
@@ -1129,8 +1129,19 @@ class PythonEnvironment: ObservableObject {
         return imagePixelSize
     }
 
+    /// Set image only if it differs from current image (skip redundant SAM encoding)
+    /// This is a major performance optimization - SAM image encoding is ~90% of inference time
+    func setImageIfNeeded(path: String) async throws -> CGSize {
+        // Skip if same image is already loaded
+        if path == currentImagePath && imagePixelSize != .zero {
+            return imagePixelSize
+        }
+        return try await setImage(path: path)
+    }
+
     /// Run prediction with points and/or box
-    func predict(points: [SAMPoint], box: SAMBox?, imageSize: CGSize) async throws -> URL {
+    /// Returns tuple of (all mask URLs, best mask URL, scores, confidence map URL)
+    func predict(points: [SAMPoint], box: SAMBox?, imageSize: CGSize) async throws -> (masks: [URL], primaryMask: URL, scores: [Double], confidenceMap: URL?) {
         guard persistentProcess?.isRunning == true else {
             throw PythonError.workerNotRunning
         }
@@ -1147,11 +1158,12 @@ class PythonEnvironment: ObservableObject {
             }
         }
 
-        // Convert points to pixel coordinates
+        // Convert points to pixel coordinates and extract labels
         let pixelPoints: [[Int]] = points.map { point in
             let coords = point.pixelCoords(for: imageSize)
             return [coords.x, coords.y]
         }
+        let pointLabels: [Int] = points.map { $0.label }
 
         // Convert box to pixel coordinates
         let pixelBox: [Int]? = box?.pixelBox(for: imageSize)
@@ -1159,20 +1171,30 @@ class PythonEnvironment: ObservableObject {
         let request = SAMRequest(
             command: "predict",
             points: pixelPoints.isEmpty ? nil : pixelPoints,
+            labels: pointLabels.isEmpty ? nil : pointLabels,
             box: pixelBox
         )
 
         let response = try await sendRequest(request)
 
-        guard response.success, let maskPath = response.maskPath else {
+        guard response.success else {
             throw PythonError.predictionFailed(response.error ?? "Unknown error")
+        }
+
+        guard let maskPaths = response.masks, !maskPaths.isEmpty else {
+            throw PythonError.predictionFailed("No masks returned")
         }
 
         if let inferenceTime = response.inferenceTimeMs {
             print("Inference completed in \(inferenceTime)ms")
         }
 
-        return URL(fileURLWithPath: maskPath)
+        let urls = maskPaths.map { URL(fileURLWithPath: $0) }
+        let primaryURL = response.primaryMaskPath.flatMap { URL(fileURLWithPath: $0) } ?? urls.first!
+        let scores = response.scores ?? []
+        let confidenceMapURL = response.confidenceMapPath.flatMap { URL(fileURLWithPath: $0) }
+
+        return (urls, primaryURL, scores, confidenceMapURL)
     }
 
     /// Reset the predictor state

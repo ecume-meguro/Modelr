@@ -25,9 +25,9 @@ dependencies = [
     # File I/O utilities for remote file access
     # Required for: Model checkpoint loading from remote URLs
     "iopath>=0.1.10,<1.0.0",
-    # Meta's Segment Anything Model 2 library
+    # Meta's Segment Anything Model 2 library (v1.0+ required for SAM2.1 support)
     # Required for: SAM2 model loading, inference, mask generation
-    "sam2>=0.1.0,<1.0.0",
+    "sam2>=1.0.0,<2.0.0",
     # Retry library for handling transient network errors
     # Required for: Robust model checkpoint downloads
     "tenacity>=8.2.0,<9.0.0",

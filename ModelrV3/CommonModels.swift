@@ -58,4 +58,5 @@ enum UndoAction: Equatable {
     case addLasso(LassoSelection)
     case addPaintStroke(PaintStroke)
     case crop(originalImage: NSImage, originalPath: String?)
+    case movePoint(from: SAMPoint, to: SAMPoint)  // Track point movement for undo
 }

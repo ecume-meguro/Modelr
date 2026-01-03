@@ -2,17 +2,9 @@ import os
 import sys
 import json
 import time
-import hashlib
-import ssl
 import gc
-import urllib.request
-import urllib.error
-import socket
 from typing import Optional, Callable, List, Tuple, Dict, Any
-from contextlib import contextmanager
 from pathlib import Path
-from urllib.request import urlopen, Request
-from urllib.error import URLError, HTTPError
 
 import torch
 import numpy as np
@@ -34,294 +26,137 @@ except ImportError:
     TENACITY_AVAILABLE = False
 
 try:
-    from config import ModelConfig, PerformanceConfig, metrics
-    from device_utils import get_device, check_gpu_available, health_check
-    from logging_config import get_logger
+    from modelrv3_core import (
+        get_logger,
+        validate_image_path,
+        validate_coordinates,
+        validate_image_dimensions,
+        check_gpu_available,
+        health_check,
+        get_device,
+        ModelConfig,
+        PerformanceConfig,
+        metrics,
+    )
+    from modelrv3_core.logging import log_info, log_error, log_debug, log_warning
+    from modelrv3_core.exceptions import (
+        ModelLoadError,
+        ImageValidationError,
+        OutOfMemoryError,
+    )
+    from modelrv3_core.download import (
+        download_with_progress,
+        compute_sha256,
+        MAX_DOWNLOAD_SIZE,
+    )
 
     logger = get_logger("sam_wrapper")
 except ImportError:
     logger = None
+    log_info = lambda x: print(x, file=sys.stderr)
+    log_error = lambda x: print(f"ERROR: {x}", file=sys.stderr)
+    log_warning = lambda x: print(f"WARNING: {x}", file=sys.stderr)
+    log_debug = lambda x: None
+    get_device = lambda: (
+        "mps"
+        if torch.backends.mps.is_available()
+        else "cuda"
+        if torch.cuda.is_available()
+        else "cpu"
+    )
+    check_gpu_available = (
+        lambda: torch.backends.mps.is_available() or torch.cuda.is_available()
+    )
+    ModelLoadError = Exception
+    ImageValidationError = Exception
+    OutOfMemoryError = Exception
+    download_with_progress = None
+    compute_sha256 = None
+    MAX_DOWNLOAD_SIZE = 2 * 1024 * 1024 * 1024
 
-def get_device() -> str:
-    """Fallback if device_utils is not available."""
-    if torch.backends.mps.is_available():
-        return "mps"
-    elif torch.cuda.is_available():
-        return "cuda"
-    return "cpu"
+    # Fallback validation functions
+    def validate_image_path(path: str) -> None:
+        """Validate that image path exists and is a supported format."""
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Image not found: {path}")
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp']:
+            raise ValueError(f"Unsupported image format: {ext}")
 
-def check_gpu_available() -> bool:
-    """Fallback if device_utils is not available."""
-    return torch.backends.mps.is_available() or torch.cuda.is_available()
+    def validate_image_dimensions(path: str) -> Tuple[int, int]:
+        """Validate image dimensions and return (width, height)."""
+        from PIL import Image as PILImage
+        with PILImage.open(path) as img:
+            return img.size  # Returns (width, height)
 
-def health_check() -> Dict[str, Any]:
-    """Fallback if device_utils is not available."""
-    return {
-        "status": "healthy",
-        "device": get_device(),
-        "gpu_available": check_gpu_available()
-    }
+    def validate_coordinates(
+        points: List[List[float]],
+        box: Optional[List[float]],
+        width: int,
+        height: int
+    ) -> None:
+        """Validate that coordinates are within image bounds."""
+        for point in points:
+            if len(point) >= 2:
+                x, y = point[0], point[1]
+                if x < 0 or x >= width or y < 0 or y >= height:
+                    log_warning(f"Point ({x}, {y}) outside image bounds ({width}x{height})")
+        if box is not None and len(box) >= 4:
+            x1, y1, x2, y2 = box[:4]
+            if x1 < 0 or y1 < 0 or x2 > width or y2 > height:
+                log_warning(f"Box [{x1},{y1},{x2},{y2}] outside image bounds ({width}x{height})")
+
+    def health_check() -> Dict[str, Any]:
+        """Basic health check."""
+        return {"status": "ok", "gpu_available": check_gpu_available()}
+
+    class ModelConfig:
+        @staticmethod
+        def get_checkpoint_dir() -> str:
+            return os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
+
+    class PerformanceConfig:
+        pass
+
+    metrics = None
 
 
-class ModelLoadError(Exception):
-    pass
-
-
-class ImageValidationError(Exception):
-    pass
-
-
-class GPUNotAvailableError(Exception):
-    pass
-
-
-class NetworkError(Exception):
-    pass
-
-
-class OutOfMemoryError(Exception):
-    pass
-
-
-# Model configuration mappings
 MODEL_CONFIGS = {
-    "tiny": "sam2_hiera_t.yaml",
-    "small": "sam2_hiera_s.yaml",
-    "base_plus": "sam2_hiera_b+.yaml",
-    "large": "sam2_hiera_l.yaml",
+    "tiny": "configs/sam2.1/sam2.1_hiera_t.yaml",
+    "small": "configs/sam2.1/sam2.1_hiera_s.yaml",
+    "base_plus": "configs/sam2.1/sam2.1_hiera_b+.yaml",
+    "large": "configs/sam2.1/sam2.1_hiera_l.yaml",
 }
 
 MODEL_CHECKPOINTS = {
-    "tiny": "sam2_hiera_tiny.pt",
-    "small": "sam2_hiera_small.pt",
-    "base_plus": "sam2_hiera_base_plus.pt",
-    "large": "sam2_hiera_large.pt",
+    "tiny": "sam2.1_hiera_tiny.pt",
+    "small": "sam2.1_hiera_small.pt",
+    "base_plus": "sam2.1_hiera_base_plus.pt",
+    "large": "sam2.1_hiera_large.pt",
 }
 
 CHECKPOINT_URLS = {
     "tiny": {
-        "primary": "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_tiny.pt",
-        "mirror": "https://github.com/facebookresearch/segment-anything-2/raw/main/checkpoints/sam2_hiera_tiny.pt",
-        "checksum": "8e68a32d3289d9df2367b5f6d8a5a0c1",
+        "primary": "https://huggingface.co/facebook/sam2.1-hiera-tiny/resolve/main/sam2.1_hiera_tiny.pt",
+        "mirror": "https://github.com/facebookresearch/segment-anything-2/raw/main/checkpoints/sam2.1_hiera_tiny.pt",
+        "checksum": "7402e0d864fa82708a20fbd15bc84245c2f26dff0eb43a4b5b93452deb34be69",
     },
     "small": {
-        "primary": "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt",
-        "mirror": "https://github.com/facebookresearch/segment-anything-2/raw/main/checkpoints/sam2_hiera_small.pt",
-        "checksum": "a2d3b4c5e6f7a8b9c0d1e2f3a4b5c6d7",
+        "primary": "https://huggingface.co/facebook/sam2.1-hiera-small/resolve/main/sam2.1_hiera_small.pt",
+        "mirror": "https://github.com/facebookresearch/segment-anything-2/raw/main/checkpoints/sam2.1_hiera_small.pt",
+        "checksum": "95949964d4e548409021d47b22712d5f1abf2564cc0c3c765ba599a24ac7dce3",
     },
     "base_plus": {
-        "primary": "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_base_plus.pt",
-        "mirror": "https://github.com/facebookresearch/segment-anything-2/raw/main/checkpoints/sam2_hiera_base_plus.pt",
-        "checksum": "b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8",
+        "primary": "https://huggingface.co/facebook/sam2.1-hiera-base-plus/resolve/main/sam2.1_hiera_base_plus.pt",
+        "mirror": "https://github.com/facebookresearch/segment-anything-2/raw/main/checkpoints/sam2.1_hiera_base_plus.pt",
+        "checksum": "a2345aede8715ab1d5d31b4a509fb160c5a4af1970f199d9054ccfb746c004c5",
     },
     "large": {
-        "primary": "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt",
-        "mirror": "https://github.com/facebookresearch/segment-anything-2/raw/main/checkpoints/sam2_hiera_large.pt",
-        "checksum": "c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9",
+        "primary": "https://huggingface.co/facebook/sam2.1-hiera-large/resolve/main/sam2.1_hiera_large.pt",
+        "mirror": "https://github.com/facebookresearch/segment-anything-2/raw/main/checkpoints/sam2.1_hiera_large.pt",
+        "checksum": "8b36b71d5cafc83a0975d14d0afae81c3915804e12cc896b0665eaabcc445d56",
     },
 }
-
-
-MAX_DOWNLOAD_SIZE = 2 * 1024 * 1024 * 1024  # 2GB
-
-
-def log_info(message: str) -> None:
-    if logger:
-        logger.info(message)
-    else:
-        print(message, file=sys.stderr)
-
-
-def log_error(message: str) -> None:
-    if logger:
-        logger.error(message)
-    else:
-        print(f"ERROR: {message}", file=sys.stderr)
-
-
-def log_debug(message: str) -> None:
-    if logger:
-        logger.debug(message)
-
-
-def log_warning(message: str) -> None:
-    if logger:
-        logger.warning(message)
-    else:
-        print(f"WARNING: {message}", file=sys.stderr)
-
-
-def validate_image_path(image_path: str) -> None:
-    if not image_path:
-        raise ImageValidationError("Image path cannot be empty")
-
-    path = Path(image_path)
-    if not path.exists():
-        raise ImageValidationError(f"Image file not found: {image_path}")
-
-    if not path.is_file():
-        raise ImageValidationError(f"Path is not a file: {image_path}")
-
-    valid_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
-    if path.suffix.lower() not in valid_extensions:
-        raise ImageValidationError(f"Invalid image format: {path.suffix}")
-
-
-def validate_coordinates(
-    points: Optional[List[List[float]]],
-    box: Optional[List[float]],
-    image_width: int,
-    image_height: int,
-    normalized: bool = False,
-) -> None:
-    max_x = 1.0 if normalized else image_width
-    max_y = 1.0 if normalized else image_height
-
-    if points:
-        if len(points) > 100:
-            raise ImageValidationError(
-                f"Too many points: {len(points)}. Maximum is 100"
-            )
-
-        # Clamp points to [0, max]
-        for i in range(len(points)):
-            x, y = points[i]
-            points[i] = [max(0, min(max_x, x)), max(0, min(max_y, y))]
-
-    if box:
-        if len(box) != 4:
-            raise ImageValidationError(f"Box must have 4 coordinates, got {len(box)}")
-
-        # Clamp box to [0, max] and ensure valid dimensions
-        x1, y1, x2, y2 = box
-        x1 = max(0, min(max_x, x1))
-        y1 = max(0, min(max_y, y1))
-        x2 = max(0, min(max_x, x2))
-        y2 = max(0, min(max_y, y2))
-
-        # Re-sort if needed to ensure x1 < x2 and y1 < y2
-        nx1, nx2 = min(x1, x2), max(x1, x2)
-        ny1, ny2 = min(y1, y2), max(y1, y2)
-        
-        # In-place update
-        box[0], box[1], box[2], box[3] = nx1, ny1, nx2, ny2
-
-
-def validate_image_dimensions(image_path: str) -> Tuple[int, int]:
-    try:
-        with Image.open(image_path) as img:
-            width, height = img.size
-    except Exception as e:
-        raise ImageValidationError(f"Failed to read image dimensions: {e}")
-
-    max_size = 16384
-    if width > max_size or height > max_size:
-        raise ImageValidationError(
-            f"Image size {width}x{height} exceeds maximum {max_size}x{max_size}"
-        )
-
-    if width < 32 or height < 32:
-        raise ImageValidationError(f"Image size {width}x{height} below minimum 32x32")
-
-    log_debug(f"Image dimensions validated: {width}x{height}")
-    return width, height
-
-
-def compute_sha256(filepath: str, chunk_size: int = 8192) -> str:
-    sha256_hash = hashlib.sha256()
-    with open(filepath, "rb") as f:
-        for byte_block in iter(lambda: f.read(chunk_size), b""):
-            sha256_hash.update(byte_block)
-    return sha256_hash.hexdigest()
-
-
-def create_secure_ssl_context() -> ssl.SSLContext:
-    context = ssl.create_default_context()
-    context.check_hostname = True
-    context.verify_mode = ssl.CERT_REQUIRED
-    context.minimum_version = ssl.TLSVersion.TLSv1_2
-    return context
-
-
-def _retry_download(func):
-    def wrapper(*args, **kwargs):
-        max_retries = 3
-        base_wait = 1.0
-
-        for attempt in range(max_retries):
-            try:
-                return func(*args, **kwargs)
-            except (URLError, HTTPError, socket.timeout, socket.error) as e:
-                if attempt < max_retries - 1:
-                    wait_time = base_wait * (2**attempt)
-                    log_warning(
-                        f"Download attempt {attempt + 1} failed: {e}. Retrying in {wait_time:.1f}s..."
-                    )
-                    time.sleep(wait_time)
-                else:
-                    raise
-        return False
-
-    return wrapper
-
-
-@_retry_download
-def download_with_progress(
-    url: str, path: str, progress_callback: Optional[Callable[[int, int], None]] = None
-) -> bool:
-    try:
-        request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        context = create_secure_ssl_context()
-
-        log_info(f"Downloading from {url}")
-
-        with urlopen(request, context=context, timeout=30) as response:
-            if response.status != 200:
-                raise HTTPError(
-                    url,
-                    response.status,
-                    f"HTTP {response.status}",
-                    response.headers,
-                    None,
-                )
-
-            content_length = int(response.headers.get("Content-Length", 0))
-            if content_length > MAX_DOWNLOAD_SIZE:
-                error_msg = f"Download size {content_length} exceeds maximum {MAX_DOWNLOAD_SIZE}"
-                log_error(error_msg)
-                return False
-
-            downloaded = 0
-            with open(path, "wb") as f:
-                while True:
-                    chunk = response.read(8192)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    downloaded += len(chunk)
-
-                    if progress_callback and content_length > 0:
-                        progress_callback(downloaded, content_length)
-
-            if content_length > 0 and os.path.getsize(path) != content_length:
-                error_msg = f"Download incomplete. Got {os.path.getsize(path)}, expected {content_length}"
-                log_error(error_msg)
-                os.remove(path)
-                return False
-
-            log_info("Download complete")
-            return True
-
-    except (URLError, HTTPError, socket.timeout, socket.error) as e:
-        log_error(f"Download failed: {e}")
-        if os.path.exists(path):
-            os.remove(path)
-        return False
-    except Exception as e:
-        log_error(f"Unexpected error during download: {e}")
-        if os.path.exists(path):
-            os.remove(path)
-        return False
 
 
 def download_checkpoint(
@@ -362,10 +197,12 @@ def download_checkpoint(
                 print(f"\rProgress: {downloaded} bytes", end="", file=sys.stderr)
             sys.stderr.flush()
 
-        if download_with_progress(url, path, wrapped_progress_callback):
-            print("", file=sys.stderr)  # New line after progress
+        if download_with_progress and download_with_progress(
+            url, path, wrapped_progress_callback
+        ):
+            print("", file=sys.stderr)
 
-            if "checksum" in config:
+            if "checksum" in config and compute_sha256:
                 log_info("Verifying checksum...")
                 actual_checksum = compute_sha256(path)
                 expected_checksum = config["checksum"]
@@ -390,7 +227,7 @@ def download_checkpoint(
 
 
 def get_checkpoint_path(model_type: str, script_dir: str) -> str:
-    checkpoint_name = MODEL_CHECKPOINTS.get(model_type, "sam2_hiera_tiny.pt")
+    checkpoint_name = MODEL_CHECKPOINTS.get(model_type, "sam2.1_hiera_tiny.pt")
 
     try:
         checkpoint_dir = (
@@ -415,7 +252,9 @@ class ModelManager:
 
     def load(self) -> Tuple[SAM2ImagePredictor, str]:
         try:
-            model_cfg = MODEL_CONFIGS.get(self.model_type, "sam2_hiera_t.yaml")
+            model_cfg = MODEL_CONFIGS.get(
+                self.model_type, "configs/sam2.1/sam2.1_hiera_t.yaml"
+            )
             checkpoint_path = get_checkpoint_path(self.model_type, self.script_dir)
 
             if not download_checkpoint(checkpoint_path, self.model_type):
@@ -534,31 +373,13 @@ def save_debug_image(
         return ""
 
 
-# =============================================================================
-# SERVER MODE - Persistent process with JSON stdin/stdout protocol
-# =============================================================================
-
-
 def server_mode(model_type: str, script_dir: str, output_dir: str) -> None:
-    """
-    Persistent server mode for fast iterative refinement.
-
-    Reads JSON requests from stdin (one per line), writes JSON responses to stdout.
-    Model stays loaded between requests for ~50ms inference instead of ~3s.
-
-    Commands:
-        - set_image: Load and encode a new image
-        - predict: Run mask prediction with points/box
-        - reset: Clear current image state
-        - health: Return system health status
-    """
+    """Persistent server mode for fast iterative refinement."""
     log_info(f"Starting SAM2 server mode (model_type={model_type})")
 
     try:
         if not check_gpu_available():
             log_warning("No GPU available, inference will be slower")
-        else:
-            pass
 
         print(f"Loading SAM2 model ({model_type})...", file=sys.stderr)
         predictor, device = load_predictor(model_type, script_dir)
@@ -628,6 +449,7 @@ def server_mode(model_type: str, script_dir: str, output_dir: str) -> None:
                         start_time = time.time()
 
                         points = request.get("points", [])
+                        labels = request.get("labels", [])
                         box = request.get("box")
 
                         try:
@@ -640,41 +462,96 @@ def server_mode(model_type: str, script_dir: str, output_dir: str) -> None:
                                 )
 
                             input_points = np.array(points) if points else None
-                            input_labels = (
-                                np.ones(len(points), dtype=np.int32) if points else None
-                            )
+                            if labels and len(labels) == len(points):
+                                input_labels = np.array(labels, dtype=np.int32)
+                            else:
+                                input_labels = (
+                                    np.ones(len(points), dtype=np.int32)
+                                    if points
+                                    else None
+                                )
                             input_box = np.array(box) if box else None
 
                             with torch.inference_mode():
-                                masks, scores, _ = predictor.predict(
+                                masks, scores, low_res_logits = predictor.predict(
                                     point_coords=input_points,
                                     point_labels=input_labels,
                                     box=input_box,
                                     multimask_output=True,
                                 )
 
-                            best_idx = int(np.argmax(scores))
-                            mask = masks[best_idx]
-                            best_score = float(scores[best_idx])
-
-                            mask_path = os.path.join(output_dir, "mask.png")
-                            save_mask(mask, mask_path)
+                            mask_paths = []
+                            for i, mask in enumerate(masks):
+                                mask_path = os.path.join(output_dir, f"mask_{i}.png")
+                                save_mask(mask, mask_path)
+                                mask_paths.append(mask_path)
 
                             if current_image_np is not None:
                                 save_debug_image(
                                     current_image_np, points or [], box, output_dir
                                 )
 
+                            # Generate confidence heatmap from best mask's logits
+                            confidence_map_path = None
+                            try:
+                                import torch.nn.functional as F
+
+                                best_idx = np.argmax(scores)
+                                # low_res_logits shape: (num_masks, 1, H, W) where H,W are low-res
+                                logits = low_res_logits[best_idx]  # Shape: (1, H, W)
+
+                                # Convert to tensor and upsample to image size
+                                logits_tensor = torch.from_numpy(logits).float()
+                                if len(logits_tensor.shape) == 2:
+                                    logits_tensor = logits_tensor.unsqueeze(0).unsqueeze(0)
+                                elif len(logits_tensor.shape) == 3:
+                                    logits_tensor = logits_tensor.unsqueeze(0)
+
+                                h, w = current_image_np.shape[:2]
+                                upsampled = F.interpolate(
+                                    logits_tensor,
+                                    size=(h, w),
+                                    mode='bilinear',
+                                    align_corners=False
+                                ).squeeze()
+
+                                # Apply sigmoid to get probability, then convert to colormap
+                                confidence = torch.sigmoid(upsampled).numpy()
+
+                                # Create a heatmap: blue (low confidence) -> red (high confidence)
+                                # Using a simple colormap
+                                confidence_uint8 = (confidence * 255).astype(np.uint8)
+
+                                # Apply colormap (COLORMAP_JET: blue->green->yellow->red)
+                                heatmap = cv2.applyColorMap(confidence_uint8, cv2.COLORMAP_JET)
+
+                                # Make it semi-transparent by adding alpha channel
+                                # Alpha = confidence level (more confident = more visible)
+                                alpha = (confidence * 200 + 55).astype(np.uint8)  # Range 55-255
+                                heatmap_rgba = np.dstack([heatmap, alpha])
+
+                                confidence_map_path = os.path.join(output_dir, "confidence_map.png")
+                                cv2.imwrite(confidence_map_path, heatmap_rgba)
+                                log_debug(f"Confidence map saved to: {confidence_map_path}")
+                            except Exception as e:
+                                log_warning(f"Failed to generate confidence map: {e}")
+
                             elapsed_ms = int((time.time() - start_time) * 1000)
+
+                            sorted_indices = np.argsort(scores)[::-1].tolist()
+                            sorted_mask_paths = [mask_paths[i] for i in sorted_indices]
+                            sorted_scores = [float(scores[i]) for i in sorted_indices]
 
                             response = {
                                 "success": True,
-                                "maskPath": mask_path,
-                                "score": best_score,
+                                "masks": sorted_mask_paths,
+                                "scores": sorted_scores,
+                                "selectedIndex": 0,
                                 "inferenceTimeMs": elapsed_ms,
+                                "confidenceMapPath": confidence_map_path,
                             }
                             log_info(
-                                f"Prediction complete: score={best_score:.4f}, time={elapsed_ms}ms"
+                                f"Prediction complete: top score={sorted_scores[0]:.4f}, time={elapsed_ms}ms, masks={len(masks)}"
                             )
                         except Exception as e:
                             response = {"success": False, "error": str(e)}
@@ -717,11 +594,6 @@ def server_mode(model_type: str, script_dir: str, output_dir: str) -> None:
     except Exception as e:
         log_error(f"Fatal error in server mode: {e}")
         sys.exit(1)
-
-
-# =============================================================================
-# CLI MODE - Original single-shot invocation
-# =============================================================================
 
 
 def cli_mode() -> None:
@@ -857,13 +729,8 @@ def run_self_test(model_type: str, script_dir: str) -> None:
             raise
 
 
-# =============================================================================
-# MAIN ENTRY POINT
-# =============================================================================
-
 if __name__ == "__main__":
     if "--server" in sys.argv:
-        # Persistent server mode
         model_type = "tiny"
         for i, arg in enumerate(sys.argv):
             if arg == "--model" and i + 1 < len(sys.argv):
@@ -872,7 +739,6 @@ if __name__ == "__main__":
 
         script_dir = os.path.dirname(os.path.abspath(__file__))
 
-        # Get output directory from args or use script dir
         output_dir = script_dir
         for i, arg in enumerate(sys.argv):
             if arg == "--output-dir" and i + 1 < len(sys.argv):
@@ -881,5 +747,4 @@ if __name__ == "__main__":
 
         server_mode(model_type, script_dir, output_dir)
     else:
-        # Original CLI mode
         cli_mode()
