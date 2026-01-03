@@ -29,13 +29,18 @@ struct ContentViewSimple: View {
     @State private var generationStatus = ""
     @State private var generated3DModelURL: URL?
 
-    // Neon colors for mask regions
+    // 10 Neon colors for mask regions
     private let maskColors: [Color] = [
-        Color(red: 1.0, green: 1.0, blue: 0.0),    // #FFFF00 Neon Yellow
-        Color(red: 1.0, green: 0.0, blue: 1.0),    // #FF00FF Neon Magenta
-        Color(red: 0.0, green: 1.0, blue: 1.0),    // #00FFFF Neon Cyan
-        Color(red: 0.0, green: 1.0, blue: 0.0),    // #00FF00 Neon Green
-        Color(red: 1.0, green: 0.36, blue: 0.0),   // #FF5C00 Neon Orange
+        Color(red: 0x39/255, green: 0xFF/255, blue: 0x14/255),  // #39FF14 Neon Green
+        Color(red: 0xFF/255, green: 0x10/255, blue: 0xF0/255),  // #FF10F0 Neon Pink
+        Color(red: 0xFF/255, green: 0xFF/255, blue: 0x00/255),  // #FFFF00 Neon Yellow
+        Color(red: 0x00/255, green: 0xCA/255, blue: 0xFF/255),  // #00CAFF Neon Blue
+        Color(red: 0xFF/255, green: 0x7E/255, blue: 0x00/255),  // #FF7E00 Neon Orange
+        Color(red: 0xB9/255, green: 0x15/255, blue: 0xCC/255),  // #B915CC Neon Purple
+        Color(red: 0xFF/255, green: 0x00/255, blue: 0x4D/255),  // #FF004D Neon Red
+        Color(red: 0x00/255, green: 0xFF/255, blue: 0xFF/255),  // #00FFFF Neon Cyan
+        Color(red: 0xDF/255, green: 0xFF/255, blue: 0x00/255),  // #DFFF00 Electric Lime
+        Color(red: 0xFF/255, green: 0x00/255, blue: 0xFF/255),  // #FF00FF Hot Magenta
     ]
 
     private func colorForMask(_ index: Int) -> Color {
@@ -78,13 +83,12 @@ struct ContentViewSimple: View {
                             .aspectRatio(contentMode: .fit)
                             .frame(width: size.width, height: size.height)
 
-                        // Show ALL masks with their respective neon colors
-                        ForEach(Array(allMasks.enumerated()), id: \.offset) { index, maskData in
-                            let isSelected = index == selectedMaskIndex
+                        // Show ALL masks - non-selected first, then selected on top
+                        // Non-selected masks
+                        ForEach(Array(allMasks.enumerated()).filter { $0.offset != selectedMaskIndex }, id: \.offset) { index, maskData in
                             let color = colorForMask(index)
-                            let borderWidth: CGFloat = isSelected ? 12 : 8
 
-                            // Mask fill - solid neon color masked by alpha
+                            // Mask fill
                             Rectangle()
                                 .fill(color)
                                 .frame(width: size.width, height: size.height)
@@ -93,24 +97,61 @@ struct ContentViewSimple: View {
                                         .resizable()
                                         .frame(width: size.width, height: size.height)
                                 )
-                                .opacity(isSelected ? 0.90 : 0.60)
+                                .opacity(0.60)
                                 .allowsHitTesting(false)
 
-                            // Uniform inward border using blur erosion
+                            // Border
                             Rectangle()
                                 .fill(color)
                                 .frame(width: size.width, height: size.height)
                                 .mask(
                                     ZStack {
-                                        // Original mask edge
                                         Image(nsImage: maskData.image)
                                             .resizable()
                                             .frame(width: size.width, height: size.height)
-                                        // Eroded mask (blur creates soft edge, then we cut it out)
                                         Image(nsImage: maskData.image)
                                             .resizable()
                                             .frame(width: size.width, height: size.height)
-                                            .padding(borderWidth) // Shrink inward
+                                            .padding(8)
+                                            .blur(radius: 1)
+                                            .blendMode(.destinationOut)
+                                    }
+                                    .compositingGroup()
+                                )
+                                .opacity(1.0)
+                                .allowsHitTesting(false)
+                        }
+
+                        // Selected mask on top
+                        if selectedMaskIndex < allMasks.count {
+                            let maskData = allMasks[selectedMaskIndex]
+                            let color = colorForMask(selectedMaskIndex)
+
+                            // Mask fill
+                            Rectangle()
+                                .fill(color)
+                                .frame(width: size.width, height: size.height)
+                                .mask(
+                                    Image(nsImage: maskData.image)
+                                        .resizable()
+                                        .frame(width: size.width, height: size.height)
+                                )
+                                .opacity(0.90)
+                                .allowsHitTesting(false)
+
+                            // Border
+                            Rectangle()
+                                .fill(color)
+                                .frame(width: size.width, height: size.height)
+                                .mask(
+                                    ZStack {
+                                        Image(nsImage: maskData.image)
+                                            .resizable()
+                                            .frame(width: size.width, height: size.height)
+                                        Image(nsImage: maskData.image)
+                                            .resizable()
+                                            .frame(width: size.width, height: size.height)
+                                            .padding(12)
                                             .blur(radius: 1)
                                             .blendMode(.destinationOut)
                                     }
@@ -243,7 +284,7 @@ struct ContentViewSimple: View {
 
                             ForEach(Array(allMasks.enumerated()), id: \.offset) { index, maskData in
                                 let isSelected = index == selectedMaskIndex
-                                let color = colorForMask(index, selected: isSelected)
+                                let color = colorForMask(index)
 
                                 Button(action: { selectedMaskIndex = index }) {
                                     HStack(spacing: 8) {
@@ -594,6 +635,10 @@ struct ContentViewSimple: View {
                 }
             } catch {
                 print("[Text] Prediction failed: \(error)")
+                await MainActor.run {
+                    textSearchPerformed = true
+                    allMasks.removeAll()
+                }
             }
         }
     }
