@@ -30,33 +30,51 @@ enum WorkflowStep: Int, CaseIterable, Comparable {
 }
 
 enum QualityPreset: String, CaseIterable, Identifiable {
-    case fast = "Fast Preview"
-    case standard = "Standard"
-    case high = "High Fidelity"
+    case extraDraft = "Extra Draft"
+    case draft = "Draft"
+    case normal = "Normal"
+    case optimal = "Optimal"
+    case fine = "Fine"
 
     var id: String { rawValue }
 
     var steps: Int {
         switch self {
-        case .fast: return 30
-        case .standard: return 50
-        case .high: return 100
+        case .extraDraft: return 15
+        case .draft: return 25
+        case .normal: return 35
+        case .optimal: return 50
+        case .fine: return 75
         }
     }
 
     var resolution: Int {
         switch self {
-        case .fast: return 128
-        case .standard: return 256
-        case .high: return 512
+        case .extraDraft: return 128
+        case .draft: return 192
+        case .normal: return 256
+        case .optimal: return 384
+        case .fine: return 512
         }
     }
 
     var description: String {
         switch self {
-        case .fast: return "Quick results for testing (30 steps, 128 res)"
-        case .standard: return "Balanced quality and speed (50 steps, 256 res)"
-        case .high: return "Best quality, takes longer (100 steps, 512 res)"
+        case .extraDraft: return "Fastest, low detail"
+        case .draft: return "Quick preview"
+        case .normal: return "Balanced"
+        case .optimal: return "High quality"
+        case .fine: return "Best quality, slower"
+        }
+    }
+
+    var estimatedTime: String {
+        switch self {
+        case .extraDraft: return "~30s"
+        case .draft: return "~1m"
+        case .normal: return "~2m"
+        case .optimal: return "~4m"
+        case .fine: return "~8m"
         }
     }
 }

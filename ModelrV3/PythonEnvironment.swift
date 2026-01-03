@@ -21,6 +21,7 @@ class PythonEnvironment: ObservableObject {
     @Published var selectedModel = "base_plus"  // Default to recommended
     @Published var isProcessing = false
     @Published var hunyuanProgress: String = ""
+    @Published var samModelReady = false  // Tracks if SAM worker is loaded and ready
 
     // Generator selection
     @Published var selectedGenerator: GeneratorModel = .hunyuan
@@ -480,6 +481,19 @@ class PythonEnvironment: ObservableObject {
         }
 
         print("Persistent worker ready")
+        await MainActor.run { samModelReady = true }
+    }
+
+    /// Preload the SAM model for faster segmentation
+    func preloadSAMModel() async {
+        guard !samModelReady else { return }
+        await MainActor.run { status = "Loading SAM model..." }
+        do {
+            try await startPersistentWorker()
+        } catch {
+            print("Failed to preload SAM model: \(error)")
+        }
+        await MainActor.run { status = "Ready" }
     }
 
     /// Stop the persistent Python worker
@@ -497,6 +511,7 @@ class PythonEnvironment: ObservableObject {
         stdoutPipe = nil
         currentImagePath = nil
         imagePixelSize = .zero
+        samModelReady = false
 
         print("Persistent worker stopped")
     }

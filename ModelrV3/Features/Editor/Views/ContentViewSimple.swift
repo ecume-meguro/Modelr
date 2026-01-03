@@ -9,6 +9,7 @@ struct ContentViewSimple: View {
     @State private var inputImage: NSImage?
     @State private var inputImagePath: String?
     @State private var imagePixelSize: CGSize = .zero
+    @State private var zoomScale: CGFloat = 1.0
 
     // Workflow state
     enum Step { case input, segment, touchup, generate }
@@ -21,6 +22,7 @@ struct ContentViewSimple: View {
     @State private var editableMaskImage: NSImage?
     @State private var brushPreviewPosition: CGPoint? = nil
     @State private var showBackWarning: Bool = false
+    @State private var showDiscardModelWarning: Bool = false
     @State private var maskHistory: [NSImage] = []  // Undo stack
     @State private var isStrokeInProgress: Bool = false
 
@@ -29,6 +31,8 @@ struct ContentViewSimple: View {
     @State private var textSearchPerformed: Bool = false
     @State private var selectedPoints: [SAMPoint] = []
     @State private var isDragging = false
+    @State private var useExistingAlpha: Bool = false
+    @State private var imageHasAlpha: Bool = false
 
     // Multi-mask state
     @State private var allMasks: [(image: NSImage, score: Double, url: URL)] = []
@@ -39,6 +43,12 @@ struct ContentViewSimple: View {
     @State private var generationStatus = ""
     @State private var generated3DModelURL: URL?
     @State private var compositeImage: NSImage?
+
+    // Generation settings
+    @State private var selectedPreset: QualityPreset = .normal
+    @State private var showAdvancedSettings = false
+    @State private var customSteps: Double = 35
+    @State private var customResolution: Double = 256
 
     // Multi-stage generation progress
     @State private var generationStages: [GenerationStage: StageProgress] = [:]
@@ -104,6 +114,10 @@ struct ContentViewSimple: View {
                 .keyboardShortcut("z", modifiers: .command)
                 .hidden()
         )
+        .task {
+            // Preload SAM model on app launch
+            await env.preloadSAMModel()
+        }
     }
 
     // MARK: - Image Area
@@ -111,6 +125,16 @@ struct ContentViewSimple: View {
     private var imageArea: some View {
         ZStack {
             Color(NSColor.textBackgroundColor).opacity(0.3)
+        }
+        .scrollWheelZoom(scale: $zoomScale)
+        .overlay {
+            imageContent
+        }
+    }
+
+    @ViewBuilder
+    private var imageContent: some View {
+        ZStack {
 
             if currentStep == .generate, let modelURL = generated3DModelURL {
                 ModelViewerContainer(modelURL: modelURL)
@@ -353,6 +377,32 @@ struct ContentViewSimple: View {
                             }
                         : nil
                     )
+                    .scaleEffect(zoomScale)
+                    .gesture(
+                        MagnificationGesture()
+                            .onChanged { value in
+                                zoomScale = max(0.5, min(5.0, value))
+                            }
+                    )
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    // Zoom controls
+                    if zoomScale != 1.0 {
+                        Button(action: { withAnimation { zoomScale = 1.0 } }) {
+                            HStack(spacing: 4) {
+                                Text("\(Int(zoomScale * 100))%")
+                                    .font(.caption.monospacedDigit())
+                                Image(systemName: "arrow.counterclockwise")
+                                    .font(.caption)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(.ultraThinMaterial)
+                            .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(12)
+                    }
                 }
             } else {
                 // Drop zone
@@ -391,8 +441,9 @@ struct ContentViewSimple: View {
             // Step 1: Input
             stepSection(number: 1, title: "Input", isActive: currentStep == .input, isDone: inputImage != nil) {
                 if inputImage != nil {
-                    HStack {
+                    HStack(spacing: 6) {
                         Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 12))
                             .foregroundColor(.green)
                         Text("Image loaded")
                             .font(.caption)
@@ -405,19 +456,51 @@ struct ContentViewSimple: View {
                 if currentStep == .segment {
                     // Full segment controls when active
                     VStack(alignment: .leading, spacing: 8) {
-                        // Text prompt
-                        HStack {
-                            TextField("e.g. dog, tree, person", text: $textPrompt)
-                                .textFieldStyle(.roundedBorder)
-                                .onSubmit { runTextPrediction() }
+                        // Pre-segmented toggle (if image has alpha)
+                        if imageHasAlpha {
+                            Toggle(isOn: $useExistingAlpha) {
+                                Text("Already segmented")
+                                    .font(.caption)
+                            }
+                            .toggleStyle(.checkbox)
+                            .onChange(of: useExistingAlpha) { _, newValue in
+                                if newValue {
+                                    createMaskFromAlpha()
+                                } else {
+                                    allMasks.removeAll()
+                                    selectedMaskIndex = 0
+                                }
+                            }
 
-                            Button("Find") { runTextPrediction() }
-                                .disabled(textPrompt.isEmpty || env.isProcessing)
+                            if useExistingAlpha {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.system(size: 12))
+                                        .foregroundColor(.green)
+                                    Text("Using existing transparency")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+
+                            Divider()
+                                .padding(.vertical, 4)
                         }
 
-                        Text("Or right-click on the object")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                        if !useExistingAlpha {
+                            // Text prompt
+                            HStack {
+                                TextField("e.g. dog, tree, person", text: $textPrompt)
+                                    .textFieldStyle(.roundedBorder)
+                                    .onSubmit { runTextPrediction() }
+
+                                Button("Find") { runTextPrediction() }
+                                    .disabled(textPrompt.isEmpty || env.isProcessing)
+                            }
+
+                            Text("Or right-click on the object")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
 
                         // Message if text search found nothing
                         if textSearchPerformed && allMasks.isEmpty && !env.isProcessing {
@@ -480,7 +563,9 @@ struct ContentViewSimple: View {
                                 .buttonStyle(.plain)
                             }
                         }
+                        } // End of if !useExistingAlpha
 
+                        // Clear button - available in both modes
                         if !selectedPoints.isEmpty || !allMasks.isEmpty {
                             HStack {
                                 if !selectedPoints.isEmpty {
@@ -489,20 +574,22 @@ struct ContentViewSimple: View {
                                         .foregroundColor(.secondary)
                                 }
                                 Spacer()
-                                Button("Clear") { clearSegmentation() }
+                                Button("Clear") {
+                                    clearSegmentation()
+                                    useExistingAlpha = false
+                                }
                                     .font(.caption)
                             }
                         }
                     }
                 } else if currentStep == .touchup || currentStep == .generate {
-                    // Locked state - show selected region info only
-                    HStack {
-                        Circle()
-                            .fill(colorForMask(selectedMaskIndex))
-                            .frame(width: 10, height: 10)
+                    // Completed state - show checkmark with selected region
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(.green)
                         Text("Region \(selectedMaskIndex + 1) selected")
                             .font(.caption)
-                            .foregroundColor(.secondary)
                     }
                 }
             }
@@ -570,6 +657,15 @@ struct ContentViewSimple: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
+                } else if currentStep == .generate {
+                    // Completed state
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(.green)
+                        Text("Mask refined")
+                            .font(.caption)
+                    }
                 }
             }
 
@@ -589,8 +685,8 @@ struct ContentViewSimple: View {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack(spacing: 6) {
                                 Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 12))
                                     .foregroundColor(.green)
-                                    .font(.caption)
                                 Text("Generation Complete")
                                     .font(.caption)
                                     .fontWeight(.medium)
@@ -609,6 +705,86 @@ struct ContentViewSimple: View {
                             }
                             .buttonStyle(.plain)
                             .foregroundColor(.accentColor)
+                        }
+                    } else {
+                        // Settings before generation
+                        VStack(alignment: .leading, spacing: 10) {
+                            // Preset dropdown
+                            HStack {
+                                Text("Quality:")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Picker("", selection: $selectedPreset) {
+                                    ForEach(QualityPreset.allCases) { preset in
+                                        Text(preset.rawValue).tag(preset)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .frame(width: 120)
+                                .onChange(of: selectedPreset) { _, newValue in
+                                    // Sync custom values when preset changes
+                                    customSteps = Double(newValue.steps)
+                                    customResolution = Double(newValue.resolution)
+                                }
+                            }
+
+                            // Preset info
+                            HStack(spacing: 8) {
+                                Text(selectedPreset.description)
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Text(selectedPreset.estimatedTime)
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.secondary)
+                            }
+
+                            // Advanced settings disclosure
+                            DisclosureGroup(
+                                isExpanded: $showAdvancedSettings,
+                                content: {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        // Steps slider
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            HStack {
+                                                Text("Steps:")
+                                                    .font(.caption)
+                                                    .foregroundColor(.secondary)
+                                                Spacer()
+                                                Text("\(Int(customSteps))")
+                                                    .font(.caption.monospacedDigit())
+                                            }
+                                            Slider(value: $customSteps, in: 10...100, step: 5)
+                                                .controlSize(.small)
+                                        }
+
+                                        // Resolution slider
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            HStack {
+                                                Text("Resolution:")
+                                                    .font(.caption)
+                                                    .foregroundColor(.secondary)
+                                                Spacer()
+                                                Text("\(Int(customResolution))")
+                                                    .font(.caption.monospacedDigit())
+                                            }
+                                            Slider(value: $customResolution, in: 64...512, step: 32)
+                                                .controlSize(.small)
+                                        }
+
+                                        Text("Higher values = better quality, longer time")
+                                            .font(.system(size: 9))
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .padding(.top, 4)
+                                },
+                                label: {
+                                    Text("Advanced")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            )
                         }
                     }
                 }
@@ -671,28 +847,23 @@ struct ContentViewSimple: View {
         let stageData = generationStages[stage] ?? StageProgress()
 
         HStack(spacing: 8) {
-            // Status indicator
-            ZStack {
-                Circle()
-                    .fill(stageData.status == .completed ? Color.green :
-                          stageData.status == .inProgress ? Color.accentColor.opacity(0.2) :
-                          Color.gray.opacity(0.15))
-                    .frame(width: 18, height: 18)
-
+            // Status indicator - fixed size container for alignment
+            Group {
                 switch stageData.status {
                 case .completed:
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(.white)
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(.green)
                 case .inProgress:
                     ProgressView()
-                        .scaleEffect(0.5)
+                        .scaleEffect(0.4)
                 case .pending:
                     Circle()
-                        .fill(Color.gray.opacity(0.3))
-                        .frame(width: 6, height: 6)
+                        .fill(Color.gray.opacity(0.25))
+                        .frame(width: 12, height: 12)
                 }
             }
+            .frame(width: 14, height: 14)
 
             // Stage info
             VStack(alignment: .leading, spacing: 2) {
@@ -740,10 +911,21 @@ struct ContentViewSimple: View {
     @ViewBuilder
     private var actionButtons: some View {
         VStack(spacing: 8) {
-            // Next button (blue)
+            // Next button (blue) or loading state
             switch currentStep {
             case .input:
-                EmptyView()
+                // Show loading state while SAM model loads
+                if !env.samModelReady {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .scaleEffect(0.7)
+                        Text("Loading model...")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                }
 
             case .segment:
                 Button(action: { startTouchup() }) {
@@ -755,8 +937,7 @@ struct ContentViewSimple: View {
 
             case .touchup:
                 Button(action: {
-                    createCompositeImage()
-                    currentStep = .generate
+                    transitionToGenerate()
                 }) {
                     Text("Next: Generate 3D")
                         .frame(maxWidth: .infinity)
@@ -764,35 +945,36 @@ struct ContentViewSimple: View {
                 .buttonStyle(.borderedProminent)
 
             case .generate:
-                if generated3DModelURL == nil && !isGenerating {
+                // Show Generate button when not generating and no model yet
+                if !isGenerating && generated3DModelURL == nil {
                     Button(action: { generate3D() }) {
                         Text("Generate")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                } else if generated3DModelURL != nil {
-                    Button(action: { generated3DModelURL = nil; generate3D() }) {
-                        Text("Regenerate")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                 }
             }
 
-            // Back button (gray) - only show if not on first step
+            // Back button with destination - only show if not on first step
             if currentStep != .input {
-                Button(action: {
-                    if currentStep == .touchup {
-                        showBackWarning = true
-                    } else {
-                        goBack()
+                let backDestination: String = {
+                    switch currentStep {
+                    case .input: return ""
+                    case .segment: return "Input"
+                    case .touchup: return "Segment"
+                    case .generate: return "Touchup"
                     }
+                }()
+
+                Button(action: {
+                    handleBackAction()
                 }) {
-                    Text("Back")
+                    Text("Back: \(backDestination)")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
                 .foregroundColor(.secondary)
+                .disabled(isGenerating)
                 .alert("Discard Touchup Changes?", isPresented: $showBackWarning) {
                     Button("Cancel", role: .cancel) { }
                     Button("Discard", role: .destructive) {
@@ -800,6 +982,14 @@ struct ContentViewSimple: View {
                     }
                 } message: {
                     Text("Your touchup edits will be lost if you go back to the Segment step.")
+                }
+                .alert("Discard Generated Model?", isPresented: $showDiscardModelWarning) {
+                    Button("Cancel", role: .cancel) { }
+                    Button("Discard", role: .destructive) {
+                        goBack()
+                    }
+                } message: {
+                    Text("The generated 3D model will be discarded. You can regenerate after making changes.")
                 }
             }
 
@@ -812,24 +1002,73 @@ struct ContentViewSimple: View {
                 }
                 .buttonStyle(.bordered)
                 .tint(.red)
+                .disabled(isGenerating)
             }
         }
     }
 
-    private func goBack() {
+    /// Handles back button press - shows warnings if needed
+    private func handleBackAction() {
         switch currentStep {
         case .input:
             break
         case .segment:
-            currentStep = .input
+            goBack()
         case .touchup:
+            // Warn about losing touchup changes
+            showBackWarning = true
+        case .generate:
+            // Warn if model was generated
+            if generated3DModelURL != nil {
+                showDiscardModelWarning = true
+            } else {
+                goBack()
+            }
+        }
+    }
+
+    /// Executes the back navigation with proper state cleanup
+    private func goBack() {
+        switch currentStep {
+        case .input:
+            break
+
+        case .segment:
+            // Segment → Input: Clear segmentation data, keep image
+            clearSegmentation()
+            currentStep = .input
+
+        case .touchup:
+            // Touchup → Segment: Clear touchup data, keep masks for re-selection
             editableMaskImage = nil
             maskHistory.removeAll()
+            brushPreviewPosition = nil
             currentStep = .segment
+
         case .generate:
+            // Generate → Touchup: Clear generation data, keep touchup mask
             compositeImage = nil
+            generated3DModelURL = nil
+            generationStages = [:]
+            generationStatus = ""
             currentStep = .touchup
         }
+    }
+
+    // MARK: - Flow Transitions
+
+    /// Input → Segment: Prepare for segmentation
+    private func transitionToSegment() {
+        // Clear any old segmentation data from previous session
+        clearSegmentation()
+        currentStep = .segment
+    }
+
+    /// Touchup → Generate: Create composite and show settings
+    private func transitionToGenerate() {
+        createCompositeImage()
+        currentStep = .generate
+        // Don't auto-start - let user configure settings and click Generate
     }
 
     // MARK: - Actions
@@ -842,10 +1081,14 @@ struct ContentViewSimple: View {
         selectedPoints.removeAll()
         textPrompt = ""
         textSearchPerformed = false
+        useExistingAlpha = false
+        imageHasAlpha = false
         editableMaskImage = nil
         maskHistory.removeAll()
         compositeImage = nil
         generated3DModelURL = nil
+        generationStages = [:]
+        zoomScale = 1.0
         currentStep = .input
     }
 
@@ -856,6 +1099,131 @@ struct ContentViewSimple: View {
         textPrompt = ""
         textSearchPerformed = false
         editableMaskImage = nil
+    }
+
+    /// Check if the input image has an alpha channel with actual transparency
+    private func checkImageHasAlpha() {
+        guard let image = inputImage,
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            imageHasAlpha = false
+            return
+        }
+
+        // Check if image has alpha channel
+        let alphaInfo = cgImage.alphaInfo
+        let hasAlphaChannel = alphaInfo == .first || alphaInfo == .last ||
+                              alphaInfo == .premultipliedFirst || alphaInfo == .premultipliedLast
+
+        guard hasAlphaChannel else {
+            imageHasAlpha = false
+            return
+        }
+
+        // Check if alpha channel has actual transparency (not all opaque)
+        let width = cgImage.width
+        let height = cgImage.height
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let data = context.data else {
+            imageHasAlpha = false
+            return
+        }
+
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        let pixels = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
+        var hasTransparency = false
+
+        // Sample pixels to check for transparency (don't check all for performance)
+        let sampleStep = max(1, (width * height) / 10000)
+        for i in stride(from: 0, to: width * height, by: sampleStep) {
+            let alpha = pixels[i * 4 + 3]
+            if alpha < 250 {  // Allow small tolerance
+                hasTransparency = true
+                break
+            }
+        }
+
+        imageHasAlpha = hasTransparency
+    }
+
+    /// Create a mask from the image's alpha channel
+    private func createMaskFromAlpha() {
+        guard let image = inputImage,
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+
+        let width = cgImage.width
+        let height = cgImage.height
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+
+        // Read source image
+        guard let sourceContext = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let sourceData = sourceContext.data else { return }
+
+        sourceContext.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        // Create mask context
+        guard let maskContext = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let maskData = maskContext.data else { return }
+
+        let sourcePixels = sourceData.bindMemory(to: UInt8.self, capacity: width * height * 4)
+        let maskPixels = maskData.bindMemory(to: UInt8.self, capacity: width * height * 4)
+
+        // Create mask: where alpha > 0, set mask to opaque blue (matching SAM mask format)
+        for i in 0..<(width * height) {
+            let offset = i * 4
+            let alpha = sourcePixels[offset + 3]
+
+            if alpha > 10 {  // Threshold to ignore near-transparent pixels
+                // Blue-ish mask color (matching SAM output)
+                maskPixels[offset + 0] = 200  // R
+                maskPixels[offset + 1] = 100  // G
+                maskPixels[offset + 2] = 50   // B
+                maskPixels[offset + 3] = alpha // A
+            } else {
+                maskPixels[offset + 0] = 0
+                maskPixels[offset + 1] = 0
+                maskPixels[offset + 2] = 0
+                maskPixels[offset + 3] = 0
+            }
+        }
+
+        guard let maskCGImage = maskContext.makeImage() else { return }
+        let maskNSImage = NSImage(cgImage: maskCGImage, size: NSSize(width: width, height: height))
+
+        // Save to temp file (to match the format expected by allMasks)
+        let tempURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("alpha_mask_\(UUID().uuidString).png")
+        if let tiffData = maskNSImage.tiffRepresentation,
+           let bitmap = NSBitmapImageRep(data: tiffData),
+           let pngData = bitmap.representation(using: .png, properties: [:]) {
+            try? pngData.write(to: tempURL)
+        }
+
+        // Add to masks array
+        allMasks = [(image: maskNSImage, score: 1.0, url: tempURL)]
+        selectedMaskIndex = 0
     }
 
     // MARK: - Touchup Functions
@@ -1107,18 +1475,45 @@ struct ContentViewSimple: View {
 
     private func loadImage(from url: URL) {
         guard let image = NSImage(contentsOf: url) else { return }
+
+        // Set new image
         inputImage = image
         inputImagePath = url.path
+
+        // Clear ALL previous session data for fresh start
+        // Segmentation data
         allMasks.removeAll()
         selectedMaskIndex = 0
         selectedPoints.removeAll()
         textPrompt = ""
-        generated3DModelURL = nil
+        textSearchPerformed = false
 
+        // Touchup data
+        editableMaskImage = nil
+        maskHistory.removeAll()
+        brushPreviewPosition = nil
+
+        // Generation data
+        compositeImage = nil
+        generated3DModelURL = nil
+        generationStages = [:]
+        generationStatus = ""
+
+        // Reset zoom
+        zoomScale = 1.0
+
+        // Reset alpha toggle
+        useExistingAlpha = false
+
+        // Get pixel dimensions
         if let rep = image.representations.first {
             imagePixelSize = CGSize(width: CGFloat(rep.pixelsWide), height: CGFloat(rep.pixelsHigh))
         }
 
+        // Check if image has alpha channel
+        checkImageHasAlpha()
+
+        // Transition to segment step
         currentStep = .segment
         Task { await initializeImage() }
     }
@@ -1304,11 +1699,15 @@ struct ContentViewSimple: View {
             print("[3D Generation]   maskPath: (empty - composite has alpha)")
 
             // Pass composite as image with empty mask (composite already has alpha)
+            // Use advanced settings if expanded, otherwise use preset values
+            let steps = showAdvancedSettings ? Int(customSteps) : selectedPreset.steps
+            let resolution = showAdvancedSettings ? Int(customResolution) : selectedPreset.resolution
+
             await env.generate3DModel(
                 imagePath: tempPath,
                 maskPath: "",  // No mask needed - composite already has transparency
-                steps: 30,
-                resolution: 256,
+                steps: steps,
+                resolution: resolution,
                 progress: { status in
                     DispatchQueue.main.async {
                         self.generationStatus = status
@@ -1449,5 +1848,49 @@ struct RightClickHandler: NSViewRepresentable {
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
             return true
         }
+    }
+}
+
+// MARK: - Scroll Wheel Zoom Handler
+
+/// A view modifier that intercepts scroll wheel events and converts them to zoom
+/// Uses NSEvent local monitor to intercept events at the application level
+struct ScrollWheelZoomModifier: ViewModifier {
+    @Binding var zoomScale: CGFloat
+    let minZoom: CGFloat
+    let maxZoom: CGFloat
+    @State private var monitor: Any?
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                // Add local event monitor for scroll wheel events
+                monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+                    // Only handle if mouse is in our window
+                    guard let window = NSApp.keyWindow else { return event }
+
+                    let delta = event.deltaY
+                    if abs(delta) > 0.01 {
+                        // Update zoom scale
+                        let newScale = zoomScale * (1.0 + delta * 0.1)
+                        zoomScale = max(minZoom, min(maxZoom, newScale))
+                        // Consume the event - don't propagate
+                        return nil
+                    }
+                    return event
+                }
+            }
+            .onDisappear {
+                // Remove monitor when view disappears
+                if let monitor = monitor {
+                    NSEvent.removeMonitor(monitor)
+                }
+            }
+    }
+}
+
+extension View {
+    func scrollWheelZoom(scale: Binding<CGFloat>, min: CGFloat = 0.5, max: CGFloat = 5.0) -> some View {
+        modifier(ScrollWheelZoomModifier(zoomScale: scale, minZoom: min, maxZoom: max))
     }
 }

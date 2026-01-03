@@ -86,7 +86,7 @@ struct ContentView: View {
     @State private var magnification: CGFloat = 1.0
 
     // Generate state
-    @State private var selectedQualityPreset: QualityPreset = .standard
+    @State private var selectedQualityPreset: QualityPreset = .normal
     @State private var generateSteps: Double = 50
     @State private var generateResolution: Double = 256
     @State private var isGenerating = false
