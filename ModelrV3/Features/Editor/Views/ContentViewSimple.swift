@@ -43,6 +43,8 @@ struct ContentViewSimple: View {
     @State private var generationStatus = ""
     @State private var generated3DModelURL: URL?
     @State private var compositeImage: NSImage?
+    @State private var generationStartTime: Date?
+    @State private var generationDuration: TimeInterval?
 
     // Generation settings
     @State private var selectedPreset: QualityPreset = .normal
@@ -52,6 +54,7 @@ struct ContentViewSimple: View {
 
     // Multi-stage generation progress
     @State private var generationStages: [GenerationStage: StageProgress] = [:]
+    @State private var generationWasCancelled = false
 
     // Generation stage definitions
     enum GenerationStage: String, CaseIterable {
@@ -72,6 +75,8 @@ struct ContentViewSimple: View {
         case pending
         case inProgress
         case completed
+        case cancelled  // User stopped generation at this step
+        case failed     // Remaining steps after cancellation
     }
 
     // 10 Neon colors for mask regions
@@ -125,10 +130,14 @@ struct ContentViewSimple: View {
     private var imageArea: some View {
         ZStack {
             Color(NSColor.textBackgroundColor).opacity(0.3)
-        }
-        .scrollWheelZoom(scale: $zoomScale)
-        .overlay {
+
             imageContent
+
+            // Scroll wheel zoom overlay - captures scroll and converts to zoom
+            // Only show when NOT viewing 3D model (3D viewer has its own controls)
+            if !(currentStep == .generate && generated3DModelURL != nil) {
+                ScrollWheelZoomOverlay(zoomScale: $zoomScale, minZoom: 0.5, maxZoom: 5.0)
+            }
         }
     }
 
@@ -678,8 +687,43 @@ struct ContentViewSimple: View {
                             ForEach(GenerationStage.allCases, id: \.self) { stage in
                                 stageProgressRow(stage: stage)
                             }
+
+                            // Stop button
+                            Button(action: { stopGeneration() }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "stop.fill")
+                                        .font(.system(size: 8))
+                                    Text("Stop")
+                                        .font(.caption)
+                                }
+                                .foregroundColor(.red)
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.top, 4)
                         }
                         .padding(.vertical, 4)
+                    } else if generationWasCancelled {
+                        // Cancelled state
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.orange)
+                                Text("Generation Stopped")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                            }
+
+                            Button(action: { retryGeneration() }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "arrow.clockwise")
+                                    Text("Try Again")
+                                }
+                                .font(.caption)
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundColor(.accentColor)
+                        }
                     } else if generated3DModelURL != nil {
                         // Completed state
                         VStack(alignment: .leading, spacing: 8) {
@@ -690,6 +734,18 @@ struct ContentViewSimple: View {
                                 Text("Generation Complete")
                                     .font(.caption)
                                     .fontWeight(.medium)
+                            }
+
+                            // Duration stats
+                            if let duration = generationDuration {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "clock")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.secondary)
+                                    Text(formatDuration(duration))
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
                             }
 
                             Button(action: {
@@ -861,16 +917,37 @@ struct ContentViewSimple: View {
                     Circle()
                         .fill(Color.gray.opacity(0.25))
                         .frame(width: 12, height: 12)
+                case .cancelled:
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(.orange)
+                case .failed:
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(.red.opacity(0.6))
                 }
             }
             .frame(width: 14, height: 14)
 
             // Stage info
             VStack(alignment: .leading, spacing: 2) {
-                Text(stage.rawValue)
-                    .font(.caption)
-                    .fontWeight(stageData.status == .inProgress ? .medium : .regular)
-                    .foregroundColor(stageData.status == .pending ? .secondary : .primary)
+                HStack(spacing: 4) {
+                    Text(stage.rawValue)
+                        .font(.caption)
+                        .fontWeight(stageData.status == .inProgress ? .medium : .regular)
+                        .foregroundColor(stageTextColor(stageData.status))
+
+                    // Show "Stopped" or "Skipped" label for cancelled/failed
+                    if stageData.status == .cancelled {
+                        Text("Stopped")
+                            .font(.system(size: 9))
+                            .foregroundColor(.orange)
+                    } else if stageData.status == .failed {
+                        Text("Skipped")
+                            .font(.system(size: 9))
+                            .foregroundColor(.red.opacity(0.6))
+                    }
+                }
 
                 // Progress bar for stages with progress
                 if stageData.status == .inProgress && stageData.progress > 0 {
@@ -1051,6 +1128,8 @@ struct ContentViewSimple: View {
             generated3DModelURL = nil
             generationStages = [:]
             generationStatus = ""
+            generationStartTime = nil
+            generationDuration = nil
             currentStep = .touchup
         }
     }
@@ -1088,6 +1167,8 @@ struct ContentViewSimple: View {
         compositeImage = nil
         generated3DModelURL = nil
         generationStages = [:]
+        generationStartTime = nil
+        generationDuration = nil
         zoomScale = 1.0
         currentStep = .input
     }
@@ -1685,7 +1766,10 @@ struct ContentViewSimple: View {
         }
 
         isGenerating = true
+        generationWasCancelled = false
         generationStatus = "Starting..."
+        generationStartTime = Date()
+        generationDuration = nil
 
         // Initialize all stages to pending
         generationStages = [:]
@@ -1716,19 +1800,31 @@ struct ContentViewSimple: View {
                 },
                 completion: { result in
                     DispatchQueue.main.async {
-                        // Mark all stages as completed on success
-                        if case .success = result {
-                            for stage in GenerationStage.allCases {
-                                self.generationStages[stage] = StageProgress(status: .completed, progress: 1.0, detail: "")
-                            }
+                        // Calculate duration
+                        if let startTime = self.generationStartTime {
+                            self.generationDuration = Date().timeIntervalSince(startTime)
                         }
 
                         self.isGenerating = false
+
                         switch result {
                         case .success(let url):
+                            // Mark all stages as completed on success
+                            for stage in GenerationStage.allCases {
+                                self.generationStages[stage] = StageProgress(status: .completed, progress: 1.0, detail: "")
+                            }
                             self.generated3DModelURL = url
+
                         case .failure(let error):
-                            self.generationStatus = "Error: \(error.localizedDescription)"
+                            let errorMsg = error.localizedDescription
+                            // Check if this was a cancellation
+                            if errorMsg.contains("cancelled") || self.env.isGenerationCancelled {
+                                self.generationWasCancelled = true
+                                // Mark current in-progress stage as cancelled, others as failed
+                                self.markStagesAsCancelled()
+                            } else {
+                                self.generationStatus = "Error: \(errorMsg)"
+                            }
                         }
                     }
                 }
@@ -1802,6 +1898,16 @@ struct ContentViewSimple: View {
         return (progress, detail)
     }
 
+    private func formatDuration(_ duration: TimeInterval) -> String {
+        let minutes = Int(duration) / 60
+        let seconds = Int(duration) % 60
+        if minutes > 0 {
+            return String(format: "%dm %ds", minutes, seconds)
+        } else {
+            return String(format: "%ds", seconds)
+        }
+    }
+
     private func fitSize(_ imageSize: CGSize, in containerSize: CGSize) -> CGSize {
         let imageAspect = imageSize.width / imageSize.height
         let containerAspect = containerSize.width / containerSize.height
@@ -1853,44 +1959,92 @@ struct RightClickHandler: NSViewRepresentable {
 
 // MARK: - Scroll Wheel Zoom Handler
 
-/// A view modifier that intercepts scroll wheel events and converts them to zoom
-/// Uses NSEvent local monitor to intercept events at the application level
-struct ScrollWheelZoomModifier: ViewModifier {
+/// An NSViewRepresentable that intercepts scroll wheel events for zooming
+struct ScrollWheelZoomOverlay: NSViewRepresentable {
     @Binding var zoomScale: CGFloat
     let minZoom: CGFloat
     let maxZoom: CGFloat
-    @State private var monitor: Any?
 
-    func body(content: Content) -> some View {
-        content
-            .onAppear {
-                // Add local event monitor for scroll wheel events
-                monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-                    // Only handle if mouse is in our window
-                    guard let window = NSApp.keyWindow else { return event }
-
-                    let delta = event.deltaY
-                    if abs(delta) > 0.01 {
-                        // Update zoom scale
-                        let newScale = zoomScale * (1.0 + delta * 0.1)
-                        zoomScale = max(minZoom, min(maxZoom, newScale))
-                        // Consume the event - don't propagate
-                        return nil
-                    }
-                    return event
-                }
-            }
-            .onDisappear {
-                // Remove monitor when view disappears
-                if let monitor = monitor {
-                    NSEvent.removeMonitor(monitor)
-                }
-            }
+    func makeNSView(context: Context) -> ScrollWheelCaptureView {
+        let view = ScrollWheelCaptureView()
+        view.coordinator = context.coordinator
+        return view
     }
-}
 
-extension View {
-    func scrollWheelZoom(scale: Binding<CGFloat>, min: CGFloat = 0.5, max: CGFloat = 5.0) -> some View {
-        modifier(ScrollWheelZoomModifier(zoomScale: scale, minZoom: min, maxZoom: max))
+    func updateNSView(_ nsView: ScrollWheelCaptureView, context: Context) {
+        context.coordinator.zoomScale = $zoomScale
+        context.coordinator.minZoom = minZoom
+        context.coordinator.maxZoom = maxZoom
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(zoomScale: $zoomScale, minZoom: minZoom, maxZoom: maxZoom)
+    }
+
+    class Coordinator {
+        var zoomScale: Binding<CGFloat>
+        var minZoom: CGFloat
+        var maxZoom: CGFloat
+
+        init(zoomScale: Binding<CGFloat>, minZoom: CGFloat, maxZoom: CGFloat) {
+            self.zoomScale = zoomScale
+            self.minZoom = minZoom
+            self.maxZoom = maxZoom
+        }
+
+        func handleScroll(deltaY: CGFloat) {
+            let currentScale = zoomScale.wrappedValue
+            let newScale = currentScale * (1.0 + deltaY * 0.05)
+            zoomScale.wrappedValue = max(minZoom, min(maxZoom, newScale))
+        }
+    }
+
+    class ScrollWheelCaptureView: NSView {
+        weak var coordinator: Coordinator?
+
+        override var acceptsFirstResponder: Bool { true }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            // Request to become first responder to receive scroll events
+            window?.makeFirstResponder(self)
+        }
+
+        override func scrollWheel(with event: NSEvent) {
+            // Capture scroll wheel and convert to zoom
+            let delta = event.deltaY
+            if abs(delta) > 0.001 {
+                coordinator?.handleScroll(deltaY: delta)
+            }
+            // Don't call super - consume all scroll events
+        }
+
+        // Pass through mouse events to views below
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            // Return self only for scroll wheel (handled via scrollWheel override)
+            // For other events, let them pass through
+            return self
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            // Forward to next responder
+            nextResponder?.mouseDown(with: event)
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            nextResponder?.mouseUp(with: event)
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            nextResponder?.mouseDragged(with: event)
+        }
+
+        override func rightMouseDown(with event: NSEvent) {
+            nextResponder?.rightMouseDown(with: event)
+        }
+
+        override func rightMouseUp(with event: NSEvent) {
+            nextResponder?.rightMouseUp(with: event)
+        }
     }
 }

@@ -54,6 +54,10 @@ class PythonEnvironment: ObservableObject {
     private var lastDirectorySize: UInt64 = 0
     private var lastSizeCheckTime: Date = Date()
 
+    // Generation process tracking (for cancellation)
+    private var currentGenerationProcess: Process?
+    @Published var isGenerationCancelled = false
+
     init() {
         let fileManager = FileManager.default
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -750,7 +754,13 @@ class PythonEnvironment: ObservableObject {
         let timestamp = Int(Date().timeIntervalSince1970)
         let outputPath = hunyuanDir.appendingPathComponent("generated_model_\(timestamp).obj")
 
+        // Reset cancellation state
+        await MainActor.run {
+            isGenerationCancelled = false
+        }
+
         let process = Process()
+        currentGenerationProcess = process
         process.executableURL = URL(fileURLWithPath: finalUvPath)
 
         // Build arguments - only include mask if provided
@@ -817,17 +827,47 @@ class PythonEnvironment: ObservableObject {
         }
 
         // Wait for process in background
-        Task.detached {
+        Task.detached { [weak self] in
             process.waitUntilExit()
             pipe.fileHandleForReading.readabilityHandler = nil
 
+            // Clear process reference
+            await MainActor.run {
+                self?.currentGenerationProcess = nil
+            }
+
             let fm = FileManager.default
+
+            // Check if cancelled
+            let wasCancelled = await MainActor.run { self?.isGenerationCancelled ?? false }
+            if wasCancelled {
+                completion(.failure(PythonError.predictionFailed("Generation cancelled")))
+                return
+            }
+
             if process.terminationStatus == 0 && fm.fileExists(atPath: outputPath.path) {
                 completion(.success(outputPath))
             } else {
                 completion(.failure(PythonError.predictionFailed("3D generation failed")))
             }
         }
+    }
+
+    /// Cancel the current 3D generation process
+    func cancelGeneration() {
+        guard let process = currentGenerationProcess, process.isRunning else {
+            return
+        }
+
+        isGenerationCancelled = true
+
+        // Terminate the process
+        process.terminate()
+
+        // Also try to interrupt (SIGINT) for cleaner shutdown
+        kill(process.processIdentifier, SIGINT)
+
+        currentGenerationProcess = nil
     }
 
     /// Parse tqdm-style progress bar output into a structured string.
