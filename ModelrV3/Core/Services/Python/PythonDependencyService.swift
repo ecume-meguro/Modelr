@@ -66,7 +66,7 @@ class PythonDependencyService {
     }
     
     private func copyResourceFiles() {
-        let resources = ["sam_wrapper.py", "pyproject.toml", "hunyuan_wrapper.py", "pyproject_hunyuan.toml"]
+        let resources = ["sam_wrapper.py", "pyproject.toml", "hunyuan_wrapper.py", "pyproject_hunyuan.toml", "mesh_processor.py"]
         
         for res in resources {
             let targetPath = appSupportDir.appendingPathComponent(res)

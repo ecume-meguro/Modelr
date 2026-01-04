@@ -17,7 +17,8 @@ struct SimpleEditorSidebar: View {
                     segmentStep
                     touchupStep
                     generateStep
-                    
+                    postProcessStep
+
                     if viewModel.inputImage != nil {
                         startOverButton
                     }
@@ -83,7 +84,7 @@ struct SimpleEditorSidebar: View {
                         }
                     }
                 } else {
-                    AppDesign.CompletedRow("\(viewModel.totalValidMasks) object(s) selected")
+                    AppDesign.CompletedRow("\(viewModel.totalValidMasks) \(viewModel.totalValidMasks == 1 ? "object" : "objects") selected")
                 }
             }
         }
@@ -135,12 +136,12 @@ struct SimpleEditorSidebar: View {
             number: 4,
             title: "Generate 3D",
             isActive: viewModel.currentStep == .generate,
-            isDone: viewModel.generated3DModelURL != nil
+            isDone: viewModel.currentStep == .postProcess || viewModel.generated3DModelURL != nil
         ) {
             VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
                 if viewModel.currentStep == .generate {
                     GenerationPanel(viewModel: viewModel)
-                    
+
                     if !viewModel.isGenerating && viewModel.generated3DModelURL == nil {
                         sectionFooter {
                             AppDesign.GlassButton("Generate Model", icon: "sparkles") {
@@ -158,11 +159,16 @@ struct SimpleEditorSidebar: View {
                         }
                     } else if viewModel.generated3DModelURL != nil {
                         sectionFooter {
+                            AppDesign.GlassButton("Next: Post-Process", icon: "slider.horizontal.3") {
+                                viewModel.transitionToPostProcess()
+                            }
                             AppDesign.InlineButton("Back to Touchup", icon: "arrow.left") {
                                 viewModel.handleBackAction()
                             }
                         }
                     }
+                } else if viewModel.currentStep == .postProcess {
+                    AppDesign.CompletedRow("Model generated")
                 }
             }
         }
@@ -171,6 +177,28 @@ struct SimpleEditorSidebar: View {
             Button("Discard", role: .destructive) { viewModel.goBack() }
         } message: {
             Text("The generated 3D model will be kept on disk, but you'll return to touchup mode.")
+        }
+    }
+
+    @ViewBuilder
+    private var postProcessStep: some View {
+        stepSection(
+            number: 5,
+            title: "Post-Process",
+            isActive: viewModel.currentStep == .postProcess,
+            isDone: false
+        ) {
+            VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+                if viewModel.currentStep == .postProcess {
+                    PostProcessPanel(viewModel: viewModel)
+
+                    sectionFooter {
+                        AppDesign.InlineButton("Back to Generate", icon: "arrow.left") {
+                            viewModel.handleBackAction()
+                        }
+                    }
+                }
+            }
         }
     }
     

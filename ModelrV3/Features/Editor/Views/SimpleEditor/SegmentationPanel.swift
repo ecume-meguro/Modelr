@@ -259,22 +259,57 @@ struct SegmentationEntryView: View {
     @ViewBuilder
     private var regionSelectionSection: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p6) {
-            AppDesign.SectionLabel("Select Region")
+            HStack {
+                AppDesign.SectionLabel("Select Region")
+                Spacer()
+                if entry.selectedMaskIndices.count > 1 {
+                    Text("\(entry.selectedMaskIndices.count) selected")
+                        .font(.system(size: AppDesign.FontSize.xs, weight: .medium))
+                        .foregroundStyle(segmentationColor)
+                }
+            }
 
             ForEach(Array(entry.allMasks.enumerated()), id: \.offset) { maskIndex, maskData in
                 regionRow(maskIndex: maskIndex, score: maskData.score)
             }
+
+            AppDesign.HintText("Shift-click to select multiple regions")
         }
     }
 
     @ViewBuilder
     private func regionRow(maskIndex: Int, score: Double) -> some View {
-        let isSelected = maskIndex == entry.selectedMaskIndex
+        let isSelected = entry.selectedMaskIndices.contains(maskIndex)
         let color = viewModel.colorForMask(maskIndex)
         let maskImage = entry.allMasks[maskIndex].image
 
+        RegionRowButton(
+            isSelected: isSelected,
+            color: color,
+            maskImage: maskImage,
+            maskIndex: maskIndex,
+            score: score,
+            onSelect: { addToSelection in
+                viewModel.selectMask(at: maskIndex, for: index, addToSelection: addToSelection)
+            }
+        )
+    }
+}
+
+// MARK: - Region Row Button (handles shift-click)
+struct RegionRowButton: View {
+    let isSelected: Bool
+    let color: Color
+    let maskImage: NSImage
+    let maskIndex: Int
+    let score: Double
+    let onSelect: (Bool) -> Void
+
+    var body: some View {
         Button {
-            viewModel.selectMask(at: maskIndex, for: index)
+            // Check if shift is held
+            let shiftHeld = NSEvent.modifierFlags.contains(.shift)
+            onSelect(shiftHeld)
         } label: {
             HStack(spacing: AppDesign.Spacing.p10) {
                 // Mask preview thumbnail
@@ -320,9 +355,12 @@ struct SegmentationEntryView: View {
         }
         .buttonStyle(.plain)
     }
+}
 
+// MARK: - SegmentationEntryView continued
+extension SegmentationEntryView {
     // Binding to update the text prompt in the segmentations array
-    private var textPromptBinding: Binding<String> {
+    var textPromptBinding: Binding<String> {
         Binding(
             get: { entry.textPrompt },
             set: { newValue in

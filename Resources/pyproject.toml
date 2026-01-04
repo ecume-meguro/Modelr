@@ -30,8 +30,10 @@ dependencies = [
     "mlx-sam3 @ file:///Users/zimengx/Code/MacOS_Utilities/Modelr/v3/mlx-sam3",
     # Retry library for handling transient network errors
     "tenacity>=8.2.0",
+    # 3D mesh processing library
+    "trimesh>=4.0.0",
 ]
 requires-python = ">=3.13"
 
-[tool.uv]
-dev-dependencies = []
+[dependency-groups]
+dev = []

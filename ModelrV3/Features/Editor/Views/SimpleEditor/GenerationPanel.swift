@@ -199,7 +199,7 @@ struct GenerationPanel: View {
                         AppDesign.HintText("Higher values produce better detail but take longer.")
                     }
                     .padding(.leading, AppDesign.Spacing.p16)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .transition(.opacity)
                 }
             }
         }

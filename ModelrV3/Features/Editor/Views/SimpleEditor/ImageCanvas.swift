@@ -17,7 +17,7 @@ struct ImageCanvas: View {
             
             breadcrumbOverlay
             
-            if viewModel.inputImage != nil && !(viewModel.currentStep == .generate && viewModel.generated3DModelURL != nil) {
+            if viewModel.inputImage != nil && viewModel.currentStep != .postProcess && !(viewModel.currentStep == .generate && viewModel.generated3DModelURL != nil) {
                 ScrollWheelZoomOverlay(
                     zoomScale: $viewModel.zoomScale,
                     minZoom: 0.5,
@@ -34,7 +34,10 @@ struct ImageCanvas: View {
     @ViewBuilder
     private var imageContent: some View {
         Group {
-            if viewModel.currentStep == .generate, let modelURL = viewModel.generated3DModelURL {
+            if viewModel.currentStep == .postProcess, let modelURL = viewModel.currentMeshURL {
+                ModelViewerContainer(modelURL: modelURL)
+                    .padding(AppDesign.Spacing.p24)
+            } else if viewModel.currentStep == .generate, let modelURL = viewModel.generated3DModelURL {
                 ModelViewerContainer(modelURL: modelURL)
                     .padding(AppDesign.Spacing.p24)
             } else if viewModel.currentStep == .generate, let composite = viewModel.compositeImage {
@@ -172,7 +175,7 @@ struct ImageCanvas: View {
             let activeColor = viewModel.colorForSegmentation(viewModel.activeSegmentationIndex)
 
             // Non-selected masks in active segmentation (dimmer, for region selection)
-            ForEach(Array(activeEntry.allMasks.enumerated()).filter { $0.offset != activeEntry.selectedMaskIndex }, id: \.offset) { index, maskData in
+            ForEach(Array(activeEntry.allMasks.enumerated()).filter { !activeEntry.selectedMaskIndices.contains($0.offset) }, id: \.offset) { index, maskData in
                 let color = viewModel.colorForMask(index)
                 Rectangle()
                     .fill(color)
@@ -186,41 +189,43 @@ struct ImageCanvas: View {
                     .allowsHitTesting(false)
             }
 
-            // Selected mask in active segmentation - use segmentation's neon color with 90% opacity
-            if activeEntry.selectedMaskIndex < activeEntry.allMasks.count {
-                let maskData = activeEntry.allMasks[activeEntry.selectedMaskIndex]
+            // All selected masks in active segmentation - use segmentation's neon color with 90% opacity
+            ForEach(Array(activeEntry.selectedMaskIndices.sorted()), id: \.self) { maskIndex in
+                if maskIndex < activeEntry.allMasks.count {
+                    let maskData = activeEntry.allMasks[maskIndex]
 
-                Rectangle()
-                    .fill(activeColor)
-                    .frame(width: size.width, height: size.height)
-                    .mask(
-                        Image(nsImage: maskData.image)
-                            .resizable()
-                            .frame(width: size.width, height: size.height)
-                    )
-                    .opacity(0.9)
-                    .allowsHitTesting(false)
-
-                // 100% border
-                Rectangle()
-                    .fill(activeColor)
-                    .frame(width: size.width, height: size.height)
-                    .mask(
-                        ZStack {
+                    Rectangle()
+                        .fill(activeColor)
+                        .frame(width: size.width, height: size.height)
+                        .mask(
                             Image(nsImage: maskData.image)
                                 .resizable()
                                 .frame(width: size.width, height: size.height)
-                            Image(nsImage: maskData.image)
-                                .resizable()
-                                .frame(width: size.width, height: size.height)
-                                .padding(4)
-                                .blur(radius: 1)
-                                .blendMode(.destinationOut)
-                        }
-                        .compositingGroup()
-                    )
-                    .opacity(1.0)
-                    .allowsHitTesting(false)
+                        )
+                        .opacity(0.9)
+                        .allowsHitTesting(false)
+
+                    // 100% border
+                    Rectangle()
+                        .fill(activeColor)
+                        .frame(width: size.width, height: size.height)
+                        .mask(
+                            ZStack {
+                                Image(nsImage: maskData.image)
+                                    .resizable()
+                                    .frame(width: size.width, height: size.height)
+                                Image(nsImage: maskData.image)
+                                    .resizable()
+                                    .frame(width: size.width, height: size.height)
+                                    .padding(4)
+                                    .blur(radius: 1)
+                                    .blendMode(.destinationOut)
+                            }
+                            .compositingGroup()
+                        )
+                        .opacity(1.0)
+                        .allowsHitTesting(false)
+                }
             }
 
             // Points overlay for active segmentation
@@ -432,8 +437,9 @@ extension View {
                     let activeIndex = viewModel.activeSegmentationIndex
                     if activeIndex < viewModel.segmentations.count && !viewModel.segmentations[activeIndex].allMasks.isEmpty {
                         if let clickedIndex = viewModel.findMaskAtPoint(normalized, displaySize: displaySize) {
+                            let shiftHeld = NSEvent.modifierFlags.contains(.shift)
                             withAnimation(.easeOut(duration: 0.15)) {
-                                viewModel.selectMask(at: clickedIndex, for: activeIndex)
+                                viewModel.selectMask(at: clickedIndex, for: activeIndex, addToSelection: shiftHeld)
                             }
                         }
                     }

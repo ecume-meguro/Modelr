@@ -254,8 +254,14 @@ class PythonEnvironment: ObservableObject {
         isGenerationCancelled = true
     }
     
+    // MARK: - Utility
+
+    func findUVPath() -> String? {
+        dependencyService.cachedUvPath
+    }
+
     // MARK: - Legacy API
-    
+
     @available(*, deprecated, message: "Use setImage() and predict() for faster iterative refinement")
     func runSAM2(imagePath: String, x: Int, y: Int) async -> URL? {
         guard isSetup else { return nil }

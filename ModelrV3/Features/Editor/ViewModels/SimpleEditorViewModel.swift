@@ -9,7 +9,7 @@ struct SegmentationEntry: Identifiable {
     var textPrompt: String = ""
     var points: [SAMPoint] = []
     var allMasks: [(image: NSImage, score: Double, url: URL)] = []
-    var selectedMaskIndex: Int = 0
+    var selectedMaskIndices: Set<Int> = [0]  // Support multiple selections
     var isExpanded: Bool = true
     var isSearchPerformed: Bool = false
     var isProcessing: Bool = false
@@ -19,13 +19,28 @@ struct SegmentationEntry: Identifiable {
         self.name = name
     }
 
+    /// Returns the first selected mask (for single selection compatibility)
     var selectedMask: NSImage? {
-        guard selectedMaskIndex < allMasks.count else { return nil }
-        return allMasks[selectedMaskIndex].image
+        guard let firstIndex = selectedMaskIndices.sorted().first,
+              firstIndex < allMasks.count else { return nil }
+        return allMasks[firstIndex].image
+    }
+
+    /// Returns all selected masks
+    var selectedMasks: [NSImage] {
+        selectedMaskIndices.sorted().compactMap { index in
+            guard index < allMasks.count else { return nil }
+            return allMasks[index].image
+        }
     }
 
     var hasValidMask: Bool {
-        !allMasks.isEmpty && selectedMaskIndex < allMasks.count
+        !allMasks.isEmpty && selectedMaskIndices.contains(where: { $0 < allMasks.count })
+    }
+
+    /// For backwards compatibility - returns first selected index
+    var selectedMaskIndex: Int {
+        selectedMaskIndices.sorted().first ?? 0
     }
 
     var promptDescription: String {
@@ -51,7 +66,7 @@ class SimpleEditorViewModel: ObservableObject {
     @Published var zoomScale: CGFloat = 1.0
 
     // MARK: - Workflow State
-    enum Step { case input, segment, touchup, generate }
+    enum Step { case input, segment, touchup, generate, postProcess }
     @Published var currentStep: Step = .input
 
     // MARK: - Multi-Segmentation State
@@ -103,7 +118,44 @@ class SimpleEditorViewModel: ObservableObject {
     @Published var showDiscardModelWarning: Bool = false
     @Published var showDiscardImageWarning: Bool = false
     @Published var showStartOverWarning: Bool = false
-    
+
+    // MARK: - Post-Process State
+    @Published var meshComponents: [MeshComponent] = []
+    @Published var selectedComponentIndices: Set<Int> = []
+    @Published var isAnalyzingMesh: Bool = false
+    @Published var isProcessingMesh: Bool = false
+    @Published var processedModelURL: URL?
+    @Published var selectedExportFormat: ExportFormat = .obj
+
+    struct MeshComponent: Identifiable {
+        let id = UUID()
+        let index: Int
+        let vertexCount: Int
+        let faceCount: Int
+        let boundsMin: [Double]
+        let boundsMax: [Double]
+        let center: [Double]
+        let size: Double
+        let isWatertight: Bool
+
+        var sizeDescription: String {
+            if size < 0.01 { return "Tiny" }
+            if size < 0.1 { return "Small" }
+            if size < 0.5 { return "Medium" }
+            return "Large"
+        }
+    }
+
+    enum ExportFormat: String, CaseIterable, Identifiable {
+        case obj = "OBJ"
+        case glb = "GLB"
+        case stl = "STL"
+        case ply = "PLY"
+
+        var id: String { rawValue }
+        var fileExtension: String { rawValue.lowercased() }
+    }
+
     // MARK: - UI State
     @Published var isDragging = false
     
@@ -283,11 +335,7 @@ class SimpleEditorViewModel: ObservableObject {
         } else if activeSegmentationIndex >= segmentations.count {
             activeSegmentationIndex = segmentations.count - 1
         }
-
-        // Rename remaining entries
-        for i in segmentations.indices {
-            segmentations[i].name = "Object \(i + 1)"
-        }
+        // Keep original names - don't rename
     }
 
     /// Expand a segmentation and collapse others
@@ -340,7 +388,9 @@ class SimpleEditorViewModel: ObservableObject {
             await MainActor.run {
                 if index < segmentations.count {
                     segmentations[index].allMasks = masks
-                    segmentations[index].selectedMaskIndex = 0
+                    segmentations[index].selectedMaskIndices = [0]
+                    // Update name to use the text prompt
+                    segmentations[index].name = text.capitalized
                 }
             }
         } catch {
@@ -389,7 +439,7 @@ class SimpleEditorViewModel: ObservableObject {
             await MainActor.run {
                 if index < segmentations.count {
                     segmentations[index].allMasks = masks
-                    segmentations[index].selectedMaskIndex = 0
+                    segmentations[index].selectedMaskIndices = [0]
                 }
             }
         } catch {
@@ -397,11 +447,25 @@ class SimpleEditorViewModel: ObservableObject {
         }
     }
 
-    /// Select mask for a specific segmentation
-    func selectMask(at maskIndex: Int, for segmentationIndex: Int) {
+    /// Select mask for a specific segmentation (shift to add/remove from selection)
+    func selectMask(at maskIndex: Int, for segmentationIndex: Int, addToSelection: Bool = false) {
         guard segmentationIndex < segmentations.count else { return }
         guard maskIndex < segmentations[segmentationIndex].allMasks.count else { return }
-        segmentations[segmentationIndex].selectedMaskIndex = maskIndex
+
+        if addToSelection {
+            // Toggle selection for shift-click
+            if segmentations[segmentationIndex].selectedMaskIndices.contains(maskIndex) {
+                // Don't remove if it's the only selected item
+                if segmentations[segmentationIndex].selectedMaskIndices.count > 1 {
+                    segmentations[segmentationIndex].selectedMaskIndices.remove(maskIndex)
+                }
+            } else {
+                segmentations[segmentationIndex].selectedMaskIndices.insert(maskIndex)
+            }
+        } else {
+            // Single selection - replace all
+            segmentations[segmentationIndex].selectedMaskIndices = [maskIndex]
+        }
     }
     
     func createMaskFromAlpha() {
@@ -457,7 +521,7 @@ class SimpleEditorViewModel: ObservableObject {
         segmentations.removeAll()
         var entry = SegmentationEntry(name: "From Alpha")
         entry.allMasks = [(image: maskNSImage, score: 1.0, url: tempURL)]
-        entry.selectedMaskIndex = 0
+        entry.selectedMaskIndices = [0]
         entry.isSearchPerformed = true
         segmentations.append(entry)
         activeSegmentationIndex = 0
@@ -476,7 +540,7 @@ class SimpleEditorViewModel: ObservableObject {
         segmentations[activeSegmentationIndex].textPrompt = ""
         segmentations[activeSegmentationIndex].points.removeAll()
         segmentations[activeSegmentationIndex].allMasks.removeAll()
-        segmentations[activeSegmentationIndex].selectedMaskIndex = 0
+        segmentations[activeSegmentationIndex].selectedMaskIndices = [0]
         segmentations[activeSegmentationIndex].isSearchPerformed = false
     }
 
@@ -556,33 +620,47 @@ class SimpleEditorViewModel: ObservableObject {
 
         let outputPixels = outputData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
 
-        // Initialize to black (empty mask)
+        // Initialize to fully transparent
         memset(outputPixels, 0, totalPixels * 4)
 
-        // OR all masks together
+        // OR all masks together (including multiple selections per segmentation)
         for segmentation in validSegmentations {
-            guard let mask = segmentation.selectedMask,
-                  let cgMask = mask.cgImage(forProposedRect: nil, context: nil, hints: nil) else { continue }
+            // Iterate through ALL selected masks in this segmentation
+            for mask in segmentation.selectedMasks {
+                guard let cgMask = mask.cgImage(forProposedRect: nil, context: nil, hints: nil) else { continue }
 
-            // Draw mask to temp context
-            guard let maskContext = CGContext(
-                data: nil, width: width, height: height,
-                bitsPerComponent: 8, bytesPerRow: width * 4,
-                space: colorSpace,
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-            ), let maskData = maskContext.data else { continue }
+                // Draw mask to temp context
+                guard let maskContext = CGContext(
+                    data: nil, width: width, height: height,
+                    bitsPerComponent: 8, bytesPerRow: width * 4,
+                    space: colorSpace,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                ), let maskData = maskContext.data else { continue }
 
-            maskContext.draw(cgMask, in: CGRect(x: 0, y: 0, width: width, height: height))
-            let maskPixels = maskData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
+                maskContext.draw(cgMask, in: CGRect(x: 0, y: 0, width: width, height: height))
+                let maskPixels = maskData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
 
-            // OR operation: if any mask has white, result is white
-            for i in 0..<totalPixels {
-                let offset = i * 4
-                if maskPixels[offset] > 128 {  // R channel indicates mask
+                // OR operation: check BOTH RGB luminance AND alpha channel
+                // SAM masks may use either format
+                for i in 0..<totalPixels {
+                    let offset = i * 4
+                    let r = maskPixels[offset]
+                    let g = maskPixels[offset + 1]
+                    let b = maskPixels[offset + 2]
+                    let a = maskPixels[offset + 3]
+
+                // Pixel is part of mask if:
+                // - Alpha is high (alpha-based mask), OR
+                // - RGB luminance is high (grayscale/RGB-based mask)
+                let luminance = (UInt16(r) + UInt16(g) + UInt16(b)) / 3
+                let isMaskPixel = a > 128 || luminance > 128
+
+                if isMaskPixel {
                     outputPixels[offset + 0] = 255
                     outputPixels[offset + 1] = 255
                     outputPixels[offset + 2] = 255
                     outputPixels[offset + 3] = 255
+                }
                 }
             }
         }
@@ -877,9 +955,11 @@ class SimpleEditorViewModel: ObservableObject {
             } else {
                 goBack()
             }
+        case .postProcess:
+            goBack()
         }
     }
-    
+
     func goBack() {
         withAnimation(.easeOut(duration: 0.2)) {
             switch currentStep {
@@ -905,6 +985,11 @@ class SimpleEditorViewModel: ObservableObject {
                 generationStartTime = nil
                 generationDuration = nil
                 currentStep = .touchup
+            case .postProcess:
+                meshComponents.removeAll()
+                selectedComponentIndices.removeAll()
+                processedModelURL = nil
+                currentStep = .generate
             }
         }
     }
@@ -924,6 +1009,9 @@ class SimpleEditorViewModel: ObservableObject {
             generationStages = [:]
             generationStartTime = nil
             generationDuration = nil
+            meshComponents.removeAll()
+            selectedComponentIndices.removeAll()
+            processedModelURL = nil
             zoomScale = 1.0
             currentStep = .input
         }
@@ -962,11 +1050,11 @@ class SimpleEditorViewModel: ObservableObject {
         guard imageSize.width > 0 && imageSize.height > 0 && containerSize.width > 0 && containerSize.height > 0 else {
             return .zero
         }
-        
+
         let imageAspect = imageSize.width / imageSize.height
         let containerAspect = containerSize.width / containerSize.height
         let margin: CGFloat = containerSize.width < 600 ? 0.95 : 0.9
-        
+
         if imageAspect > containerAspect {
             let width = containerSize.width * margin
             return CGSize(width: width, height: width / imageAspect)
@@ -974,5 +1062,233 @@ class SimpleEditorViewModel: ObservableObject {
             let height = containerSize.height * margin
             return CGSize(width: height * imageAspect, height: height)
         }
+    }
+
+    // MARK: - Post-Processing
+
+    /// URL of the mesh to process (either generated or processed)
+    var currentMeshURL: URL? {
+        processedModelURL ?? generated3DModelURL
+    }
+
+    func transitionToPostProcess() {
+        withAnimation(.easeOut(duration: 0.25)) {
+            currentStep = .postProcess
+        }
+        Task {
+            await analyzeMesh()
+        }
+    }
+
+    func analyzeMesh() async {
+        guard let modelURL = generated3DModelURL else { return }
+
+        await MainActor.run {
+            isAnalyzingMesh = true
+            meshComponents.removeAll()
+            selectedComponentIndices.removeAll()
+        }
+
+        let result = await runMeshProcessor(command: "analyze", inputPath: modelURL.path)
+
+        await MainActor.run {
+            isAnalyzingMesh = false
+            if let result = result,
+               result["success"] as? Bool == true,
+               let components = result["components"] as? [[String: Any]] {
+
+                meshComponents = components.compactMap { comp -> MeshComponent? in
+                    guard let index = comp["index"] as? Int,
+                          let vertexCount = comp["vertex_count"] as? Int,
+                          let faceCount = comp["face_count"] as? Int else { return nil }
+
+                    return MeshComponent(
+                        index: index,
+                        vertexCount: vertexCount,
+                        faceCount: faceCount,
+                        boundsMin: comp["bounds_min"] as? [Double] ?? [0, 0, 0],
+                        boundsMax: comp["bounds_max"] as? [Double] ?? [0, 0, 0],
+                        center: comp["center"] as? [Double] ?? [0, 0, 0],
+                        size: comp["size"] as? Double ?? 0,
+                        isWatertight: comp["is_watertight"] as? Bool ?? false
+                    )
+                }
+            }
+        }
+    }
+
+    func deleteSelectedComponents() async {
+        guard !selectedComponentIndices.isEmpty,
+              let modelURL = currentMeshURL else { return }
+
+        let indicesToDelete = selectedComponentIndices.sorted()
+        let outputPath = NSTemporaryDirectory() + "processed_mesh_\(UUID().uuidString).obj"
+
+        await MainActor.run {
+            isProcessingMesh = true
+        }
+
+        let result = await runMeshProcessor(
+            command: "delete",
+            inputPath: modelURL.path,
+            outputPath: outputPath,
+            indices: indicesToDelete
+        )
+
+        await MainActor.run {
+            isProcessingMesh = false
+            if let result = result,
+               result["success"] as? Bool == true,
+               let outputPathStr = result["output_path"] as? String {
+                processedModelURL = URL(fileURLWithPath: outputPathStr)
+                selectedComponentIndices.removeAll()
+            }
+        }
+
+        // Re-analyze
+        await analyzeMesh()
+    }
+
+    func keepLargestComponent() async {
+        guard let modelURL = currentMeshURL else { return }
+
+        let outputPath = NSTemporaryDirectory() + "processed_mesh_\(UUID().uuidString).obj"
+
+        await MainActor.run {
+            isProcessingMesh = true
+        }
+
+        let result = await runMeshProcessor(
+            command: "keep_largest",
+            inputPath: modelURL.path,
+            outputPath: outputPath
+        )
+
+        await MainActor.run {
+            isProcessingMesh = false
+            if let result = result,
+               result["success"] as? Bool == true,
+               let outputPathStr = result["output_path"] as? String {
+                processedModelURL = URL(fileURLWithPath: outputPathStr)
+                selectedComponentIndices.removeAll()
+            }
+        }
+
+        // Re-analyze
+        await analyzeMesh()
+    }
+
+    func exportMesh(to url: URL) async -> Bool {
+        guard let modelURL = currentMeshURL else { return false }
+
+        await MainActor.run {
+            isProcessingMesh = true
+        }
+
+        let result = await runMeshProcessor(
+            command: "export",
+            inputPath: modelURL.path,
+            outputPath: url.path,
+            format: selectedExportFormat.fileExtension
+        )
+
+        await MainActor.run {
+            isProcessingMesh = false
+        }
+
+        return result?["success"] as? Bool == true
+    }
+
+    func toggleComponentSelection(_ index: Int) {
+        if selectedComponentIndices.contains(index) {
+            selectedComponentIndices.remove(index)
+        } else {
+            selectedComponentIndices.insert(index)
+        }
+    }
+
+    func selectAllComponents() {
+        selectedComponentIndices = Set(meshComponents.map { $0.index })
+    }
+
+    func deselectAllComponents() {
+        selectedComponentIndices.removeAll()
+    }
+
+    private func runMeshProcessor(
+        command: String,
+        inputPath: String,
+        outputPath: String? = nil,
+        indices: [Int]? = nil,
+        format: String? = nil
+    ) async -> [String: Any]? {
+        let appSupportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("ModelrV3")
+        let scriptPath = appSupportDir.appendingPathComponent("mesh_processor.py").path
+        let venvPythonPath = appSupportDir.appendingPathComponent(".venv/bin/python").path
+
+        // Check if script exists, copy from bundle if needed
+        if !FileManager.default.fileExists(atPath: scriptPath) {
+            if let bundlePath = Bundle.main.path(forResource: "mesh_processor", ofType: "py") {
+                try? FileManager.default.copyItem(atPath: bundlePath, toPath: scriptPath)
+            }
+        }
+
+        // Check if venv python exists
+        guard FileManager.default.fileExists(atPath: venvPythonPath) else {
+            print("[MeshProcessor] Python venv not found at \(venvPythonPath)")
+            return nil
+        }
+
+        var args = [scriptPath, command, "--input", inputPath]
+
+        if let outputPath = outputPath {
+            args.append(contentsOf: ["--output", outputPath])
+        }
+        if let indices = indices {
+            let indicesStr = indices.map { String($0) }.joined(separator: ",")
+            args.append(contentsOf: ["--indices", indicesStr])
+        }
+        if let format = format {
+            args.append(contentsOf: ["--format", format])
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: venvPythonPath)
+        process.arguments = args
+        process.currentDirectoryURL = appSupportDir
+
+        var env = ProcessInfo.processInfo.environment
+        env["PYTHONUNBUFFERED"] = "1"
+        process.environment = env
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+
+            let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
+            let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+
+            if let errorStr = String(data: errorData, encoding: .utf8), !errorStr.isEmpty {
+                print("[MeshProcessor stderr] \(errorStr)")
+            }
+
+            if let outputStr = String(data: outputData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) {
+                print("[MeshProcessor stdout] \(outputStr)")
+                if let jsonData = outputStr.data(using: .utf8),
+                   let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+                    return json
+                }
+            }
+        } catch {
+            print("[MeshProcessor] Error: \(error)")
+        }
+
+        return nil
     }
 }
