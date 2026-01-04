@@ -286,7 +286,7 @@ struct ImageCanvas: View {
     // MARK: - Actions
     private func selectImage() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.image, .png, .jpeg]
+        panel.allowedContentTypes = [.image, .png, .jpeg, .tiff, .bmp, .gif, .webP]
         panel.allowsMultipleSelection = false
         
         if panel.runModal() == .OK, let url = panel.url {

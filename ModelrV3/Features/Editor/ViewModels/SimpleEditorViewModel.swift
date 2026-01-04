@@ -89,10 +89,21 @@ class SimpleEditorViewModel: ObservableObject {
     // MARK: - Image Loading
     func loadImage(from url: URL) {
         guard let image = NSImage(contentsOf: url) else { return }
-        
+
         inputImage = image
-        inputImagePath = url.path
-        
+
+        // Convert non-standard formats (webp, etc.) to PNG for Python backend
+        let ext = url.pathExtension.lowercased()
+        if ext == "webp" || ext == "bmp" || ext == "gif" {
+            if let pngPath = convertToPNG(image: image, originalName: url.deletingPathExtension().lastPathComponent) {
+                inputImagePath = pngPath
+            } else {
+                inputImagePath = url.path
+            }
+        } else {
+            inputImagePath = url.path
+        }
+
         // Clear all previous data
         clearSegmentation()
         editableMaskImage = nil
@@ -104,19 +115,37 @@ class SimpleEditorViewModel: ObservableObject {
         generationStatus = ""
         zoomScale = 1.0
         useExistingAlpha = false
-        
+
         // Get pixel dimensions
         if let rep = image.representations.first {
             imagePixelSize = CGSize(width: CGFloat(rep.pixelsWide), height: CGFloat(rep.pixelsHigh))
         }
-        
+
         checkImageHasAlpha()
-        
+
         withAnimation(.easeOut(duration: 0.25)) {
             currentStep = .segment
         }
-        
+
         Task { await initializeImage() }
+    }
+
+    /// Converts an image to PNG format using Apple's native APIs (offline, no dependencies)
+    private func convertToPNG(image: NSImage, originalName: String) -> String? {
+        guard let tiffData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData),
+              let pngData = bitmap.representation(using: .png, properties: [:]) else {
+            return nil
+        }
+
+        let tempPath = NSTemporaryDirectory() + "\(originalName)_\(UUID().uuidString.prefix(8)).png"
+        do {
+            try pngData.write(to: URL(fileURLWithPath: tempPath))
+            return tempPath
+        } catch {
+            print("Failed to write PNG: \(error)")
+            return nil
+        }
     }
     
     private func initializeImage() async {

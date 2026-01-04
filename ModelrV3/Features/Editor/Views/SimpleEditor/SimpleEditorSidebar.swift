@@ -179,10 +179,10 @@ struct SimpleEditorSidebar: View {
         Divider().padding(.vertical, AppDesign.Spacing.p4)
 
         HStack {
+            Spacer()
             AppDesign.InlineButton("Start Over", icon: "arrow.counterclockwise") {
                 viewModel.showStartOverWarning = true
             }
-            Spacer()
         }
         .alert("Start Over?", isPresented: $viewModel.showStartOverWarning) {
             Button("Cancel", role: .cancel) { }

@@ -56,54 +56,69 @@ struct ModelViewer: NSViewRepresentable {
         cameraNode.camera = SCNCamera()
         cameraNode.camera?.zNear = 0.01
         cameraNode.camera?.zFar = 1000
-        cameraNode.position = SCNVector3(0, 0, 2) // Start slightly back
-        
-        // --- HEADLAMP SETUP ---
-        // Attach lights TO THE CAMERA so they move with it.
-        // This ensures the "front" of the model is always lit.
-        
-        // 1. Key Light (The Headlamp)
-        let keyLightNode = SCNNode()
-        keyLightNode.light = SCNLight()
-        keyLightNode.light?.type = .directional
-        keyLightNode.light?.intensity = 900
-        keyLightNode.light?.color = NSColor.white
-        keyLightNode.light?.castsShadow = true
-        // Point slightly down relative to camera view
-        keyLightNode.eulerAngles = SCNVector3(-0.2, 0, 0) 
-        cameraNode.addChildNode(keyLightNode)
-        
-        // 2. Fill Light (Softer, fills shadows)
-        let fillLightNode = SCNNode()
-        fillLightNode.light = SCNLight()
-        fillLightNode.light?.type = .directional
-        fillLightNode.light?.intensity = 400
-        fillLightNode.light?.color = NSColor(white: 0.9, alpha: 1.0)
-        fillLightNode.light?.castsShadow = false
-        // Angle from the side
-        fillLightNode.eulerAngles = SCNVector3(0, -0.4, 0)
-        cameraNode.addChildNode(fillLightNode)
-        
-        // Add Camera (with lights attached) to Scene
+        cameraNode.position = SCNVector3(0, 0, 2)
+
+        // Add Camera to Scene
         scene.rootNode.addChildNode(cameraNode)
-        
-        // Set as view's point of view (allows orbit control)
         view.pointOfView = cameraNode
-        
-        // --- GLOBAL LIGHTING ---
-        
-        // 3. Ambient Light (Base visibility for everything)
-        let ambientNode = SCNNode()
-        ambientNode.light = SCNLight()
-        ambientNode.light?.type = .ambient
-        ambientNode.light?.intensity = 300 // Moderate ambient
-        ambientNode.light?.color = NSColor(white: 0.8, alpha: 1.0)
-        scene.rootNode.addChildNode(ambientNode)
-        
-        // 4. Environment (Reflections)
-        // Neutral studio gray for PBR reflections
-        scene.lightingEnvironment.contents = NSColor(white: 0.5, alpha: 1.0)
-        scene.lightingEnvironment.intensity = 1.0
+
+        // --- EVEN STUDIO LIGHTING (3-point + ambient) ---
+
+        // 1. Key Light - Front-left, moderate intensity
+        let keyLight = SCNNode()
+        keyLight.light = SCNLight()
+        keyLight.light?.type = .directional
+        keyLight.light?.intensity = 400
+        keyLight.light?.color = NSColor(white: 0.95, alpha: 1.0)
+        keyLight.light?.castsShadow = false
+        keyLight.position = SCNVector3(-2, 2, 2)
+        keyLight.look(at: SCNVector3(0, 0, 0))
+        scene.rootNode.addChildNode(keyLight)
+
+        // 2. Fill Light - Front-right, softer
+        let fillLight = SCNNode()
+        fillLight.light = SCNLight()
+        fillLight.light?.type = .directional
+        fillLight.light?.intensity = 350
+        fillLight.light?.color = NSColor(white: 0.9, alpha: 1.0)
+        fillLight.light?.castsShadow = false
+        fillLight.position = SCNVector3(2, 1, 2)
+        fillLight.look(at: SCNVector3(0, 0, 0))
+        scene.rootNode.addChildNode(fillLight)
+
+        // 3. Back Light - Behind, for rim/separation
+        let backLight = SCNNode()
+        backLight.light = SCNLight()
+        backLight.light?.type = .directional
+        backLight.light?.intensity = 250
+        backLight.light?.color = NSColor(white: 0.85, alpha: 1.0)
+        backLight.light?.castsShadow = false
+        backLight.position = SCNVector3(0, 1, -2)
+        backLight.look(at: SCNVector3(0, 0, 0))
+        scene.rootNode.addChildNode(backLight)
+
+        // 4. Top Light - From above for even coverage
+        let topLight = SCNNode()
+        topLight.light = SCNLight()
+        topLight.light?.type = .directional
+        topLight.light?.intensity = 200
+        topLight.light?.color = NSColor(white: 0.9, alpha: 1.0)
+        topLight.light?.castsShadow = false
+        topLight.position = SCNVector3(0, 3, 0)
+        topLight.look(at: SCNVector3(0, 0, 0))
+        scene.rootNode.addChildNode(topLight)
+
+        // 5. Ambient Light - Base fill for all surfaces
+        let ambientLight = SCNNode()
+        ambientLight.light = SCNLight()
+        ambientLight.light?.type = .ambient
+        ambientLight.light?.intensity = 400
+        ambientLight.light?.color = NSColor(white: 0.7, alpha: 1.0)
+        scene.rootNode.addChildNode(ambientLight)
+
+        // 6. Environment for subtle reflections
+        scene.lightingEnvironment.contents = NSColor(white: 0.4, alpha: 1.0)
+        scene.lightingEnvironment.intensity = 0.5
     }
 
     class Coordinator {
