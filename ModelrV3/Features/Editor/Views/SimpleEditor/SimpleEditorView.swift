@@ -12,13 +12,20 @@ struct SimpleEditorView: View {
     var body: some View {
         NavigationSplitView {
             SimpleEditorSidebar(viewModel: viewModel)
-                .navigationSplitViewColumnWidth(min: 320, ideal: 360, max: 420)
+                .navigationSplitViewColumnWidth(420)
         } detail: {
             ImageCanvas(viewModel: viewModel)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(NSColor.windowBackgroundColor))
         }
         .navigationSplitViewStyle(.balanced)
+        .navigationTitle("")
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                EditorToolbarContent(viewModel: viewModel)
+                    .frame(minWidth: 400)
+            }
+        }
         .frame(minWidth: 1000, minHeight: 700)
         .background(
             Button("") {

@@ -64,10 +64,12 @@ class PythonEnvironment: ObservableObject {
             hunyuanVenvDir: hunyuanVenvDir
         )
         processManager.selectedModel = selectedModel
-        
-        Task {
-            await setup()
-        }
+
+        // NOTE: Auto-setup disabled - SimpleEditorViewModel handles setup with user-selected model
+        // The old PythonDependencyService had hardcoded "std" model which caused duplicate downloads
+        // Task {
+        //     await setup()
+        // }
     }
     
     deinit {
@@ -82,11 +84,18 @@ class PythonEnvironment: ObservableObject {
                 self?.status = statusText
             }
         }
-        
+
         await MainActor.run {
             isSetup = success
             status = success ? "Ready" : "Setup failed"
         }
+    }
+
+    /// Mark the Hunyuan environment as ready (called by new setup flow)
+    func markHunyuanReady() {
+        dependencyService.hunyuanVenvReady = true
+        isSetup = true
+        status = "Ready"
     }
     
     // MARK: - Worker Management
@@ -260,53 +269,6 @@ class PythonEnvironment: ObservableObject {
 
     func findUVPath() -> String? {
         dependencyService.cachedUvPath
-    }
-
-    // MARK: - Legacy API
-
-    @available(*, deprecated, message: "Use setImage() and predict() for faster iterative refinement")
-    func runSAM2(imagePath: String, x: Int, y: Int) async -> URL? {
-        guard isSetup else { return nil }
-        
-        guard let uvPath = dependencyService.cachedUvPath else { return nil }
-        
-        await MainActor.run { status = "Segmenting..." }
-        
-        let scriptPath = appSupportDir.appendingPathComponent("sam_wrapper.py").path
-        let maskPath = appSupportDir.appendingPathComponent("mask.png").path
-        
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: uvPath)
-        process.arguments = ["run", scriptPath, "--model", selectedModel, imagePath, "\(x)", "\(y)", maskPath]
-        process.currentDirectoryURL = appSupportDir
-        
-        var env = ProcessInfo.processInfo.environment
-        env["UV_PROJECT_ENVIRONMENT"] = venvDir.path
-        env["UV_PYTHON_INSTALL_DIR"] = appSupportDir.appendingPathComponent("python_runtimes").path
-        env["UV_CACHE_DIR"] = appSupportDir.appendingPathComponent("uv_cache").path
-        env["UV_PYTHON_PREFERENCE"] = "only-managed"
-        env["PYTHONUNBUFFERED"] = "1"
-        env["PYTHONPATH"] = appSupportDir.path
-        process.environment = env
-        
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        
-        do {
-            try process.run()
-            process.waitUntilExit()
-            
-            if process.terminationStatus == 0 {
-                await MainActor.run { status = "Done" }
-                return URL(fileURLWithPath: maskPath)
-            }
-        } catch {
-            print("Error running SAM2: \(error)")
-        }
-        
-        await MainActor.run { status = "Ready" }
-        return nil
     }
 }
 

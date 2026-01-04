@@ -288,9 +288,9 @@ def run_self_test(
 
 
 def warmup_model(model_variant: str = "std") -> None:
-    """Pre-download and load the Hunyuan3D-2.1 model to warm up the cache."""
+    """Pre-download and load the Hunyuan3D model to warm up the cache."""
     try:
-        log_info("Warming up Hunyuan3D-2.1 model (downloading if needed)...")
+        log_info(f"Warmup called with model_variant='{model_variant}'")
         device = get_device() if logger else "mps"
         _ = load_pipeline(model_variant, device=device)
         log_info("Model warmup complete!")

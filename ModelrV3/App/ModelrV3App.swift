@@ -10,38 +10,18 @@ struct ModelrV3App: App {
     }
 
     // Check for force setup mode (for testing)
-    private var forceSetup: Bool {
-        CommandLine.arguments.contains("--force-setup") ||
-        ProcessInfo.processInfo.environment["FORCE_SETUP"] == "1"
+    // This now resets the SetupComplete flag to force re-running setup
+    init() {
+        if CommandLine.arguments.contains("--force-setup") ||
+           ProcessInfo.processInfo.environment["FORCE_SETUP"] == "1" {
+            UserDefaults.standard.set(false, forKey: "SetupComplete")
+        }
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView(forceSetup: forceSetup)
-        }
-    }
-}
-
-/// Root view that handles first-run setup vs main app
-struct RootView: View {
-    let forceSetup: Bool
-
-    @State private var isSetupComplete: Bool
-
-    init(forceSetup: Bool) {
-        self.forceSetup = forceSetup
-        // Check if setup was completed previously
-        let wasSetupComplete = UserDefaults.standard.bool(forKey: "SetupComplete")
-        _isSetupComplete = State(initialValue: forceSetup ? false : wasSetupComplete)
-    }
-
-    var body: some View {
-        Group {
-            if isSetupComplete {
-                SimpleEditorView()
-            } else {
-                SetupView(isSetupComplete: $isSetupComplete)
-            }
+            // Setup is now integrated into SimpleEditorView as the first step
+            SimpleEditorView()
         }
     }
 }

@@ -15,10 +15,13 @@ class PythonDependencyService {
         self.appSupportDir = appSupportDir
         self.venvDir = appSupportDir.appendingPathComponent(".venv")
         self.hunyuanVenvDir = appSupportDir.appendingPathComponent(".venv_hunyuan")
+
+        // Initialize uv path immediately so it's available for SAM worker
+        cachedUvPath = findUVExecutable()
     }
-    
+
     // MARK: - Setup
-    
+
     func setup(statusUpdate: @escaping (String) -> Void) async -> Bool {
         statusUpdate("Bootstrapping...")
         

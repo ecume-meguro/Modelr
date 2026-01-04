@@ -5,42 +5,46 @@ import SceneKit.ModelIO
 
 // MARK: - SceneKit 3D Viewer (Headlamp Lighting)
 
-/// A robust 3D viewer that uses a camera-attached light ("Headlamp") 
+/// A robust 3D viewer that uses a camera-attached light ("Headlamp")
 /// to ensure the model is always visible from the user's angle.
 struct ModelViewer: NSViewRepresentable {
     let modelURL: URL?
+    var viewMode: SimpleEditorViewModel.ViewMode = .shaded
 
     func makeNSView(context: Context) -> SCNView {
         let scnView = SCNView()
-        
+
         // 1. Basic Setup
         scnView.allowsCameraControl = true
         scnView.autoenablesDefaultLighting = false
         scnView.backgroundColor = NSColor(calibratedWhite: 0.12, alpha: 1.0)
         scnView.antialiasingMode = .multisampling4X
-        
+
         // 2. Scene Setup
         let scene = SCNScene()
         scnView.scene = scene
-        
+
         // 3. Camera & Headlamp Setup
         setupCameraAndLighting(scene: scene, view: scnView)
-        
+
         // 4. Load Model
         if let url = modelURL {
-            context.coordinator.loadModel(url: url, into: scene, view: scnView)
+            context.coordinator.loadModel(url: url, into: scene, view: scnView, viewMode: viewMode)
         }
 
         return scnView
     }
 
     func updateNSView(_ scnView: SCNView, context: Context) {
+        // Update view mode
+        context.coordinator.applyViewMode(viewMode, to: scnView)
+
         if let url = modelURL, context.coordinator.currentModelURL != url {
             if let scene = scnView.scene {
                 // Remove old model
                 scene.rootNode.childNode(withName: "loadedModel", recursively: true)?.removeFromParentNode()
                 // Load new
-                context.coordinator.loadModel(url: url, into: scene, view: scnView)
+                context.coordinator.loadModel(url: url, into: scene, view: scnView, viewMode: viewMode)
             }
         }
     }
@@ -123,39 +127,41 @@ struct ModelViewer: NSViewRepresentable {
 
     class Coordinator {
         var currentModelURL: URL?
-        
-        func loadModel(url: URL, into scene: SCNScene, view: SCNView) {
+        var currentViewMode: SimpleEditorViewModel.ViewMode = .shaded
+
+        func loadModel(url: URL, into scene: SCNScene, view: SCNView, viewMode: SimpleEditorViewModel.ViewMode) {
             currentModelURL = url
-            
+            currentViewMode = viewMode
+
             DispatchQueue.global(qos: .userInitiated).async {
                 let asset = MDLAsset(url: url)
-                asset.loadTextures() // Ensure textures are loaded
-                
+                asset.loadTextures()
+
                 guard asset.count > 0 else { return }
-                
+
                 let loadedScene = SCNScene(mdlAsset: asset)
-                
+
                 DispatchQueue.main.async {
                     let containerNode = SCNNode()
                     containerNode.name = "loadedModel"
-                    
+
                     for child in loadedScene.rootNode.childNodes {
                         let cloned = child.clone()
-                        self.fixMaterials(node: cloned)
+                        self.fixMaterials(node: cloned, viewMode: viewMode)
                         containerNode.addChildNode(cloned)
                     }
-                    
+
                     scene.rootNode.addChildNode(containerNode)
-                    
+
                     // Center and Scale
                     let (min, max) = containerNode.boundingBox
                     let size = SCNVector3(max.x - min.x, max.y - min.y, max.z - min.z)
                     let maxDim = Swift.max(size.x, Swift.max(size.y, size.z))
-                    
+
                     if maxDim > 0 {
-                        let scale = 1.5 / maxDim // Scale to fit nicely
+                        let scale = 1.5 / maxDim
                         containerNode.scale = SCNVector3(scale, scale, scale)
-                        
+
                         let center = SCNVector3((min.x + max.x) / 2, (min.y + max.y) / 2, (min.z + max.z) / 2)
                         containerNode.pivot = SCNMatrix4MakeTranslation(center.x, center.y, center.z)
                         containerNode.position = SCNVector3(0, 0, 0)
@@ -163,20 +169,62 @@ struct ModelViewer: NSViewRepresentable {
                 }
             }
         }
-        
-        func fixMaterials(node: SCNNode) {
+
+        func applyViewMode(_ viewMode: SimpleEditorViewModel.ViewMode, to scnView: SCNView) {
+            guard viewMode != currentViewMode else { return }
+            currentViewMode = viewMode
+
+            guard let scene = scnView.scene,
+                  let modelNode = scene.rootNode.childNode(withName: "loadedModel", recursively: true) else { return }
+
+            applyViewModeToNode(modelNode, viewMode: viewMode)
+        }
+
+        private func applyViewModeToNode(_ node: SCNNode, viewMode: SimpleEditorViewModel.ViewMode) {
+            if let geometry = node.geometry {
+                for material in geometry.materials {
+                    switch viewMode {
+                    case .wireframe:
+                        material.fillMode = .lines
+                        material.diffuse.contents = NSColor.white
+                    case .shaded:
+                        material.fillMode = .fill
+                        // Restore original or use gray
+                        if material.diffuse.contents == nil || (material.diffuse.contents as? NSColor) == NSColor.white {
+                            material.diffuse.contents = NSColor(white: 0.7, alpha: 1.0)
+                        }
+                    case .textured:
+                        material.fillMode = .fill
+                        // Keep textures as loaded
+                    }
+                }
+            }
+
+            for child in node.childNodes {
+                applyViewModeToNode(child, viewMode: viewMode)
+            }
+        }
+
+        func fixMaterials(node: SCNNode, viewMode: SimpleEditorViewModel.ViewMode) {
             node.geometry?.materials.forEach { material in
-                // Force double-sided to avoid holes in single-sided meshes
                 material.isDoubleSided = true
-                
-                // Ensure the material responds to lighting
+
                 if material.lightingModel == .constant {
                     material.lightingModel = .physicallyBased
                 }
+
+                // Apply initial view mode
+                switch viewMode {
+                case .wireframe:
+                    material.fillMode = .lines
+                    material.diffuse.contents = NSColor.white
+                case .shaded, .textured:
+                    material.fillMode = .fill
+                }
             }
-            
+
             for child in node.childNodes {
-                fixMaterials(node: child)
+                fixMaterials(node: child, viewMode: viewMode)
             }
         }
     }
@@ -185,6 +233,7 @@ struct ModelViewer: NSViewRepresentable {
 /// A styled container for the model viewer
 struct ModelViewerContainer: View {
     let modelURL: URL?
+    var viewMode: SimpleEditorViewModel.ViewMode = .shaded
 
     var body: some View {
         ZStack {
@@ -194,10 +243,10 @@ struct ModelViewerContainer: View {
                 .shadow(color: .black.opacity(0.3), radius: 20, y: 10)
 
             if let url = modelURL {
-                ModelViewer(modelURL: url)
+                ModelViewer(modelURL: url, viewMode: viewMode)
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
-                // Interaction hint
+                // Interaction hint overlay
                 VStack {
                     Spacer()
                     HStack {

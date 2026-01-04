@@ -12,9 +12,45 @@ struct PostProcessPanel: View {
                 noComponentsView
             } else {
                 componentListView
-                actionButtonsView
+
+                // Only show action buttons section when multiple components
+                if viewModel.meshComponents.count > 1 {
+                    Divider().padding(.vertical, AppDesign.Spacing.p4)
+                    actionButtonsView
+                }
+
+                Divider().padding(.vertical, AppDesign.Spacing.p4)
                 exportSection
             }
+        }
+        // Confirmation alerts
+        .alert("Delete Components?", isPresented: $viewModel.showDeleteSelectedConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Delete", role: .destructive) {
+                Task { await viewModel.deleteSelectedComponents() }
+            }
+        } message: {
+            let count = viewModel.selectedComponentIndices.count
+            Text("This will permanently delete \(count) component\(count == 1 ? "" : "s") from the mesh.")
+        }
+        .alert("Keep Selected Only?", isPresented: $viewModel.showKeepSelectedConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Keep Selected", role: .destructive) {
+                Task { await viewModel.keepSelectedComponents() }
+            }
+        } message: {
+            let keepCount = viewModel.selectedComponentIndices.count
+            let deleteCount = viewModel.meshComponents.count - keepCount
+            Text("This will delete \(deleteCount) component\(deleteCount == 1 ? "" : "s") and keep only the \(keepCount) selected.")
+        }
+        .alert("Keep Largest \(viewModel.keepLargestCount)?", isPresented: $viewModel.showKeepLargestConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Keep Largest", role: .destructive) {
+                Task { await viewModel.keepLargestComponents(count: viewModel.keepLargestCount) }
+            }
+        } message: {
+            let deleteCount = viewModel.meshComponents.count - viewModel.keepLargestCount
+            Text("This will delete \(deleteCount) smaller component\(deleteCount == 1 ? "" : "s") and keep the \(viewModel.keepLargestCount) largest.")
         }
     }
 
@@ -82,7 +118,7 @@ struct PostProcessPanel: View {
     }
 
     @ViewBuilder
-    private func componentRow(_ component: SimpleEditorViewModel.MeshComponent) -> some View {
+    private func componentRow(_ component: MeshComponent) -> some View {
         let isSelected = viewModel.selectedComponentIndices.contains(component.index)
         let color = AppDesign.neonColors[component.index % AppDesign.neonColors.count]
 
@@ -150,36 +186,42 @@ struct PostProcessPanel: View {
     @ViewBuilder
     private var actionButtonsView: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-            Divider().padding(.vertical, AppDesign.Spacing.p4)
+            // Keep Largest section with edit mode
+            keepLargestSection
 
-            if viewModel.meshComponents.count > 1 {
-                // Keep Largest button
-                AppDesign.GlassButtonSecondary("Keep Largest Only", icon: "star.fill") {
-                    Task {
-                        await viewModel.keepLargestComponent()
+            // Selection-based actions
+            if !viewModel.selectedComponentIndices.isEmpty {
+                let count = viewModel.selectedComponentIndices.count
+                let canDelete = count < viewModel.meshComponents.count
+                let canKeep = count > 0 && count < viewModel.meshComponents.count
+
+                HStack(spacing: AppDesign.Spacing.p8) {
+                    // Only Keep Selected
+                    if canKeep {
+                        AppDesign.GlassButtonSecondary(
+                            "Keep Selected",
+                            icon: "checkmark.circle"
+                        ) {
+                            viewModel.showKeepSelectedConfirmation = true
+                        }
+                        .disabled(viewModel.isProcessingMesh)
+                    }
+
+                    // Delete Selected
+                    if canDelete {
+                        AppDesign.GlassButtonSecondary(
+                            "Delete Selected",
+                            icon: "trash",
+                            destructive: true
+                        ) {
+                            viewModel.showDeleteSelectedConfirmation = true
+                        }
+                        .disabled(viewModel.isProcessingMesh)
                     }
                 }
-                .disabled(viewModel.isProcessingMesh || viewModel.meshComponents.count <= 1)
 
-                // Delete selected button
-                if !viewModel.selectedComponentIndices.isEmpty {
-                    let count = viewModel.selectedComponentIndices.count
-                    let canDelete = count < viewModel.meshComponents.count
-
-                    AppDesign.GlassButtonSecondary(
-                        "Delete \(count) Component\(count == 1 ? "" : "s")",
-                        icon: "trash",
-                        destructive: true
-                    ) {
-                        Task {
-                            await viewModel.deleteSelectedComponents()
-                        }
-                    }
-                    .disabled(viewModel.isProcessingMesh || !canDelete)
-
-                    if !canDelete {
-                        AppDesign.HintText("Cannot delete all components")
-                    }
+                if !canDelete && !canKeep {
+                    AppDesign.HintText("Cannot delete all components")
                 }
             }
 
@@ -196,15 +238,119 @@ struct PostProcessPanel: View {
     }
 
     @ViewBuilder
+    private var keepLargestSection: some View {
+        if viewModel.isEditingKeepLargest {
+            // Expanded edit mode
+            HStack(spacing: AppDesign.Spacing.p8) {
+                Text("Keep largest")
+                    .font(.system(size: AppDesign.FontSize.subheadline))
+                    .foregroundStyle(.secondary)
+
+                // Number input
+                HStack(spacing: 0) {
+                    Button {
+                        if viewModel.keepLargestCount > 1 {
+                            viewModel.keepLargestCount -= 1
+                        }
+                    } label: {
+                        Image(systemName: "minus")
+                            .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.primary)
+
+                    Text("\(viewModel.keepLargestCount)")
+                        .font(.system(size: AppDesign.FontSize.subheadline, weight: .semibold, design: .monospaced))
+                        .frame(width: 32)
+
+                    Button {
+                        if viewModel.keepLargestCount < viewModel.meshComponents.count - 1 {
+                            viewModel.keepLargestCount += 1
+                        }
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.primary)
+                }
+                .padding(.horizontal, AppDesign.Spacing.p4)
+                .padding(.vertical, AppDesign.Spacing.p4)
+                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+
+                Text("items")
+                    .font(.system(size: AppDesign.FontSize.subheadline))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                // Apply button
+                Button {
+                    viewModel.showKeepLargestConfirmation = true
+                } label: {
+                    Text("Apply")
+                        .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                        .padding(.horizontal, AppDesign.Spacing.p10)
+                        .padding(.vertical, AppDesign.Spacing.p6)
+                        .background(AppDesign.accent, in: RoundedRectangle(cornerRadius: 6))
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.isProcessingMesh || viewModel.keepLargestCount >= viewModel.meshComponents.count)
+
+                // Cancel button
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        viewModel.isEditingKeepLargest = false
+                        viewModel.keepLargestCount = 1
+                    }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.vertical, AppDesign.Spacing.p4)
+        } else {
+            // Collapsed mode - button with edit
+            HStack(spacing: AppDesign.Spacing.p8) {
+                AppDesign.GlassButtonSecondary("Keep Largest Only", icon: "star.fill") {
+                    viewModel.keepLargestCount = 1
+                    viewModel.showKeepLargestConfirmation = true
+                }
+                .disabled(viewModel.isProcessingMesh || viewModel.meshComponents.count <= 1)
+
+                // Edit button
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        viewModel.isEditingKeepLargest = true
+                        viewModel.keepLargestCount = 1
+                    }
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.meshComponents.count <= 2)
+            }
+        }
+    }
+
+    @ViewBuilder
     private var exportSection: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-            Divider().padding(.vertical, AppDesign.Spacing.p4)
-
             AppDesign.SectionLabel("Export")
 
             // Format picker
             HStack(spacing: AppDesign.Spacing.p8) {
-                ForEach(SimpleEditorViewModel.ExportFormat.allCases) { format in
+                ForEach(ExportFormat.allCases) { format in
                     formatButton(format)
                 }
             }
@@ -213,18 +359,11 @@ struct PostProcessPanel: View {
                 exportMesh()
             }
             .disabled(viewModel.isProcessingMesh)
-
-            // Show in Finder for current mesh
-            if let url = viewModel.currentMeshURL {
-                AppDesign.InlineButton("Show in Finder", icon: "folder") {
-                    NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
-                }
-            }
         }
     }
 
     @ViewBuilder
-    private func formatButton(_ format: SimpleEditorViewModel.ExportFormat) -> some View {
+    private func formatButton(_ format: ExportFormat) -> some View {
         let isSelected = viewModel.selectedExportFormat == format
 
         Button {

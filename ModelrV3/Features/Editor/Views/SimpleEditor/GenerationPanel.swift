@@ -26,8 +26,8 @@ struct GenerationPanel: View {
     }
 
     /// Returns stages to display, filtering out downloading if not applicable
-    private var visibleStages: [SimpleEditorViewModel.GenerationStage] {
-        SimpleEditorViewModel.GenerationStage.allCases.filter { stage in
+    private var visibleStages: [GenerationStage] {
+        GenerationStage.allCases.filter { stage in
             if stage == .downloading {
                 // Only show downloading stage if using large model and it's not downloaded
                 return viewModel.selectedPreset.usesLargeModel && !viewModel.isLargeModelDownloaded
@@ -37,9 +37,9 @@ struct GenerationPanel: View {
     }
     
     @ViewBuilder
-    private func stageProgressRow(stage: SimpleEditorViewModel.GenerationStage) -> some View {
-        let stageData = viewModel.generationStages[stage] ?? SimpleEditorViewModel.StageProgress()
-        
+    private func stageProgressRow(stage: GenerationStage) -> some View {
+        let stageData = viewModel.generationStages[stage] ?? StageProgress()
+
         HStack(spacing: AppDesign.Spacing.p12) {
             // Status indicator
             Group {
@@ -67,35 +67,39 @@ struct GenerationPanel: View {
                 }
             }
             .frame(width: 16, height: 16)
-            
+
             // Stage info
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: AppDesign.Spacing.p4) {
                     Text(stage.rawValue)
                         .font(.system(size: AppDesign.FontSize.subheadline, weight: stageData.status == .inProgress ? .semibold : .regular))
                         .foregroundColor(viewModel.stageTextColor(stageData.status))
-                    
+
+                    Spacer()
+
+                    // Show step count badge for diffusion/volumeDecoding stages
+                    if !stageData.detail.isEmpty && stageData.status == .inProgress {
+                        Text(stageData.detail)
+                            .font(.system(size: AppDesign.FontSize.caption, weight: .medium, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, AppDesign.Spacing.p6)
+                            .padding(.vertical, AppDesign.Spacing.p2)
+                            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 4))
+                    }
+
                     if stageData.status == .cancelled {
                         Text("Stopped")
                             .font(.system(size: AppDesign.FontSize.caption, weight: .bold))
                             .foregroundColor(AppDesign.warning)
                     }
                 }
-                
+
                 if stageData.status == .inProgress && stageData.progress > 0 {
                     ProgressView(value: stageData.progress)
                         .progressViewStyle(.linear)
                         .tint(AppDesign.accent)
                 }
-                
-                if !stageData.detail.isEmpty && stageData.status == .inProgress {
-                    Text(stageData.detail)
-                        .font(.system(size: AppDesign.FontSize.caption, design: .monospaced))
-                        .foregroundColor(.secondary)
-                }
             }
-            
-            Spacer()
         }
     }
     
@@ -126,7 +130,14 @@ struct GenerationPanel: View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
             // Quality Preset Section (unified model + quality dropdown)
             VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-                AppDesign.SectionLabel("Quality")
+                HStack(spacing: AppDesign.Spacing.p4) {
+                    AppDesign.SectionLabel("Quality")
+
+                    Image(systemName: "info.circle")
+                        .font(.system(size: AppDesign.FontSize.caption))
+                        .foregroundStyle(.tertiary)
+                        .help("Options marked with ↓ require downloading a larger model (~7 GB) on first use. This provides higher quality results.")
+                }
 
                 Menu {
                     // Fast model presets

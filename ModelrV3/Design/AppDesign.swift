@@ -396,6 +396,48 @@ enum AppDesign {
         }
     }
 
+    // MARK: - Step Title (Title only, no circle - used when circles are handled separately)
+
+    struct StepTitle: View {
+        let title: String
+        let isActive: Bool
+
+        var body: some View {
+            Text(title)
+                .font(.system(size: FontSize.body, weight: isActive ? .semibold : .regular))
+                .foregroundStyle(isActive ? .primary : .secondary)
+        }
+    }
+
+    // MARK: - Inline Destructive Button
+
+    struct InlineDestructiveButton: View {
+        let title: String
+        let icon: String?
+        let action: () -> Void
+
+        init(_ title: String, icon: String? = nil, action: @escaping () -> Void) {
+            self.title = title
+            self.icon = icon
+            self.action = action
+        }
+
+        var body: some View {
+            Button(action: action) {
+                HStack(spacing: Spacing.p4) {
+                    if let icon = icon {
+                        Image(systemName: icon)
+                            .font(.system(size: FontSize.caption))
+                    }
+                    Text(title)
+                        .font(.system(size: FontSize.subheadline, weight: .medium))
+                }
+                .foregroundStyle(destructive)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
     // MARK: - Styled Text Field
 
     struct StyledTextField: View {

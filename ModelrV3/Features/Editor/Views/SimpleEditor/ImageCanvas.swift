@@ -34,7 +34,9 @@ struct ImageCanvas: View {
     @ViewBuilder
     private var imageContent: some View {
         Group {
-            if viewModel.currentStep == .postProcess {
+            if viewModel.currentStep == .setup {
+                setupCanvasContent
+            } else if viewModel.currentStep == .postProcess {
                 if !viewModel.componentFiles.isEmpty {
                     // Use component viewer for highlighting when multiple components
                     ComponentModelViewerContainer(
@@ -47,12 +49,13 @@ struct ImageCanvas: View {
                     .padding(AppDesign.Spacing.p24)
                 } else if let modelURL = viewModel.currentMeshURL {
                     // Fallback to regular viewer for single component
-                    ModelViewerContainer(modelURL: modelURL)
-                        .id(modelURL)
+                    ModelViewerContainer(modelURL: modelURL, viewMode: viewModel.viewMode)
+                        .id("\(modelURL)-\(viewModel.viewMode)")
                         .padding(AppDesign.Spacing.p24)
                 }
             } else if viewModel.currentStep == .generate, let modelURL = viewModel.generated3DModelURL {
-                ModelViewerContainer(modelURL: modelURL)
+                ModelViewerContainer(modelURL: modelURL, viewMode: viewModel.viewMode)
+                    .id("\(modelURL)-\(viewModel.viewMode)")
                     .padding(AppDesign.Spacing.p24)
             } else if viewModel.currentStep == .generate, let composite = viewModel.compositeImage {
                 compositeImageView(composite)
@@ -63,7 +66,130 @@ struct ImageCanvas: View {
             }
         }
     }
-    
+
+    // MARK: - Setup Canvas Content
+
+    @ViewBuilder
+    private var setupCanvasContent: some View {
+        if viewModel.currentSetupSubStep == .chooseModel && !viewModel.setupSubStepCompleted.contains(.chooseModel) {
+            modelSelectorView
+                .onAppear {
+                    // Start environment configuration in background while user chooses model
+                    viewModel.startBackgroundEnvironmentSetup()
+                }
+        } else {
+            // Blank view during setup (tips will be added later)
+            Color.clear
+        }
+    }
+
+    @ViewBuilder
+    private var modelSelectorView: some View {
+        VStack(spacing: AppDesign.Spacing.p48) {
+            // Header
+            VStack(spacing: AppDesign.Spacing.p16) {
+                Text("Modelr")
+                    .font(.system(size: 64, weight: .bold))
+                    .tracking(-2)
+                    .foregroundStyle(.primary)
+
+                Text("Professional Image to 3D Workflow")
+                    .font(.system(size: AppDesign.FontSize.title3, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            // Model Selection
+            VStack(spacing: AppDesign.Spacing.p24) {
+                Text("Choose your 3D generation model")
+                    .font(.system(size: AppDesign.FontSize.headline, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                HStack(spacing: AppDesign.Spacing.p24) {
+                    ForEach(SetupModelChoice.allCases, id: \.self) { choice in
+                        modelChoiceCard(choice: choice, isRecommended: choice == .fast)
+                    }
+                }
+
+                // Model info
+                VStack(spacing: AppDesign.Spacing.p4) {
+                    HStack(spacing: AppDesign.Spacing.p32) {
+                        Text("Small, Fast → \(SetupModelChoice.fast.modelName)")
+                        Text("Large, Higher Quality → \(SetupModelChoice.quality.modelName)")
+                    }
+                    .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                }
+                .padding(.top, AppDesign.Spacing.p8)
+            }
+
+            // CTA
+            VStack(spacing: AppDesign.Spacing.p24) {
+                AppDesign.GlassButton("Get Started", icon: "arrow.right") {
+                    viewModel.startSetup()
+                }
+                .controlSize(.large)
+
+                HStack(spacing: AppDesign.Spacing.p8) {
+                    Image(systemName: "info.circle.fill")
+                        .font(.system(size: AppDesign.FontSize.caption))
+                    Text("Requires ~10 GB for initial download")
+                        .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                }
+                .foregroundStyle(.tertiary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private func modelChoiceCard(choice: SetupModelChoice, isRecommended: Bool) -> some View {
+        let isSelected = viewModel.selectedModelChoice == choice
+
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) {
+                viewModel.selectedModelChoice = choice
+            }
+        } label: {
+            VStack(spacing: AppDesign.Spacing.p12) {
+                HStack {
+                    if isRecommended {
+                        Text("Recommended")
+                            .font(.system(size: AppDesign.FontSize.xs, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(AppDesign.accent, in: Capsule())
+                    }
+                    Spacer()
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: AppDesign.FontSize.title3))
+                        .foregroundStyle(isSelected ? AppDesign.accent : .secondary.opacity(0.5))
+                }
+
+                VStack(spacing: AppDesign.Spacing.p4) {
+                    Text(choice.displayName)
+                        .font(.system(size: AppDesign.FontSize.headline, weight: .semibold))
+                        .foregroundStyle(.primary)
+
+                    Text(choice.downloadSize)
+                        .font(.system(size: AppDesign.FontSize.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(AppDesign.Spacing.p16)
+            .frame(width: 180)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(isSelected ? AppDesign.accent.opacity(0.1) : Color.primary.opacity(0.03))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(isSelected ? AppDesign.accent : Color.primary.opacity(0.1), lineWidth: isSelected ? 2 : 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
     @ViewBuilder
     private var breadcrumbOverlay: some View {
         VStack {
@@ -138,6 +264,9 @@ struct ImageCanvas: View {
         }
         .overlay(alignment: .bottomTrailing) {
             zoomControls
+        }
+        .overlay(alignment: .bottomLeading) {
+            toggleOriginalButton
         }
     }
     
@@ -259,7 +388,7 @@ struct ImageCanvas: View {
     
     @ViewBuilder
     private func touchupOverlays(size: CGSize) -> some View {
-        if let maskImage = viewModel.editableMaskImage {
+        if let maskImage = viewModel.editableMaskImage, !viewModel.showingOriginal {
             // Use first neon color for merged mask with 90% opacity
             let maskColor = AppDesign.neonColors[0]
 
@@ -329,6 +458,42 @@ struct ImageCanvas: View {
                 .overlay(Capsule().stroke(Color.white.opacity(0.1), lineWidth: 1))
             }
             .buttonStyle(.plain)
+            .padding(AppDesign.Spacing.p24)
+            .transition(.scale.combined(with: .opacity))
+        }
+    }
+
+    @ViewBuilder
+    private var toggleOriginalButton: some View {
+        if viewModel.currentStep == .touchup && viewModel.editableMaskImage != nil {
+            Button(action: {}) {
+                HStack(spacing: AppDesign.Spacing.p6) {
+                    Image(systemName: viewModel.showingOriginal ? "eye.slash" : "eye")
+                        .font(.system(size: AppDesign.FontSize.caption))
+                    Text(viewModel.showingOriginal ? "Showing Original" : "Hold to Compare")
+                        .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                }
+                .padding(.horizontal, AppDesign.Spacing.p12)
+                .padding(.vertical, AppDesign.Spacing.p6)
+                .background(viewModel.showingOriginal ? AnyShapeStyle(AppDesign.accent.opacity(0.2)) : AnyShapeStyle(.ultraThinMaterial))
+                .clipShape(Capsule())
+                .overlay(
+                    Capsule()
+                        .stroke(viewModel.showingOriginal ? AppDesign.accent : Color.white.opacity(0.1), lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        if !viewModel.showingOriginal {
+                            viewModel.showingOriginal = true
+                        }
+                    }
+                    .onEnded { _ in
+                        viewModel.showingOriginal = false
+                    }
+            )
             .padding(AppDesign.Spacing.p24)
             .transition(.scale.combined(with: .opacity))
         }
@@ -413,258 +578,5 @@ struct ImageCanvas: View {
         }
         
         return false
-    }
-}
-
-// MARK: - View Extension for Interactions
-extension View {
-    @ViewBuilder
-    func addInteractions(viewModel: SimpleEditorViewModel, geo: GeometryProxy, displaySize: CGSize) -> some View {
-        self
-            .overlay(
-                RightClickHandler { location in
-                    if viewModel.currentStep == .segment {
-                        let normalized = CGPoint(
-                            x: location.x / displaySize.width,
-                            y: location.y / displaySize.height
-                        )
-                        if normalized.x >= 0 && normalized.x <= 1 && normalized.y >= 0 && normalized.y <= 1 {
-                            viewModel.addPoint(at: normalized)
-                        }
-                    }
-                }
-                .frame(width: displaySize.width, height: displaySize.height)
-                .position(x: geo.size.width / 2, y: geo.size.height / 2)
-            )
-            .onTapGesture { location in
-                let imageX = (geo.size.width - displaySize.width) / 2
-                let imageY = (geo.size.height - displaySize.height) / 2
-
-                let normalized = CGPoint(
-                    x: (location.x - imageX) / displaySize.width,
-                    y: (location.y - imageY) / displaySize.height
-                )
-                guard normalized.x >= 0 && normalized.x <= 1 && normalized.y >= 0 && normalized.y <= 1 else { return }
-
-                if viewModel.currentStep == .segment {
-                    // Check if active segmentation has masks to select from
-                    let activeIndex = viewModel.activeSegmentationIndex
-                    if activeIndex < viewModel.segmentations.count && !viewModel.segmentations[activeIndex].allMasks.isEmpty {
-                        if let clickedIndex = viewModel.findMaskAtPoint(normalized, displaySize: displaySize) {
-                            let shiftHeld = NSEvent.modifierFlags.contains(.shift)
-                            withAnimation(.easeOut(duration: 0.15)) {
-                                viewModel.selectMask(at: clickedIndex, for: activeIndex, addToSelection: shiftHeld)
-                            }
-                        }
-                    }
-                } else if viewModel.currentStep == .touchup {
-                    viewModel.saveUndoState()
-                    viewModel.paintOnMask(at: normalized)
-                }
-            }
-            .onContinuousHover { phase in
-                if viewModel.currentStep == .touchup {
-                    switch phase {
-                    case .active(let location):
-                        let imageX = (geo.size.width - displaySize.width) / 2
-                        let imageY = (geo.size.height - displaySize.height) / 2
-                        
-                        let normalized = CGPoint(
-                            x: (location.x - imageX) / displaySize.width,
-                            y: (location.y - imageY) / displaySize.height
-                        )
-                        if normalized.x >= 0 && normalized.x <= 1 && normalized.y >= 0 && normalized.y <= 1 {
-                            viewModel.brushPreviewPosition = normalized
-                        } else {
-                            viewModel.brushPreviewPosition = nil
-                        }
-                    case .ended:
-                        viewModel.brushPreviewPosition = nil
-                    }
-                } else {
-                    viewModel.brushPreviewPosition = nil
-                }
-            }
-            .gesture(
-                viewModel.currentStep == .touchup ?
-                DragGesture(minimumDistance: 1)
-                    .onChanged { value in
-                        if !viewModel.isStrokeInProgress {
-                            viewModel.isStrokeInProgress = true
-                            viewModel.saveUndoState()
-                        }
-                        
-                        let imageX = (geo.size.width - displaySize.width) / 2
-                        let imageY = (geo.size.height - displaySize.height) / 2
-                        
-                        let normalized = CGPoint(
-                            x: (value.location.x - imageX) / displaySize.width,
-                            y: (value.location.y - imageY) / displaySize.height
-                        )
-                        if normalized.x >= 0 && normalized.x <= 1 && normalized.y >= 0 && normalized.y <= 1 {
-                            viewModel.brushPreviewPosition = normalized
-                            viewModel.paintOnMask(at: normalized)
-                        }
-                    }
-                    .onEnded { _ in
-                        viewModel.isStrokeInProgress = false
-                    }
-                : nil
-            )
-    }
-}
-
-// MARK: - Right Click Handler
-struct RightClickHandler: NSViewRepresentable {
-    let onRightClick: (CGPoint) -> Void
-
-    func makeNSView(context: Context) -> RightClickView {
-        let view = RightClickView()
-        view.onRightClick = onRightClick
-        return view
-    }
-
-    func updateNSView(_ nsView: RightClickView, context: Context) {
-        nsView.onRightClick = onRightClick
-    }
-
-    class RightClickView: NSView {
-        var onRightClick: ((CGPoint) -> Void)?
-        private var rightClickMonitor: Any?
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-
-            if let monitor = rightClickMonitor {
-                NSEvent.removeMonitor(monitor)
-                rightClickMonitor = nil
-            }
-
-            if window != nil {
-                rightClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { [weak self] event in
-                    guard let self = self,
-                          let window = self.window,
-                          event.window == window else {
-                        return event
-                    }
-
-                    let locationInWindow = event.locationInWindow
-                    let locationInView = self.convert(locationInWindow, from: nil)
-
-                    if self.bounds.contains(locationInView) {
-                        let flippedLocation = CGPoint(x: locationInView.x, y: self.bounds.height - locationInView.y)
-                        self.onRightClick?(flippedLocation)
-                        return nil  // Consume the event
-                    }
-                    return event
-                }
-            }
-        }
-
-        override func viewWillMove(toWindow newWindow: NSWindow?) {
-            super.viewWillMove(toWindow: newWindow)
-            if newWindow == nil, let monitor = rightClickMonitor {
-                NSEvent.removeMonitor(monitor)
-                rightClickMonitor = nil
-            }
-        }
-
-        // Return nil so left clicks pass through to SwiftUI gestures
-        override func hitTest(_ point: NSPoint) -> NSView? {
-            return nil
-        }
-    }
-}
-
-// MARK: - Scroll Wheel Zoom
-struct ScrollWheelZoomOverlay: NSViewRepresentable {
-    @Binding var zoomScale: CGFloat
-    let minZoom: CGFloat
-    let maxZoom: CGFloat
-    
-    func makeNSView(context: Context) -> ScrollWheelCaptureView {
-        let view = ScrollWheelCaptureView()
-        view.coordinator = context.coordinator
-        return view
-    }
-    
-    func updateNSView(_ nsView: ScrollWheelCaptureView, context: Context) {
-        context.coordinator.zoomScale = $zoomScale
-        context.coordinator.minZoom = minZoom
-        context.coordinator.maxZoom = maxZoom
-    }
-    
-    func makeCoordinator() -> Coordinator {
-        Coordinator(zoomScale: $zoomScale, minZoom: minZoom, maxZoom: maxZoom)
-    }
-    
-    class Coordinator {
-        var zoomScale: Binding<CGFloat>
-        var minZoom: CGFloat
-        var maxZoom: CGFloat
-        
-        init(zoomScale: Binding<CGFloat>, minZoom: CGFloat, maxZoom: CGFloat) {
-            self.zoomScale = zoomScale
-            self.minZoom = minZoom
-            self.maxZoom = maxZoom
-        }
-        
-        func handleScroll(deltaY: CGFloat) {
-            let currentScale = zoomScale.wrappedValue
-            let newScale = currentScale * (1.0 + deltaY * 0.05)
-            zoomScale.wrappedValue = max(minZoom, min(maxZoom, newScale))
-        }
-    }
-    
-    class ScrollWheelCaptureView: NSView {
-        weak var coordinator: Coordinator?
-        private var scrollMonitor: Any?
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-
-            // Remove any existing monitor
-            if let monitor = scrollMonitor {
-                NSEvent.removeMonitor(monitor)
-                scrollMonitor = nil
-            }
-
-            // Add local event monitor for scroll wheel events
-            if window != nil {
-                scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
-                    guard let self = self,
-                          let window = self.window,
-                          event.window == window else {
-                        return event
-                    }
-
-                    // Check if mouse is within our bounds
-                    let locationInWindow = event.locationInWindow
-                    let locationInView = self.convert(locationInWindow, from: nil)
-
-                    if self.bounds.contains(locationInView) {
-                        let delta = event.deltaY
-                        if abs(delta) > 0.001 {
-                            self.coordinator?.handleScroll(deltaY: delta)
-                            return nil  // Consume the event
-                        }
-                    }
-                    return event
-                }
-            }
-        }
-
-        override func viewWillMove(toWindow newWindow: NSWindow?) {
-            super.viewWillMove(toWindow: newWindow)
-            if newWindow == nil, let monitor = scrollMonitor {
-                NSEvent.removeMonitor(monitor)
-                scrollMonitor = nil
-            }
-        }
-
-        // Return nil so clicks/drags pass through to SwiftUI gestures below
-        override func hitTest(_ point: NSPoint) -> NSView? {
-            return nil
-        }
     }
 }
