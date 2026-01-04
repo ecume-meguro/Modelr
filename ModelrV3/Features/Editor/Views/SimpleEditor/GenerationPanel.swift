@@ -29,8 +29,8 @@ struct GenerationPanel: View {
     private var visibleStages: [SimpleEditorViewModel.GenerationStage] {
         SimpleEditorViewModel.GenerationStage.allCases.filter { stage in
             if stage == .downloading {
-                // Only show downloading stage if it was triggered (model needed download)
-                return viewModel.generationStages[.downloading] != nil
+                // Only show downloading stage if using large model and it's not downloaded
+                return viewModel.selectedPreset.usesLargeModel && !viewModel.isLargeModelDownloaded
             }
             return true
         }
@@ -124,85 +124,49 @@ struct GenerationPanel: View {
     @ViewBuilder
     private var generationSettingsView: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
-            // Model Selection Section
+            // Quality Preset Section (unified model + quality dropdown)
             VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-                AppDesign.SectionLabel("Model")
+                AppDesign.SectionLabel("Quality")
 
                 Menu {
-                    ForEach(SimpleEditorViewModel.Hunyuan3DModel.allCases) { model in
-                        Button {
-                            viewModel.selectedHunyuanModel = model
-                        } label: {
-                            HStack {
-                                Text(model.rawValue)
-                                if viewModel.isModelDownloaded(model) {
-                                    Text("(downloaded)")
+                    // Fast model presets
+                    Section {
+                        ForEach([GenerationPreset.extraDraft, .draft, .normal, .high, .quality], id: \.self) { preset in
+                            Button {
+                                viewModel.selectedPreset = preset
+                                viewModel.customSteps = CGFloat(preset.steps)
+                                viewModel.customResolution = CGFloat(preset.resolution)
+                            } label: {
+                                HStack {
+                                    Text(preset.rawValue)
+                                    Spacer()
+                                    Text(preset.estimatedTime)
                                         .foregroundStyle(.secondary)
                                 }
-                                Spacer()
-                                Text(model.modelSize)
-                                    .foregroundStyle(.tertiary)
                             }
                         }
                     }
-                } label: {
-                    HStack {
-                        Text(viewModel.selectedHunyuanModel.rawValue)
-                            .font(.system(size: AppDesign.FontSize.body))
-                        if viewModel.isModelDownloaded(viewModel.selectedHunyuanModel) {
-                            Text("(downloaded)")
-                                .font(.system(size: AppDesign.FontSize.caption))
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.system(size: AppDesign.FontSize.caption))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, AppDesign.Spacing.p12)
-                    .padding(.vertical, AppDesign.Spacing.p8)
-                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(Color.primary.opacity(0.15), lineWidth: 1)
-                    )
-                }
-                .buttonStyle(.plain)
 
-                Text(viewModel.selectedHunyuanModel.description)
-                    .font(.system(size: AppDesign.FontSize.caption))
-                    .foregroundStyle(.secondary)
+                    Divider()
 
-                if !viewModel.isModelDownloaded(viewModel.selectedHunyuanModel) {
-                    HStack(spacing: AppDesign.Spacing.p4) {
-                        Image(systemName: "arrow.down.circle")
-                            .font(.system(size: AppDesign.FontSize.caption))
-                            .foregroundStyle(AppDesign.warning)
-                        Text("Will download \(viewModel.selectedHunyuanModel.modelSize) on first use")
-                            .font(.system(size: AppDesign.FontSize.caption))
-                            .foregroundStyle(AppDesign.warning)
-                    }
-                }
-            }
-
-            Divider()
-
-            // Quality Preset Section
-            VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-                AppDesign.SectionLabel("Quality Preset")
-
-                Menu {
-                    ForEach(QualityPreset.allCases) { preset in
-                        Button {
-                            viewModel.selectedPreset = preset
-                            viewModel.customSteps = CGFloat(preset.steps)
-                            viewModel.customResolution = CGFloat(preset.resolution)
-                        } label: {
-                            HStack {
-                                Text(preset.rawValue)
-                                Spacer()
-                                Text(preset.estimatedTime)
-                                    .foregroundStyle(.secondary)
+                    // Large model presets (XQuality)
+                    Section {
+                        ForEach([GenerationPreset.xQuality, .xQualityHigh, .xQualityMax], id: \.self) { preset in
+                            Button {
+                                viewModel.selectedPreset = preset
+                                viewModel.customSteps = CGFloat(preset.steps)
+                                viewModel.customResolution = CGFloat(preset.resolution)
+                            } label: {
+                                HStack {
+                                    Text(preset.rawValue)
+                                    if !viewModel.isLargeModelDownloaded {
+                                        Image(systemName: "arrow.down.circle")
+                                            .foregroundStyle(.orange)
+                                    }
+                                    Spacer()
+                                    Text(preset.estimatedTime)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
                     }
@@ -210,6 +174,11 @@ struct GenerationPanel: View {
                     HStack {
                         Text(viewModel.selectedPreset.rawValue)
                             .font(.system(size: AppDesign.FontSize.body))
+                        if viewModel.selectedPreset.usesLargeModel && !viewModel.isLargeModelDownloaded {
+                            Image(systemName: "arrow.down.circle")
+                                .font(.system(size: AppDesign.FontSize.caption))
+                                .foregroundStyle(.orange)
+                        }
                         Spacer()
                         Image(systemName: "chevron.up.chevron.down")
                             .font(.system(size: AppDesign.FontSize.caption))
@@ -233,6 +202,18 @@ struct GenerationPanel: View {
                     Text(viewModel.selectedPreset.estimatedTime)
                         .font(.system(size: AppDesign.FontSize.caption, design: .monospaced))
                         .foregroundStyle(.tertiary)
+                }
+
+                // Show download warning for XQuality presets
+                if viewModel.selectedPreset.usesLargeModel && !viewModel.isLargeModelDownloaded {
+                    HStack(spacing: AppDesign.Spacing.p4) {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.system(size: AppDesign.FontSize.caption))
+                            .foregroundStyle(AppDesign.warning)
+                        Text("Will download \(viewModel.selectedPreset.downloadSize ?? "~7 GB") on first use")
+                            .font(.system(size: AppDesign.FontSize.caption))
+                            .foregroundStyle(AppDesign.warning)
+                    }
                 }
             }
 

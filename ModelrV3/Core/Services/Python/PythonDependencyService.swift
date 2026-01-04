@@ -67,11 +67,11 @@ class PythonDependencyService {
     
     private func copyResourceFiles() {
         let resources = ["sam_wrapper.py", "pyproject.toml", "hunyuan_wrapper.py", "pyproject_hunyuan.toml", "mesh_processor.py"]
-        
+
         for res in resources {
             let targetPath = appSupportDir.appendingPathComponent(res)
             var sourcePath: String?
-            
+
             if let override = resourcePathOverride {
                 sourcePath = URL(fileURLWithPath: override).deletingLastPathComponent().appendingPathComponent(res).path
             } else {
@@ -80,11 +80,11 @@ class PythonDependencyService {
                     sourcePath = Bundle.main.path(forResource: res, ofType: nil, inDirectory: "Resources")
                 }
             }
-            
+
             if let source = sourcePath {
-                if !fileManager.fileExists(atPath: targetPath.path) {
-                    try? fileManager.copyItem(at: URL(fileURLWithPath: source), to: targetPath)
-                }
+                // Always overwrite Python scripts to ensure updates are applied
+                try? fileManager.removeItem(at: targetPath)
+                try? fileManager.copyItem(at: URL(fileURLWithPath: source), to: targetPath)
             }
         }
     }

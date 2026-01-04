@@ -110,11 +110,11 @@ def load_pipeline(model_variant: str = "std", device: str = "mps"):
         from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
 
         repo_map = {
-            "mini": ("tencent/Hunyuan3D-2mini", "hunyuan3d-dit-v2-mini"),
-            "std": ("tencent/Hunyuan3D-2.1", "hunyuan3d-dit-v2-1"),
+            "mini": ("tencent/Hunyuan3D-2mini", "hunyuan3d-dit-v2-mini", True),   # has safetensors
+            "std": ("tencent/Hunyuan3D-2.1", "hunyuan3d-dit-v2-1", False),        # only has .ckpt
         }
 
-        repo_id, subfolder = repo_map.get(model_variant, repo_map["std"])
+        repo_id, subfolder, use_safetensors = repo_map.get(model_variant, repo_map["std"])
 
         log_info(f"Loading Hunyuan3D pipeline: {repo_id}/{subfolder}")
 
@@ -122,7 +122,7 @@ def load_pipeline(model_variant: str = "std", device: str = "mps"):
             repo_id,
             subfolder=subfolder,
             device=device,
-            use_safetensors=True,
+            use_safetensors=use_safetensors,
             cache_dir=str(HUNYUAN_CACHE_DIR),
         )
 

@@ -29,22 +29,42 @@ enum WorkflowStep: Int, CaseIterable, Comparable {
     }
 }
 
-enum QualityPreset: String, CaseIterable, Identifiable {
+enum GenerationPreset: String, CaseIterable, Identifiable {
+    // Fast model (Hunyuan3D-2 Mini)
     case extraDraft = "Extra Draft"
     case draft = "Draft"
     case normal = "Normal"
-    case optimal = "Optimal"
-    case fine = "Fine"
+    case high = "High"
+    case quality = "Quality"
+    // Quality model (Hunyuan3D-2.1) - requires additional download
+    case xQuality = "XQuality"
+    case xQualityHigh = "XQuality High"
+    case xQualityMax = "XQuality Max"
 
     var id: String { rawValue }
+
+    /// Whether this preset uses the large model (requires extra download)
+    var usesLargeModel: Bool {
+        switch self {
+        case .extraDraft, .draft, .normal, .high, .quality:
+            return false
+        case .xQuality, .xQualityHigh, .xQualityMax:
+            return true
+        }
+    }
+
+    /// The model variant to use ("mini" or "std")
+    var modelVariant: String {
+        usesLargeModel ? "std" : "mini"
+    }
 
     var steps: Int {
         switch self {
         case .extraDraft: return 15
         case .draft: return 25
-        case .normal: return 35
-        case .optimal: return 50
-        case .fine: return 75
+        case .normal, .xQuality: return 35
+        case .high, .xQualityHigh: return 50
+        case .quality, .xQualityMax: return 75
         }
     }
 
@@ -52,19 +72,22 @@ enum QualityPreset: String, CaseIterable, Identifiable {
         switch self {
         case .extraDraft: return 128
         case .draft: return 192
-        case .normal: return 256
-        case .optimal: return 384
-        case .fine: return 512
+        case .normal, .xQuality: return 256
+        case .high, .xQualityHigh: return 384
+        case .quality, .xQualityMax: return 512
         }
     }
 
     var description: String {
         switch self {
-        case .extraDraft: return "Fastest, low detail"
+        case .extraDraft: return "Fastest preview"
         case .draft: return "Quick preview"
         case .normal: return "Balanced"
-        case .optimal: return "High quality"
-        case .fine: return "Best quality, slower"
+        case .high: return "High quality"
+        case .quality: return "Best fast model"
+        case .xQuality: return "2.1 model, balanced"
+        case .xQualityHigh: return "2.1 model, high quality"
+        case .xQualityMax: return "2.1 model, maximum quality"
         }
     }
 
@@ -73,11 +96,21 @@ enum QualityPreset: String, CaseIterable, Identifiable {
         case .extraDraft: return "~30s"
         case .draft: return "~1m"
         case .normal: return "~2m"
-        case .optimal: return "~4m"
-        case .fine: return "~8m"
+        case .high: return "~4m"
+        case .quality: return "~6m"
+        case .xQuality: return "~3m"
+        case .xQualityHigh: return "~5m"
+        case .xQualityMax: return "~10m"
         }
     }
+
+    var downloadSize: String? {
+        usesLargeModel ? "~7 GB" : nil
+    }
 }
+
+// Keep for backwards compatibility
+typealias QualityPreset = GenerationPreset
 
 struct GenerationProgress {
     var stage: String = ""

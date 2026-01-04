@@ -112,8 +112,7 @@ class SimpleEditorViewModel: ObservableObject {
     @Published var customSteps: CGFloat = 35
     @Published var customResolution: CGFloat = 256
     @Published var generationStages: [GenerationStage: StageProgress] = [:]
-    @Published var selectedHunyuanModel: Hunyuan3DModel = .quality
-    @Published var downloadedModels: Set<Hunyuan3DModel> = []
+    @Published var isLargeModelDownloaded: Bool = false
     
     // MARK: - Warning Dialogs
     @Published var showBackWarning: Bool = false
@@ -169,34 +168,6 @@ class SimpleEditorViewModel: ObservableObject {
     @Published var isDragging = false
     
     // MARK: - Generation Types
-    enum Hunyuan3DModel: String, CaseIterable, Identifiable {
-        case fast = "Fast"
-        case quality = "Quality"
-
-        var id: String { rawValue }
-
-        var modelVariant: String {
-            switch self {
-            case .fast: return "mini"
-            case .quality: return "std"
-            }
-        }
-
-        var description: String {
-            switch self {
-            case .fast: return "Hunyuan3D-2 Mini — Faster generation"
-            case .quality: return "Hunyuan3D-2.1 — Higher quality results"
-            }
-        }
-
-        var modelSize: String {
-            switch self {
-            case .fast: return "~2 GB"
-            case .quality: return "~4 GB"
-            }
-        }
-    }
-
     enum GenerationStage: String, CaseIterable {
         case downloading = "Downloading Model"
         case extracting = "Extracting"
@@ -223,23 +194,11 @@ class SimpleEditorViewModel: ObservableObject {
     // MARK: - Initialization
     init(env: PythonEnvironment) {
         self.env = env
-        checkDownloadedModels()
-        loadSavedModelPreference()
+        checkLargeModelDownloaded()
     }
 
-    /// Load the model preference saved during setup
-    private func loadSavedModelPreference() {
-        if let savedVariant = UserDefaults.standard.string(forKey: "SelectedHunyuanModel") {
-            if savedVariant == "mini" {
-                selectedHunyuanModel = .fast
-            } else if savedVariant == "std" {
-                selectedHunyuanModel = .quality
-            }
-        }
-    }
-
-    /// Check which Hunyuan models are already downloaded
-    func checkDownloadedModels() {
+    /// Check if the large model (Hunyuan3D-2.1) is downloaded
+    func checkLargeModelDownloaded() {
         let fileManager = FileManager.default
         guard let appSupportDir = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
 
@@ -248,32 +207,16 @@ class SimpleEditorViewModel: ObservableObject {
             .appendingPathComponent("Hunyuan3D")
             .appendingPathComponent("hf_cache")
 
-        var downloaded: Set<Hunyuan3DModel> = []
-
-        // Check for quality model (Hunyuan3D-2.1)
-        let qualityModelPath = hunyuanCacheDir.appendingPathComponent("models--tencent--Hunyuan3D-2.1")
-        if fileManager.fileExists(atPath: qualityModelPath.path) {
-            // Check if there are actual model files (not just empty dir)
-            if let contents = try? fileManager.contentsOfDirectory(atPath: qualityModelPath.path),
+        // Check for Hunyuan3D-2.1 model
+        let largeModelPath = hunyuanCacheDir.appendingPathComponent("models--tencent--Hunyuan3D-2.1")
+        if fileManager.fileExists(atPath: largeModelPath.path) {
+            if let contents = try? fileManager.contentsOfDirectory(atPath: largeModelPath.path),
                contents.contains("snapshots") || contents.contains("blobs") {
-                downloaded.insert(.quality)
+                isLargeModelDownloaded = true
+                return
             }
         }
-
-        // Check for fast model (Hunyuan3D-2mini)
-        let fastModelPath = hunyuanCacheDir.appendingPathComponent("models--tencent--Hunyuan3D-2mini")
-        if fileManager.fileExists(atPath: fastModelPath.path) {
-            if let contents = try? fileManager.contentsOfDirectory(atPath: fastModelPath.path),
-               contents.contains("snapshots") || contents.contains("blobs") {
-                downloaded.insert(.fast)
-            }
-        }
-
-        downloadedModels = downloaded
-    }
-
-    func isModelDownloaded(_ model: Hunyuan3DModel) -> Bool {
-        downloadedModels.contains(model)
+        isLargeModelDownloaded = false
     }
     
     // MARK: - Image Loading
@@ -931,7 +874,7 @@ class SimpleEditorViewModel: ObservableObject {
                 maskPath: tempMaskPath,
                 steps: Int(customSteps),
                 resolution: Int(customResolution),
-                modelVariant: selectedHunyuanModel.modelVariant,
+                modelVariant: selectedPreset.modelVariant,
                 progress: { [weak self] status in
                     Task { @MainActor in
                         self?.generationStatus = status
@@ -948,8 +891,8 @@ class SimpleEditorViewModel: ObservableObject {
                                 self?.generationDuration = Date().timeIntervalSince(startTime)
                             }
                             self?.markAllStagesCompleted()
-                            // Update downloaded models list after successful generation
-                            self?.checkDownloadedModels()
+                            // Update large model status after successful generation
+                            self?.checkLargeModelDownloaded()
                         case .failure(let error):
                             print("[Gen] Error: \(error)")
                         }
@@ -967,8 +910,8 @@ class SimpleEditorViewModel: ObservableObject {
     
     private func updateGenerationStages(status: String) {
         if status.contains("Downloading") || status.contains("Fetching") {
-            // Show downloading stage only if model wasn't already downloaded
-            if !isModelDownloaded(selectedHunyuanModel) {
+            // Show downloading stage if using large model that wasn't downloaded
+            if selectedPreset.usesLargeModel && !isLargeModelDownloaded {
                 let (progress, detail) = parseDownloadProgress(status)
                 generationStages[.downloading] = StageProgress(status: .inProgress, progress: progress, detail: detail)
             }
