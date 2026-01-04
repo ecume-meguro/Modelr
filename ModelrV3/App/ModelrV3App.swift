@@ -38,7 +38,7 @@ struct RootView: View {
     var body: some View {
         Group {
             if isSetupComplete {
-                ContentViewSimple()
+                SimpleEditorView()
             } else {
                 SetupView(isSetupComplete: $isSetupComplete)
             }

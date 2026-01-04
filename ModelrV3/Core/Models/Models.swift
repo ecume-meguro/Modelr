@@ -480,6 +480,8 @@ struct SAMResponse: Codable {
     let ready: Bool?
     let score: Double?        // Legacy field, use scores instead
     let confidenceMapPath: String?  // Per-pixel confidence heatmap
+    let width: Int?           // Image width from set_image
+    let height: Int?          // Image height from set_image
 
     var primaryMaskPath: String? {
         return masks?.first ?? maskPath
