@@ -23,6 +23,8 @@ struct ContentViewSimple: View {
     @State private var brushPreviewPosition: CGPoint? = nil
     @State private var showBackWarning: Bool = false
     @State private var showDiscardModelWarning: Bool = false
+    @State private var showDiscardImageWarning: Bool = false
+    @State private var showStartOverWarning: Bool = false
     @State private var maskHistory: [NSImage] = []  // Undo stack
     @State private var isStrokeInProgress: Bool = false
 
@@ -54,7 +56,6 @@ struct ContentViewSimple: View {
 
     // Multi-stage generation progress
     @State private var generationStages: [GenerationStage: StageProgress] = [:]
-    @State private var generationWasCancelled = false
 
     // Generation stage definitions
     enum GenerationStage: String, CaseIterable {
@@ -687,43 +688,8 @@ struct ContentViewSimple: View {
                             ForEach(GenerationStage.allCases, id: \.self) { stage in
                                 stageProgressRow(stage: stage)
                             }
-
-                            // Stop button
-                            Button(action: { stopGeneration() }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "stop.fill")
-                                        .font(.system(size: 8))
-                                    Text("Stop")
-                                        .font(.caption)
-                                }
-                                .foregroundColor(.red)
-                            }
-                            .buttonStyle(.plain)
-                            .padding(.top, 4)
                         }
                         .padding(.vertical, 4)
-                    } else if generationWasCancelled {
-                        // Cancelled state
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(.orange)
-                                Text("Generation Stopped")
-                                    .font(.caption)
-                                    .fontWeight(.medium)
-                            }
-
-                            Button(action: { retryGeneration() }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "arrow.clockwise")
-                                    Text("Try Again")
-                                }
-                                .font(.caption)
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundColor(.accentColor)
-                        }
                     } else if generated3DModelURL != nil {
                         // Completed state
                         VStack(alignment: .leading, spacing: 8) {
@@ -1029,6 +995,15 @@ struct ContentViewSimple: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
+                } else if isGenerating {
+                    // Stop button - styled like back button but red
+                    Button(action: { stopGeneration() }) {
+                        Text("Stop Generation")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .foregroundColor(.red)
+                    .tint(.red)
                 }
             }
 
@@ -1068,11 +1043,19 @@ struct ContentViewSimple: View {
                 } message: {
                     Text("The generated 3D model will be discarded. You can regenerate after making changes.")
                 }
+                .alert("Discard Image?", isPresented: $showDiscardImageWarning) {
+                    Button("Cancel", role: .cancel) { }
+                    Button("Discard", role: .destructive) {
+                        clearAll()
+                    }
+                } message: {
+                    Text("The current image will be discarded. You'll need to load a new image to continue.")
+                }
             }
 
             // Start Over button (red) - only show if we have an image
             if inputImage != nil {
-                Button(action: { clearAll() }) {
+                Button(action: { showStartOverWarning = true }) {
                     Text("Start Over")
                         .foregroundColor(.red)
                         .frame(maxWidth: .infinity)
@@ -1080,6 +1063,14 @@ struct ContentViewSimple: View {
                 .buttonStyle(.bordered)
                 .tint(.red)
                 .disabled(isGenerating)
+                .alert("Start Over?", isPresented: $showStartOverWarning) {
+                    Button("Cancel", role: .cancel) { }
+                    Button("Start Over", role: .destructive) {
+                        clearAll()
+                    }
+                } message: {
+                    Text("This will discard your current image and all progress. You'll need to load a new image to continue.")
+                }
             }
         }
     }
@@ -1090,7 +1081,8 @@ struct ContentViewSimple: View {
         case .input:
             break
         case .segment:
-            goBack()
+            // Warn about discarding the image
+            showDiscardImageWarning = true
         case .touchup:
             // Warn about losing touchup changes
             showBackWarning = true
@@ -1766,7 +1758,6 @@ struct ContentViewSimple: View {
         }
 
         isGenerating = true
-        generationWasCancelled = false
         generationStatus = "Starting..."
         generationStartTime = Date()
         generationDuration = nil
@@ -1819,9 +1810,9 @@ struct ContentViewSimple: View {
                             let errorMsg = error.localizedDescription
                             // Check if this was a cancellation
                             if errorMsg.contains("cancelled") || self.env.isGenerationCancelled {
-                                self.generationWasCancelled = true
-                                // Mark current in-progress stage as cancelled, others as failed
-                                self.markStagesAsCancelled()
+                                // Reset to pre-generation state so user can adjust settings
+                                self.generationStages = [:]
+                                self.generationStatus = ""
                             } else {
                                 self.generationStatus = "Error: \(errorMsg)"
                             }
@@ -1829,6 +1820,26 @@ struct ContentViewSimple: View {
                     }
                 }
             )
+        }
+    }
+
+    /// Stop the current 3D generation
+    private func stopGeneration() {
+        env.cancelGeneration()
+        // The completion handler will be called with a cancellation error
+    }
+
+    /// Get text color for a stage status
+    private func stageTextColor(_ status: StageStatus) -> Color {
+        switch status {
+        case .pending:
+            return .secondary
+        case .inProgress, .completed:
+            return .primary
+        case .cancelled:
+            return .orange
+        case .failed:
+            return .secondary
         }
     }
 

@@ -1,283 +1,541 @@
 import SwiftUI
 
-/// First-run setup view with slideshow and progress tracking
+// MARK: - Design System
+
+private enum SetupDesign {
+    // Warm industrial palette - amber/gold accent
+    static let accentPrimary = Color(red: 1.0, green: 0.72, blue: 0.25)      // Amber gold
+    static let accentSecondary = Color(red: 0.95, green: 0.55, blue: 0.15)   // Deep amber
+    static let surfaceDark = Color(red: 0.06, green: 0.06, blue: 0.08)       // Near black
+    static let surfaceMid = Color(red: 0.10, green: 0.10, blue: 0.12)        // Dark gray
+    static let textPrimary = Color(red: 0.95, green: 0.95, blue: 0.92)       // Warm white
+    static let textSecondary = Color(red: 0.55, green: 0.55, blue: 0.52)     // Muted
+    static let gridLine = Color.white.opacity(0.03)
+    static let wireframe = Color(red: 0.35, green: 0.35, blue: 0.38)
+}
+
+// MARK: - Setup View
+
 struct SetupView: View {
     @StateObject private var setupManager = SetupManager()
     @Binding var isSetupComplete: Bool
 
+    @State private var hasAppeared = false
+    @State private var cubeRotation: Double = 0
+
     var body: some View {
         ZStack {
-            // Background gradient
-            LinearGradient(
+            // Layered background
+            backgroundStack
+
+            // Content
+            if !setupManager.setupStarted {
+                WelcomeScreen(
+                    hasAppeared: hasAppeared,
+                    cubeRotation: cubeRotation,
+                    onStart: { setupManager.startSetup() }
+                )
+            } else {
+                SetupProgressScreen(
+                    setupManager: setupManager,
+                    cubeRotation: cubeRotation,
+                    onComplete: {
+                        withAnimation(.easeInOut(duration: 0.4)) {
+                            isSetupComplete = true
+                        }
+                    }
+                )
+            }
+        }
+        .frame(minWidth: 800, minHeight: 600)
+        .onAppear {
+            withAnimation(.easeOut(duration: 1.2)) {
+                hasAppeared = true
+            }
+            // Continuous cube rotation
+            withAnimation(.linear(duration: 20).repeatForever(autoreverses: false)) {
+                cubeRotation = 360
+            }
+        }
+    }
+
+    // MARK: - Background
+
+    private var backgroundStack: some View {
+        ZStack {
+            // Base
+            SetupDesign.surfaceDark
+                .ignoresSafeArea()
+
+            // Subtle radial gradient from center
+            RadialGradient(
                 colors: [
-                    Color(red: 0.05, green: 0.05, blue: 0.1),
-                    Color(red: 0.1, green: 0.08, blue: 0.15)
+                    SetupDesign.surfaceMid.opacity(0.8),
+                    SetupDesign.surfaceDark
                 ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
+                center: .center,
+                startRadius: 0,
+                endRadius: 600
             )
             .ignoresSafeArea()
 
-            if !setupManager.setupStarted {
-                welcomeView
-            } else {
-                setupProgressView
-            }
+            // Technical grid
+            TechnicalGrid()
+                .opacity(hasAppeared ? 1 : 0)
+
+            // Noise texture overlay
+            NoiseOverlay()
+                .opacity(0.03)
+                .blendMode(.overlay)
         }
-        .frame(minWidth: 700, minHeight: 550)
-    }
-
-    // MARK: - Welcome View
-
-    private var welcomeView: some View {
-        VStack(spacing: 32) {
-            Spacer()
-
-            // App icon/logo
-            ZStack {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [.blue, .purple],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 100, height: 100)
-
-                Image(systemName: "cube.transparent.fill")
-                    .font(.system(size: 50))
-                    .foregroundColor(.white)
-            }
-
-            // Title
-            VStack(spacing: 8) {
-                Text("Welcome to Modelr")
-                    .font(.system(size: 36, weight: .bold, design: .rounded))
-                    .foregroundColor(.white)
-
-                Text("Transform 2D images into 3D models")
-                    .font(.title3)
-                    .foregroundColor(.white.opacity(0.7))
-            }
-
-            // Features list
-            VStack(alignment: .leading, spacing: 16) {
-                FeatureRow(icon: "wand.and.stars", title: "AI-Powered Segmentation", description: "Automatically extract objects from images")
-                FeatureRow(icon: "paintbrush.pointed", title: "Precision Touchup", description: "Refine masks with intuitive brush tools")
-                FeatureRow(icon: "cube", title: "3D Generation", description: "Convert to high-quality 3D models")
-            }
-            .padding(.vertical, 24)
-
-            Spacer()
-
-            // Setup info
-            VStack(spacing: 8) {
-                Text("First-time setup will download AI models (~4 GB)")
-                    .font(.caption)
-                    .foregroundColor(.white.opacity(0.5))
-
-                Text("Files will be stored in ~/Library/Application Support/ModelrV3")
-                    .font(.caption)
-                    .foregroundColor(.white.opacity(0.4))
-            }
-
-            // Get Started button
-            Button(action: { setupManager.startSetup() }) {
-                HStack(spacing: 8) {
-                    Text("Get Started")
-                        .font(.headline)
-                    Image(systemName: "arrow.right")
-                }
-                .foregroundColor(.white)
-                .padding(.horizontal, 32)
-                .padding(.vertical, 14)
-                .background(
-                    LinearGradient(
-                        colors: [.blue, .purple],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
-                .cornerRadius(12)
-            }
-            .buttonStyle(.plain)
-            .padding(.bottom, 40)
-        }
-        .padding(.horizontal, 60)
-    }
-
-    // MARK: - Setup Progress View
-
-    private var setupProgressView: some View {
-        VStack(spacing: 0) {
-            // Top: Slideshow
-            SlideshowView()
-                .frame(maxHeight: .infinity)
-
-            Divider()
-                .background(Color.white.opacity(0.2))
-
-            // Bottom: Progress
-            setupProgressPanel
-                .frame(height: 200)
-                .background(Color.black.opacity(0.3))
-        }
-        .onChange(of: setupManager.isComplete) { _, complete in
-            if complete {
-                // Small delay before transitioning
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                    withAnimation {
-                        isSetupComplete = true
-                    }
-                }
-            }
-        }
-    }
-
-    private var setupProgressPanel: some View {
-        VStack(spacing: 16) {
-            // Current stage
-            HStack {
-                if setupManager.isComplete {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
-                        .font(.title2)
-                } else {
-                    ProgressView()
-                        .scaleEffect(0.8)
-                }
-
-                Text(setupManager.currentStage)
-                    .font(.headline)
-                    .foregroundColor(.white)
-
-                Spacer()
-            }
-
-            // Progress bar
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(Color.white.opacity(0.1))
-                        .frame(height: 8)
-
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(
-                            LinearGradient(
-                                colors: [.blue, .purple],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .frame(width: geo.size.width * setupManager.overallProgress, height: 8)
-                        .animation(.easeInOut(duration: 0.3), value: setupManager.overallProgress)
-                }
-            }
-            .frame(height: 8)
-
-            // Stats grid
-            HStack(spacing: 32) {
-                StatItem(title: "Downloaded", value: setupManager.downloadedSize)
-                StatItem(title: "Speed", value: setupManager.downloadSpeed)
-                StatItem(title: "Elapsed", value: setupManager.elapsedTime)
-                if !setupManager.isComplete {
-                    StatItem(title: "Remaining", value: setupManager.estimatedRemaining)
-                }
-            }
-
-            // Detailed status
-            Text(setupManager.detailedStatus)
-                .font(.caption)
-                .foregroundColor(.white.opacity(0.5))
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(24)
     }
 }
 
-// MARK: - Feature Row
+// MARK: - Welcome Screen
 
-struct FeatureRow: View {
-    let icon: String
+private struct WelcomeScreen: View {
+    let hasAppeared: Bool
+    let cubeRotation: Double
+    let onStart: () -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            // Left: Visual
+            leftPanel
+                .frame(maxWidth: .infinity)
+
+            // Right: Content
+            rightPanel
+                .frame(width: 380)
+                .padding(.trailing, 60)
+        }
+    }
+
+    private var leftPanel: some View {
+        ZStack {
+            // Wireframe cube hero
+            WireframeCubeView(rotation: cubeRotation)
+                .frame(width: 280, height: 280)
+                .offset(x: hasAppeared ? 0 : -50, y: 0)
+                .opacity(hasAppeared ? 1 : 0)
+
+            // Floating geometric accents
+            GeometricAccents(hasAppeared: hasAppeared)
+        }
+    }
+
+    private var rightPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Spacer()
+
+            // Version tag
+            versionTag
+                .offset(y: hasAppeared ? 0 : 20)
+                .opacity(hasAppeared ? 1 : 0)
+                .animation(.easeOut(duration: 0.8).delay(0.2), value: hasAppeared)
+
+            Spacer().frame(height: 20)
+
+            // Title
+            titleSection
+                .offset(y: hasAppeared ? 0 : 30)
+                .opacity(hasAppeared ? 1 : 0)
+                .animation(.easeOut(duration: 0.8).delay(0.3), value: hasAppeared)
+
+            Spacer().frame(height: 40)
+
+            // Features
+            featuresSection
+                .offset(y: hasAppeared ? 0 : 30)
+                .opacity(hasAppeared ? 1 : 0)
+                .animation(.easeOut(duration: 0.8).delay(0.5), value: hasAppeared)
+
+            Spacer().frame(height: 50)
+
+            // CTA
+            ctaSection
+                .offset(y: hasAppeared ? 0 : 30)
+                .opacity(hasAppeared ? 1 : 0)
+                .animation(.easeOut(duration: 0.8).delay(0.7), value: hasAppeared)
+
+            Spacer()
+        }
+    }
+
+    private var versionTag: some View {
+        HStack(spacing: 8) {
+            Rectangle()
+                .fill(SetupDesign.accentPrimary)
+                .frame(width: 3, height: 14)
+
+            Text("v3.0")
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundColor(SetupDesign.textSecondary)
+                .tracking(2)
+        }
+    }
+
+    private var titleSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("MODELR")
+                .font(.system(size: 48, weight: .black, design: .default))
+                .foregroundColor(SetupDesign.textPrimary)
+                .tracking(4)
+
+            Text("Easy Image to 3D")
+                .font(.system(size: 20, weight: .medium))
+                .foregroundColor(SetupDesign.textSecondary)
+
+            Text("Open Source SOTA Models")
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundColor(SetupDesign.accentPrimary.opacity(0.8))
+        }
+    }
+
+    private var featuresSection: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            FeatureItem(
+                number: "01",
+                title: "SEGMENT",
+                description: "Extract objects with SAM2"
+            )
+            FeatureItem(
+                number: "02",
+                title: "GENERATE",
+                description: "SOTA open source 3D with Hunyuan3D"
+            )
+        }
+    }
+
+    private var ctaSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Button(action: onStart) {
+                HStack(spacing: 12) {
+                    Text("Get Started")
+                        .font(.system(size: 14, weight: .semibold))
+
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundColor(SetupDesign.surfaceDark)
+                .padding(.horizontal, 32)
+                .padding(.vertical, 16)
+                .background(
+                    ZStack {
+                        // Solid background
+                        SetupDesign.accentPrimary
+
+                        // Subtle gradient overlay
+                        LinearGradient(
+                            colors: [.white.opacity(0.2), .clear],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    }
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 2))
+                .shadow(color: SetupDesign.accentPrimary.opacity(0.4), radius: 20, y: 8)
+            }
+            .buttonStyle(.plain)
+
+            // Setup info
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "cable.connector")
+                        .font(.system(size: 10))
+                    Text("Ethernet recommended")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundColor(SetupDesign.accentPrimary.opacity(0.9))
+
+                Text("Downloads ~15 GB of AI models")
+                    .font(.system(size: 10))
+                    .foregroundColor(SetupDesign.textSecondary)
+            }
+        }
+    }
+}
+
+// MARK: - Feature Item
+
+private struct FeatureItem: View {
+    let number: String
     let title: String
     let description: String
 
     var body: some View {
-        HStack(spacing: 16) {
-            Image(systemName: icon)
-                .font(.title2)
-                .foregroundColor(.blue)
-                .frame(width: 32)
+        HStack(alignment: .top, spacing: 16) {
+            Text(number)
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundColor(SetupDesign.accentPrimary)
+                .frame(width: 20, alignment: .trailing)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundColor(.white)
+                    .font(.system(size: 12, weight: .semibold, design: .default))
+                    .foregroundColor(SetupDesign.textPrimary)
+                    .tracking(1)
+
                 Text(description)
-                    .font(.caption)
-                    .foregroundColor(.white.opacity(0.6))
+                    .font(.system(size: 11, design: .default))
+                    .foregroundColor(SetupDesign.textSecondary)
             }
         }
     }
 }
 
-// MARK: - Stat Item
+// MARK: - Setup Progress Screen
 
-struct StatItem: View {
-    let title: String
-    let value: String
+private struct SetupProgressScreen: View {
+    @ObservedObject var setupManager: SetupManager
+    let cubeRotation: Double
+    let onComplete: () -> Void
+
+    @State private var contentAppeared = false
 
     var body: some View {
-        VStack(spacing: 4) {
-            Text(value)
-                .font(.system(.body, design: .monospaced))
-                .fontWeight(.medium)
-                .foregroundColor(.white)
-            Text(title)
-                .font(.caption2)
-                .foregroundColor(.white.opacity(0.5))
+        HStack(spacing: 0) {
+            // Left: Slideshow
+            slideshowPanel
+                .frame(maxWidth: .infinity)
+
+            // Right: Progress
+            progressPanel
+                .frame(width: 400)
+        }
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.6)) {
+                contentAppeared = true
+            }
+        }
+    }
+
+    private var slideshowPanel: some View {
+        ZStack {
+            // Subtle rotating cube in background
+            WireframeCubeView(rotation: cubeRotation)
+                .frame(width: 200, height: 200)
+                .opacity(0.15)
+
+            // Slideshow content
+            TechnicalSlideshow()
+        }
+        .opacity(contentAppeared ? 1 : 0)
+    }
+
+    private var progressPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Spacer().frame(height: 60)
+
+            // Header
+            headerSection
+
+            Spacer().frame(height: 40)
+
+            // Progress section
+            progressSection
+
+            Spacer().frame(height: 30)
+
+            // Stats
+            statsSection
+
+            Spacer()
+
+            // Status
+            statusSection
+
+            Spacer().frame(height: 60)
+        }
+        .padding(.horizontal, 48)
+        .background(
+            Rectangle()
+                .fill(SetupDesign.surfaceDark.opacity(0.5))
+                .overlay(
+                    Rectangle()
+                        .fill(
+                            LinearGradient(
+                                colors: [SetupDesign.surfaceMid.opacity(0.3), .clear],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                )
+        )
+        .opacity(contentAppeared ? 1 : 0)
+        .offset(x: contentAppeared ? 0 : 50)
+        .animation(.easeOut(duration: 0.8), value: contentAppeared)
+    }
+
+    private var headerSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("SETUP")
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundColor(SetupDesign.accentPrimary)
+                .tracking(3)
+
+            Text(setupManager.isComplete ? "Complete" : "Installing")
+                .font(.system(size: 32, weight: .bold))
+                .foregroundColor(SetupDesign.textPrimary)
+        }
+    }
+
+    private var progressSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Current stage
+            HStack(spacing: 12) {
+                if setupManager.isComplete {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(SetupDesign.surfaceDark)
+                        .frame(width: 20, height: 20)
+                        .background(SetupDesign.accentPrimary)
+                        .clipShape(Circle())
+                } else {
+                    ProgressView()
+                        .scaleEffect(0.6)
+                        .tint(SetupDesign.accentPrimary)
+                }
+
+                Text(setupManager.currentStage)
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundColor(SetupDesign.textPrimary)
+            }
+
+            // Progress bar
+            DimensionalProgressBar(progress: setupManager.overallProgress)
+
+            // Begin button when complete
+            if setupManager.isComplete {
+                Button(action: onComplete) {
+                    HStack(spacing: 10) {
+                        Text("Begin")
+                            .font(.system(size: 14, weight: .semibold))
+
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundColor(SetupDesign.surfaceDark)
+                    .padding(.horizontal, 28)
+                    .padding(.vertical, 14)
+                    .background(SetupDesign.accentPrimary)
+                    .clipShape(RoundedRectangle(cornerRadius: 2))
+                    .shadow(color: SetupDesign.accentPrimary.opacity(0.4), radius: 16, y: 6)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 8)
+                .transition(.opacity.combined(with: .offset(y: 10)))
+                .animation(.easeOut(duration: 0.4), value: setupManager.isComplete)
+            }
+        }
+    }
+
+    private var statsSection: some View {
+        HStack(spacing: 32) {
+            StatBlock(label: "DOWNLOADED", value: setupManager.downloadedSize)
+            StatBlock(label: "ELAPSED", value: setupManager.elapsedTime)
+        }
+    }
+
+    private var statusSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Rectangle()
+                .fill(SetupDesign.gridLine)
+                .frame(height: 1)
+
+            Text(setupManager.detailedStatus)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(SetupDesign.textSecondary)
+                .lineLimit(2)
         }
     }
 }
 
-// MARK: - Slideshow View
+// MARK: - Stat Block
 
-struct SlideshowView: View {
+private struct StatBlock: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundColor(SetupDesign.textSecondary)
+                .tracking(1)
+
+            Text(value)
+                .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                .foregroundColor(SetupDesign.textPrimary)
+        }
+    }
+}
+
+// MARK: - Dimensional Progress Bar
+
+private struct DimensionalProgressBar: View {
+    let progress: Double
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                // Track with depth
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(SetupDesign.surfaceMid)
+                    .frame(height: 6)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 1)
+                            .stroke(SetupDesign.gridLine, lineWidth: 1)
+                    )
+
+                // Fill with glow
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(
+                        LinearGradient(
+                            colors: [SetupDesign.accentSecondary, SetupDesign.accentPrimary],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: max(0, geo.size.width * progress), height: 6)
+                    .shadow(color: SetupDesign.accentPrimary.opacity(0.5), radius: 8, y: 0)
+                    .animation(.easeInOut(duration: 0.4), value: progress)
+            }
+        }
+        .frame(height: 6)
+    }
+}
+
+// MARK: - Technical Slideshow
+
+private struct TechnicalSlideshow: View {
     @State private var currentSlide = 0
-    private let timer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
+    private let timer = Timer.publish(every: 6, on: .main, in: .common).autoconnect()
 
-    private let slides: [SlideContent] = [
-        SlideContent(
-            title: "1. Load Your Image",
-            description: "Drag and drop any image, or click to browse. Modelr supports PNG, JPEG, and other common formats.",
-            icon: "photo.on.rectangle",
-            gradient: [.blue, .cyan]
+    private let slides: [TechSlide] = [
+        TechSlide(
+            step: "01",
+            title: "LOAD",
+            subtitle: "Drop in any image",
+            detail: "PNG, JPEG, WebP"
         ),
-        SlideContent(
-            title: "2. Segment the Object",
-            description: "Type what you're looking for, or right-click directly on the object. Our AI will identify and highlight it.",
-            icon: "wand.and.stars",
-            gradient: [.purple, .pink]
+        TechSlide(
+            step: "02",
+            title: "SEGMENT",
+            subtitle: "Click to extract objects",
+            detail: "Powered by SAM2"
         ),
-        SlideContent(
-            title: "3. Refine the Mask",
-            description: "Use the brush tools to add or remove areas. Zoom in for precision work on fine details.",
-            icon: "paintbrush.pointed.fill",
-            gradient: [.orange, .red]
+        TechSlide(
+            step: "03",
+            title: "GENERATE",
+            subtitle: "One click to 3D",
+            detail: "Powered by Hunyuan3D"
         ),
-        SlideContent(
-            title: "4. Generate 3D Model",
-            description: "Choose your quality preset and generate. The AI transforms your 2D selection into a full 3D model.",
-            icon: "cube.fill",
-            gradient: [.green, .mint]
-        ),
-        SlideContent(
-            title: "5. Export & Use",
-            description: "Your 3D model is saved as a GLB file, ready for use in games, AR apps, or 3D printing.",
-            icon: "square.and.arrow.up",
-            gradient: [.indigo, .purple]
+        TechSlide(
+            step: "04",
+            title: "EXPORT",
+            subtitle: "Ready to use",
+            detail: "GLB format"
         )
     ]
 
@@ -285,66 +543,239 @@ struct SlideshowView: View {
         VStack(spacing: 24) {
             Spacer()
 
-            // Slide content
-            let slide = slides[currentSlide]
-
-            ZStack {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: slide.gradient,
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 80, height: 80)
-
-                Image(systemName: slide.icon)
-                    .font(.system(size: 36))
-                    .foregroundColor(.white)
-            }
-
-            VStack(spacing: 12) {
-                Text(slide.title)
-                    .font(.title2.weight(.bold))
-                    .foregroundColor(.white)
-
-                Text(slide.description)
-                    .font(.body)
-                    .foregroundColor(.white.opacity(0.7))
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 500)
-            }
-
-            Spacer()
-
-            // Slide indicators
-            HStack(spacing: 8) {
+            // Step indicator
+            HStack(spacing: 4) {
                 ForEach(0..<slides.count, id: \.self) { index in
-                    Circle()
-                        .fill(index == currentSlide ? Color.white : Color.white.opacity(0.3))
-                        .frame(width: 8, height: 8)
-                        .onTapGesture {
-                            withAnimation { currentSlide = index }
-                        }
+                    Rectangle()
+                        .fill(index == currentSlide ? SetupDesign.accentPrimary : SetupDesign.wireframe)
+                        .frame(width: index == currentSlide ? 24 : 12, height: 2)
+                        .animation(.easeInOut(duration: 0.3), value: currentSlide)
                 }
             }
-            .padding(.bottom, 16)
+
+            // Content
+            let slide = slides[currentSlide]
+
+            VStack(spacing: 16) {
+                // Step number
+                Text(slide.step)
+                    .font(.system(size: 64, weight: .thin, design: .monospaced))
+                    .foregroundColor(SetupDesign.wireframe)
+
+                // Title
+                Text(slide.title)
+                    .font(.system(size: 32, weight: .black))
+                    .foregroundColor(SetupDesign.textPrimary)
+                    .tracking(6)
+
+                // Subtitle
+                Text(slide.subtitle)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(SetupDesign.textSecondary)
+
+                // Detail
+                Text(slide.detail)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(SetupDesign.accentPrimary.opacity(0.8))
+            }
+            .id(currentSlide)
+            .transition(.asymmetric(
+                insertion: .opacity.combined(with: .offset(y: 20)),
+                removal: .opacity.combined(with: .offset(y: -20))
+            ))
+
+            Spacer()
         }
-        .padding(.horizontal, 40)
+        .padding(40)
         .onReceive(timer) { _ in
-            withAnimation {
+            withAnimation(.easeInOut(duration: 0.5)) {
                 currentSlide = (currentSlide + 1) % slides.count
             }
         }
     }
 }
 
-struct SlideContent {
+private struct TechSlide {
+    let step: String
     let title: String
-    let description: String
-    let icon: String
-    let gradient: [Color]
+    let subtitle: String
+    let detail: String
+}
+
+// MARK: - Wireframe Cube
+
+private struct WireframeCubeView: View {
+    let rotation: Double
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            Canvas { context, size in
+                let center = CGPoint(x: size.width / 2, y: size.height / 2)
+                let scale = min(size.width, size.height) * 0.35
+
+                // Rotation angles
+                let angleX = rotation * .pi / 180
+                let angleY = rotation * 0.7 * .pi / 180
+
+                // Cube vertices (centered at origin)
+                let vertices: [(Double, Double, Double)] = [
+                    (-1, -1, -1), (1, -1, -1), (1, 1, -1), (-1, 1, -1),
+                    (-1, -1, 1), (1, -1, 1), (1, 1, 1), (-1, 1, 1)
+                ]
+
+                // Project 3D to 2D with rotation
+                func project(_ v: (Double, Double, Double)) -> CGPoint {
+                    // Rotate around Y axis
+                    let x1 = v.0 * cos(angleY) - v.2 * sin(angleY)
+                    let z1 = v.0 * sin(angleY) + v.2 * cos(angleY)
+                    let y1 = v.1
+
+                    // Rotate around X axis
+                    let y2 = y1 * cos(angleX) - z1 * sin(angleX)
+                    let z2 = y1 * sin(angleX) + z1 * cos(angleX)
+                    let x2 = x1
+
+                    // Simple perspective projection
+                    let perspective = 3.0 / (3.0 - z2 * 0.3)
+
+                    return CGPoint(
+                        x: center.x + x2 * scale * perspective,
+                        y: center.y + y2 * scale * perspective
+                    )
+                }
+
+                let projected = vertices.map { project($0) }
+
+                // Cube edges
+                let edges = [
+                    (0, 1), (1, 2), (2, 3), (3, 0), // Front face
+                    (4, 5), (5, 6), (6, 7), (7, 4), // Back face
+                    (0, 4), (1, 5), (2, 6), (3, 7)  // Connecting edges
+                ]
+
+                // Draw edges
+                for (i, j) in edges {
+                    var path = Path()
+                    path.move(to: projected[i])
+                    path.addLine(to: projected[j])
+
+                    context.stroke(
+                        path,
+                        with: .color(SetupDesign.wireframe),
+                        lineWidth: 1.5
+                    )
+                }
+
+                // Draw vertices as small dots
+                for point in projected {
+                    let dotPath = Path(ellipseIn: CGRect(
+                        x: point.x - 3,
+                        y: point.y - 3,
+                        width: 6,
+                        height: 6
+                    ))
+                    context.fill(dotPath, with: .color(SetupDesign.accentPrimary))
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Geometric Accents
+
+private struct GeometricAccents: View {
+    let hasAppeared: Bool
+
+    var body: some View {
+        ZStack {
+            // Floating squares at various depths
+            FloatingSquare(size: 40, rotation: 12)
+                .offset(x: -120, y: -100)
+                .opacity(hasAppeared ? 0.3 : 0)
+                .animation(.easeOut(duration: 1).delay(0.4), value: hasAppeared)
+
+            FloatingSquare(size: 20, rotation: -8)
+                .offset(x: 100, y: 80)
+                .opacity(hasAppeared ? 0.2 : 0)
+                .animation(.easeOut(duration: 1).delay(0.6), value: hasAppeared)
+
+            FloatingSquare(size: 60, rotation: 45)
+                .offset(x: -80, y: 120)
+                .opacity(hasAppeared ? 0.15 : 0)
+                .animation(.easeOut(duration: 1).delay(0.8), value: hasAppeared)
+
+            // Horizontal lines
+            HStack(spacing: 4) {
+                ForEach(0..<5, id: \.self) { i in
+                    Rectangle()
+                        .fill(SetupDesign.wireframe)
+                        .frame(width: CGFloat(30 - i * 5), height: 1)
+                }
+            }
+            .offset(x: -150, y: 50)
+            .opacity(hasAppeared ? 0.4 : 0)
+            .animation(.easeOut(duration: 1).delay(0.5), value: hasAppeared)
+        }
+    }
+}
+
+private struct FloatingSquare: View {
+    let size: CGFloat
+    let rotation: Double
+
+    var body: some View {
+        Rectangle()
+            .stroke(SetupDesign.wireframe, lineWidth: 1)
+            .frame(width: size, height: size)
+            .rotationEffect(.degrees(rotation))
+    }
+}
+
+// MARK: - Technical Grid
+
+private struct TechnicalGrid: View {
+    var body: some View {
+        Canvas { context, size in
+            let spacing: CGFloat = 40
+
+            // Vertical lines
+            var x: CGFloat = 0
+            while x < size.width {
+                var path = Path()
+                path.move(to: CGPoint(x: x, y: 0))
+                path.addLine(to: CGPoint(x: x, y: size.height))
+                context.stroke(path, with: .color(SetupDesign.gridLine), lineWidth: 0.5)
+                x += spacing
+            }
+
+            // Horizontal lines
+            var y: CGFloat = 0
+            while y < size.height {
+                var path = Path()
+                path.move(to: CGPoint(x: 0, y: y))
+                path.addLine(to: CGPoint(x: size.width, y: y))
+                context.stroke(path, with: .color(SetupDesign.gridLine), lineWidth: 0.5)
+                y += spacing
+            }
+        }
+    }
+}
+
+// MARK: - Noise Overlay
+
+private struct NoiseOverlay: View {
+    var body: some View {
+        Canvas { context, size in
+            for _ in 0..<Int(size.width * size.height / 100) {
+                let x = CGFloat.random(in: 0..<size.width)
+                let y = CGFloat.random(in: 0..<size.height)
+                let opacity = Double.random(in: 0.1...0.3)
+
+                let rect = CGRect(x: x, y: y, width: 1, height: 1)
+                context.fill(Path(rect), with: .color(.white.opacity(opacity)))
+            }
+        }
+    }
 }
 
 // MARK: - Setup Manager
@@ -357,10 +788,8 @@ class SetupManager: ObservableObject {
     @Published var detailedStatus = ""
     @Published var overallProgress: Double = 0
 
-    @Published var downloadedSize = "0 MB"
-    @Published var downloadSpeed = "-- MB/s"
+    @Published var downloadedSize = "—"
     @Published var elapsedTime = "0:00"
-    @Published var estimatedRemaining = "Calculating..."
 
     private var startTime: Date?
     private var monitorTask: Task<Void, Never>?
@@ -411,32 +840,29 @@ class SetupManager: ObservableObject {
         // Stage 2: Setup Python environment
         currentStage = "Setting up Python environment..."
         overallProgress = 0.1
-        startMonitoring(prefix: "Python environment")
         await setupPythonEnvironment()
 
         // Stage 3: Download SAM model
         currentStage = "Downloading segmentation model..."
         overallProgress = 0.3
-        startMonitoring(prefix: "SAM model")
         await downloadSAMModel()
 
         // Stage 4: Setup Hunyuan environment
         currentStage = "Setting up 3D generation environment..."
         overallProgress = 0.5
-        startMonitoring(prefix: "Hunyuan environment")
         await setupHunyuanEnvironment()
 
         // Stage 5: Download Hunyuan model
         currentStage = "Downloading 3D generation model..."
         overallProgress = 0.7
-        startMonitoring(prefix: "Hunyuan model")
+        startMonitoring(directory: appSupportDir.appendingPathComponent("Hunyuan3D/hf_cache"), totalSize: "7.1G")
         await downloadHunyuanModel()
+        stopMonitoring()
 
         // Complete
-        stopMonitoring()
         overallProgress = 1.0
-        currentStage = "Setup Complete!"
-        detailedStatus = "All models downloaded and ready to use"
+        currentStage = "Setup Complete"
+        detailedStatus = "All models downloaded and ready"
         isComplete = true
 
         // Mark setup as complete in UserDefaults
@@ -484,19 +910,188 @@ class SetupManager: ObservableObject {
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"
         ]
 
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            detailedStatus = "Error: \(error.localizedDescription)"
+        await runProcessAsync(process, parseOutput: true)
+    }
+
+    /// Runs a process without blocking the main thread, with output parsing
+    private func runProcessAsync(_ process: Process, parseOutput: Bool = false) async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                if parseOutput {
+                    let pipe = Pipe()
+                    let errorPipe = Pipe()
+                    process.standardOutput = pipe
+                    process.standardError = errorPipe
+
+                    // Read stdout in background
+                    pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+                        let data = handle.availableData
+                        if !data.isEmpty {
+                            // Pass through to terminal
+                            FileHandle.standardOutput.write(data)
+                            if let output = String(data: data, encoding: .utf8) {
+                                self?.parseProcessOutput(output)
+                            }
+                        }
+                    }
+
+                    // Read stderr in background (tqdm writes to stderr)
+                    errorPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+                        let data = handle.availableData
+                        if !data.isEmpty {
+                            // Pass through to terminal
+                            FileHandle.standardError.write(data)
+                            if let output = String(data: data, encoding: .utf8) {
+                                self?.parseProcessOutput(output)
+                            }
+                        }
+                    }
+                }
+
+                do {
+                    try process.run()
+                    process.waitUntilExit()
+                } catch {
+                    Task { @MainActor in
+                        self.detailedStatus = "Error: \(error.localizedDescription)"
+                    }
+                }
+                continuation.resume()
+            }
+        }
+    }
+
+    /// Parse process output for progress info
+    private func parseProcessOutput(_ output: String) {
+        // Handle carriage returns (tqdm uses \r for progress updates)
+        let lines = output.replacingOccurrences(of: "\r", with: "\n").components(separatedBy: .newlines)
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+
+            Task { @MainActor in
+                // UV package installation: "+ package==version"
+                if trimmed.hasPrefix("+ ") {
+                    let package = String(trimmed.dropFirst(2))
+                    if let name = package.split(separator: "=").first {
+                        self.detailedStatus = "Installing \(name)..."
+                    }
+                }
+                // HuggingFace download progress - show file being downloaded
+                else if trimmed.contains("/") && trimmed.contains("%") {
+                    if let colonIdx = trimmed.firstIndex(of: ":") {
+                        let fileName = String(trimmed[..<colonIdx])
+                        if fileName.contains("model") || fileName.contains("safetensor") || fileName.contains(".ckpt") {
+                            self.detailedStatus = "Downloading \(fileName)..."
+                        }
+                    }
+                }
+                // Fetching files progress
+                else if trimmed.contains("Fetching") && trimmed.contains("files") {
+                    self.detailedStatus = trimmed.components(separatedBy: "|").first?.trimmingCharacters(in: .whitespaces) ?? trimmed
+                }
+                // Resolved/Prepared/Installed packages
+                else if trimmed.hasPrefix("Resolved") || trimmed.hasPrefix("Prepared") || trimmed.hasPrefix("Installed") {
+                    self.detailedStatus = trimmed
+                }
+                // Loading model
+                else if trimmed.contains("Loading") && trimmed.contains("pipeline") {
+                    self.detailedStatus = "Loading model..."
+                }
+                // Warming up
+                else if trimmed.contains("Warming up") {
+                    self.detailedStatus = trimmed
+                }
+            }
+        }
+    }
+
+    // MARK: - Monitoring
+
+    private func startMonitoring(directory: URL, totalSize: String) {
+        stopMonitoring()
+        monitorTask = Task {
+            while !Task.isCancelled {
+                let size = await getDiskUsage(at: directory)
+                await MainActor.run {
+                    self.downloadedSize = "\(size) / \(totalSize)"
+                }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second
+            }
+        }
+    }
+
+    private func stopMonitoring() {
+        monitorTask?.cancel()
+        monitorTask = nil
+        Task { @MainActor in
+            self.downloadedSize = "—"
+        }
+    }
+
+    private func getDiskUsage(at url: URL) async -> String {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let process = Process()
+                let pipe = Pipe()
+
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/du")
+                process.arguments = ["-sh", url.path]
+                process.standardOutput = pipe
+                process.standardError = nil
+
+                do {
+                    try process.run()
+                    process.waitUntilExit()
+
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    if let output = String(data: data, encoding: .utf8),
+                       let size = output.split(separator: "\t").first {
+                        continuation.resume(returning: String(size))
+                    } else {
+                        continuation.resume(returning: "0")
+                    }
+                } catch {
+                    continuation.resume(returning: "0")
+                }
+            }
         }
     }
 
     private func downloadSAMModel() async {
-        // SAM model is downloaded on first use via HuggingFace
-        // We'll trigger a warmup to download it
-        detailedStatus = "SAM model will be downloaded on first use..."
-        try? await Task.sleep(nanoseconds: 500_000_000)
+        guard let uvPath = Bundle.main.path(forResource: "uv", ofType: nil) ??
+                          Bundle.main.path(forResource: "uv", ofType: nil, inDirectory: "Resources") else {
+            detailedStatus = "Error: uv not found in bundle"
+            return
+        }
+
+        detailedStatus = "Downloading SAM model..."
+
+        let samWrapper = appSupportDir.appendingPathComponent("sam_wrapper.py")
+        let venvDir = appSupportDir.appendingPathComponent(".venv")
+        let samCacheDir = appSupportDir.appendingPathComponent("sam_cache")
+
+        // Create cache directory
+        try? FileManager.default.createDirectory(at: samCacheDir, withIntermediateDirectories: true)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: uvPath)
+        process.arguments = ["run", samWrapper.path, "--test"]
+        process.currentDirectoryURL = appSupportDir
+        process.environment = [
+            "UV_PROJECT_ENVIRONMENT": venvDir.path,
+            "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
+            "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
+            "UV_PYTHON_PREFERENCE": "only-managed",
+            "PYTHONUNBUFFERED": "1",
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "HF_HOME": samCacheDir.path
+        ]
+
+        startMonitoring(directory: samCacheDir, totalSize: "3.2G")
+        await runProcessAsync(process, parseOutput: true)
+        stopMonitoring()
     }
 
     private func setupHunyuanEnvironment() async {
@@ -541,12 +1136,7 @@ class SetupManager: ObservableObject {
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"
         ]
 
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            detailedStatus = "Error: \(error.localizedDescription)"
-        }
+        await runProcessAsync(process, parseOutput: true)
     }
 
     private func downloadHunyuanModel() async {
@@ -555,10 +1145,14 @@ class SetupManager: ObservableObject {
             return
         }
 
-        detailedStatus = "Downloading Hunyuan3D model from HuggingFace..."
+        detailedStatus = "Downloading Hunyuan3D model (~4 GB)..."
 
         let hunyuanDir = appSupportDir.appendingPathComponent("Hunyuan3D")
         let venvDir = appSupportDir.appendingPathComponent(".venv_hunyuan")
+        let hfCacheDir = hunyuanDir.appendingPathComponent("hf_cache")
+
+        // Create cache directory for monitoring
+        try? FileManager.default.createDirectory(at: hfCacheDir, withIntermediateDirectories: true)
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: uvPath)
@@ -574,109 +1168,9 @@ class SetupManager: ObservableObject {
             "HF_HOME": hunyuanDir.appendingPathComponent("hf_cache").path
         ]
 
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            detailedStatus = "Error: \(error.localizedDescription)"
-        }
+        await runProcessAsync(process, parseOutput: true)
     }
 
-    // MARK: - Monitoring
-
-    private var lastSize: UInt64 = 0
-    private var lastCheckTime: Date = Date()
-
-    private func startMonitoring(prefix: String) {
-        stopMonitoring()
-
-        lastSize = directorySize(at: appSupportDir)
-        lastCheckTime = Date()
-
-        monitorTask = Task {
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-
-                let currentSize = directorySize(at: appSupportDir)
-                let now = Date()
-                let elapsed = now.timeIntervalSince(lastCheckTime)
-
-                if elapsed > 0 {
-                    let bytesDownloaded = currentSize > lastSize ? currentSize - lastSize : 0
-                    let throughput = Double(bytesDownloaded) / elapsed
-
-                    await MainActor.run {
-                        self.downloadedSize = self.formatBytes(currentSize)
-                        self.downloadSpeed = self.formatThroughput(throughput)
-
-                        // Estimate remaining (rough approximation)
-                        if throughput > 0 && self.overallProgress > 0 && self.overallProgress < 1 {
-                            let remainingProgress = 1.0 - self.overallProgress
-                            // Assume roughly 4GB total, estimate based on current progress
-                            let estimatedTotalBytes: Double = 4_000_000_000
-                            let estimatedRemaining = (remainingProgress * estimatedTotalBytes) / throughput
-
-                            if estimatedRemaining < 3600 {
-                                let mins = Int(estimatedRemaining) / 60
-                                let secs = Int(estimatedRemaining) % 60
-                                self.estimatedRemaining = String(format: "%d:%02d", mins, secs)
-                            } else {
-                                self.estimatedRemaining = ">1 hour"
-                            }
-                        }
-                    }
-
-                    lastSize = currentSize
-                    lastCheckTime = now
-                }
-            }
-        }
-    }
-
-    private func stopMonitoring() {
-        monitorTask?.cancel()
-        monitorTask = nil
-    }
-
-    private func directorySize(at url: URL) -> UInt64 {
-        let fm = FileManager.default
-        var totalSize: UInt64 = 0
-
-        guard let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) else {
-            return 0
-        }
-
-        for case let fileURL as URL in enumerator {
-            if let fileSize = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize {
-                totalSize += UInt64(fileSize)
-            }
-        }
-
-        return totalSize
-    }
-
-    private func formatBytes(_ bytes: UInt64) -> String {
-        let mb = Double(bytes) / 1_048_576
-        let gb = mb / 1024
-
-        if gb >= 1 {
-            return String(format: "%.2f GB", gb)
-        } else {
-            return String(format: "%.0f MB", mb)
-        }
-    }
-
-    private func formatThroughput(_ bytesPerSecond: Double) -> String {
-        let mbps = bytesPerSecond / 1_048_576
-
-        if mbps >= 1 {
-            return String(format: "%.1f MB/s", mbps)
-        } else if bytesPerSecond > 1024 {
-            return String(format: "%.0f KB/s", bytesPerSecond / 1024)
-        } else {
-            return "Connecting..."
-        }
-    }
 }
 
 // MARK: - Preview

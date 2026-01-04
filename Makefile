@@ -19,6 +19,9 @@ run: build
 debug3d: build
 	./build/Build/Products/Debug/ModelrV3.app/Contents/MacOS/ModelrV3 --debug-3d-viewer
 
+runsetup: build
+	./build/Build/Products/Debug/ModelrV3.app/Contents/MacOS/ModelrV3 --force-setup
+	
 # Run unit and integration tests
 # Usage: make test
 test: generate
