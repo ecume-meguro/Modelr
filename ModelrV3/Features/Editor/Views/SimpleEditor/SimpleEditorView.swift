@@ -12,7 +12,7 @@ struct SimpleEditorView: View {
     var body: some View {
         NavigationSplitView {
             SimpleEditorSidebar(viewModel: viewModel)
-                .navigationSplitViewColumnWidth(min: 280, ideal: 300, max: 350)
+                .navigationSplitViewColumnWidth(min: 320, ideal: 360, max: 420)
         } detail: {
             ImageCanvas(viewModel: viewModel)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

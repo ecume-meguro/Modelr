@@ -25,7 +25,9 @@ struct SetupView: View {
             if !setupManager.setupStarted {
                 WelcomeScreen(
                     hasAppeared: hasAppeared,
-                    onStart: { setupManager.startSetup() }
+                    onStart: { modelChoice in
+                        setupManager.startSetup(modelChoice: modelChoice)
+                    }
                 )
             } else {
                 SetupProgressScreen(
@@ -73,16 +75,53 @@ struct SetupView: View {
     }
 }
 
+// MARK: - Model Choice
+
+enum SetupModelChoice: String, CaseIterable {
+    case fast = "fast"
+    case quality = "quality"
+
+    var displayName: String {
+        switch self {
+        case .fast: return "Small, Fast"
+        case .quality: return "Large, Higher Quality"
+        }
+    }
+
+    var modelVariant: String {
+        switch self {
+        case .fast: return "mini"
+        case .quality: return "std"
+        }
+    }
+
+    var downloadSize: String {
+        switch self {
+        case .fast: return "~2 GB"
+        case .quality: return "~4 GB"
+        }
+    }
+
+    var modelName: String {
+        switch self {
+        case .fast: return "Hunyuan3D-2 Mini"
+        case .quality: return "Hunyuan3D-2.1"
+        }
+    }
+}
+
 // MARK: - Welcome Screen
 
 private struct WelcomeScreen: View {
     let hasAppeared: Bool
-    let onStart: () -> Void
+    let onStart: (SetupModelChoice) -> Void
+
+    @State private var selectedModel: SetupModelChoice = .fast
 
     var body: some View {
-        VStack(spacing: AppDesign.Spacing.p64) {
+        VStack(spacing: AppDesign.Spacing.p48) {
             Spacer()
-            
+
             VStack(spacing: AppDesign.Spacing.p16) {
                 Text("Modelr v3")
                     .font(.system(size: 72, weight: .bold))
@@ -97,15 +136,52 @@ private struct WelcomeScreen: View {
             .opacity(hasAppeared ? 1 : 0)
             .animation(.spring(response: 0.6, dampingFraction: 0.8).delay(0.2), value: hasAppeared)
 
+            // Model Selection
+            VStack(spacing: AppDesign.Spacing.p16) {
+                Text("Choose your 3D model")
+                    .font(.system(size: AppDesign.FontSize.headline, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                HStack(spacing: AppDesign.Spacing.p16) {
+                    ForEach(SetupModelChoice.allCases, id: \.self) { choice in
+                        ModelChoiceCard(
+                            choice: choice,
+                            isSelected: selectedModel == choice,
+                            isRecommended: choice == .fast
+                        ) {
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                selectedModel = choice
+                            }
+                        }
+                    }
+                }
+
+                // Fine print showing which model each option uses
+                VStack(spacing: AppDesign.Spacing.p4) {
+                    HStack(spacing: AppDesign.Spacing.p24) {
+                        Text("Small, Fast → \(SetupModelChoice.fast.modelName)")
+                        Text("Large, Higher Quality → \(SetupModelChoice.quality.modelName)")
+                    }
+                    .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                }
+                .padding(.top, AppDesign.Spacing.p8)
+            }
+            .offset(y: hasAppeared ? 0 : 20)
+            .opacity(hasAppeared ? 1 : 0)
+            .animation(.spring(response: 0.6, dampingFraction: 0.8).delay(0.3), value: hasAppeared)
+
             // CTA Section
             VStack(spacing: AppDesign.Spacing.p24) {
-                AppDesign.GlassButton("Get Started", icon: "arrow.right", action: onStart)
-                    .controlSize(.large)
+                AppDesign.GlassButton("Get Started", icon: "arrow.right") {
+                    onStart(selectedModel)
+                }
+                .controlSize(.large)
 
                 HStack(spacing: AppDesign.Spacing.p8) {
                     Image(systemName: "info.circle.fill")
                         .font(.system(size: AppDesign.FontSize.caption))
-                    Text("Requires ~15 GB for initial model download")
+                    Text("Requires ~\(selectedModel == .fast ? "12" : "14") GB for initial download")
                         .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
                 }
                 .foregroundStyle(.tertiary)
@@ -113,10 +189,61 @@ private struct WelcomeScreen: View {
             .offset(y: hasAppeared ? 0 : 20)
             .opacity(hasAppeared ? 1 : 0)
             .animation(.spring(response: 0.6, dampingFraction: 0.8).delay(0.4), value: hasAppeared)
-            
+
             Spacer()
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - Model Choice Card
+
+private struct ModelChoiceCard: View {
+    let choice: SetupModelChoice
+    let isSelected: Bool
+    let isRecommended: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            VStack(spacing: AppDesign.Spacing.p12) {
+                HStack {
+                    if isRecommended {
+                        Text("Recommended")
+                            .font(.system(size: AppDesign.FontSize.xs, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(AppDesign.accent, in: Capsule())
+                    }
+                    Spacer()
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: AppDesign.FontSize.title3))
+                        .foregroundStyle(isSelected ? AppDesign.accent : .secondary.opacity(0.5))
+                }
+
+                VStack(spacing: AppDesign.Spacing.p4) {
+                    Text(choice.displayName)
+                        .font(.system(size: AppDesign.FontSize.headline, weight: .semibold))
+                        .foregroundStyle(.primary)
+
+                    Text(choice.downloadSize)
+                        .font(.system(size: AppDesign.FontSize.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(AppDesign.Spacing.p16)
+            .frame(width: 180)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(isSelected ? AppDesign.accent.opacity(0.1) : Color.primary.opacity(0.03))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(isSelected ? AppDesign.accent : Color.primary.opacity(0.1), lineWidth: isSelected ? 2 : 1)
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -263,6 +390,7 @@ class SetupManager: ObservableObject {
     private var startTime: Date?
     private var monitorTask: Task<Void, Never>?
     private let appSupportDir: URL
+    private var selectedModelChoice: SetupModelChoice = .fast
 
     init() {
         let fm = FileManager.default
@@ -270,9 +398,10 @@ class SetupManager: ObservableObject {
         appSupportDir = appSupport.appendingPathComponent("ModelrV3")
     }
 
-    func startSetup() {
+    func startSetup(modelChoice: SetupModelChoice = .fast) {
         setupStarted = true
         startTime = Date()
+        selectedModelChoice = modelChoice
 
         // Start elapsed time timer
         Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
@@ -328,7 +457,8 @@ class SetupManager: ObservableObject {
         // Stage 5: Download Hunyuan model
         currentStage = "Downloading 3D generation model..."
         overallProgress = 0.7
-        startMonitoring(directory: appSupportDir.appendingPathComponent("Hunyuan3D/hf_cache"), totalSize: "7.1G")
+        let modelTotalSize = selectedModelChoice == .fast ? "2.0G" : "4.0G"
+        startMonitoring(directory: appSupportDir.appendingPathComponent("Hunyuan3D/hf_cache"), totalSize: modelTotalSize)
         await downloadHunyuanModel()
         stopMonitoring()
 
@@ -622,7 +752,7 @@ class SetupManager: ObservableObject {
             return
         }
 
-        detailedStatus = "Downloading Hunyuan3D model (~4 GB)..."
+        detailedStatus = "Downloading \(selectedModelChoice.modelName) (\(selectedModelChoice.downloadSize))..."
 
         let hunyuanDir = appSupportDir.appendingPathComponent("Hunyuan3D")
         let venvDir = appSupportDir.appendingPathComponent(".venv_hunyuan")
@@ -633,7 +763,7 @@ class SetupManager: ObservableObject {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: uvPath)
-        process.arguments = ["run", hunyuanDir.appendingPathComponent("hunyuan_wrapper.py").path, "--warmup"]
+        process.arguments = ["run", hunyuanDir.appendingPathComponent("hunyuan_wrapper.py").path, "--warmup", "--model", selectedModelChoice.modelVariant]
         process.currentDirectoryURL = hunyuanDir
         process.environment = [
             "UV_PROJECT_ENVIRONMENT": venvDir.path,
@@ -646,6 +776,9 @@ class SetupManager: ObservableObject {
         ]
 
         await runProcessAsync(process, parseOutput: true)
+
+        // Save the selected model choice for later use
+        UserDefaults.standard.set(selectedModelChoice.modelVariant, forKey: "SelectedHunyuanModel")
     }
 
 }

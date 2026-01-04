@@ -19,9 +19,20 @@ struct GenerationPanel: View {
     @ViewBuilder
     private var generationProgressView: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-            ForEach(SimpleEditorViewModel.GenerationStage.allCases, id: \.self) { stage in
+            ForEach(visibleStages, id: \.self) { stage in
                 stageProgressRow(stage: stage)
             }
+        }
+    }
+
+    /// Returns stages to display, filtering out downloading if not applicable
+    private var visibleStages: [SimpleEditorViewModel.GenerationStage] {
+        SimpleEditorViewModel.GenerationStage.allCases.filter { stage in
+            if stage == .downloading {
+                // Only show downloading stage if it was triggered (model needed download)
+                return viewModel.generationStages[.downloading] != nil
+            }
+            return true
         }
     }
     
@@ -113,6 +124,69 @@ struct GenerationPanel: View {
     @ViewBuilder
     private var generationSettingsView: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+            // Model Selection Section
+            VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
+                AppDesign.SectionLabel("Model")
+
+                Menu {
+                    ForEach(SimpleEditorViewModel.Hunyuan3DModel.allCases) { model in
+                        Button {
+                            viewModel.selectedHunyuanModel = model
+                        } label: {
+                            HStack {
+                                Text(model.rawValue)
+                                if viewModel.isModelDownloaded(model) {
+                                    Text("(downloaded)")
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(model.modelSize)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Text(viewModel.selectedHunyuanModel.rawValue)
+                            .font(.system(size: AppDesign.FontSize.body))
+                        if viewModel.isModelDownloaded(viewModel.selectedHunyuanModel) {
+                            Text("(downloaded)")
+                                .font(.system(size: AppDesign.FontSize.caption))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: AppDesign.FontSize.caption))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, AppDesign.Spacing.p12)
+                    .padding(.vertical, AppDesign.Spacing.p8)
+                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(Color.primary.opacity(0.15), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+
+                Text(viewModel.selectedHunyuanModel.description)
+                    .font(.system(size: AppDesign.FontSize.caption))
+                    .foregroundStyle(.secondary)
+
+                if !viewModel.isModelDownloaded(viewModel.selectedHunyuanModel) {
+                    HStack(spacing: AppDesign.Spacing.p4) {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.system(size: AppDesign.FontSize.caption))
+                            .foregroundStyle(AppDesign.warning)
+                        Text("Will download \(viewModel.selectedHunyuanModel.modelSize) on first use")
+                            .font(.system(size: AppDesign.FontSize.caption))
+                            .foregroundStyle(AppDesign.warning)
+                    }
+                }
+            }
+
+            Divider()
+
             // Quality Preset Section
             VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
                 AppDesign.SectionLabel("Quality Preset")

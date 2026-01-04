@@ -15,6 +15,7 @@ protocol PythonServiceProtocol: ObservableObject {
         maskPath: String,
         steps: Int,
         resolution: Int,
+        modelVariant: String,
         progress: @escaping (String) -> Void,
         completion: @escaping (Result<URL, Error>) -> Void
     ) async

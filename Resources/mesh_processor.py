@@ -264,12 +264,58 @@ def extract_component(mesh_path: str, component_index: int, output_path: str) ->
         return {"success": False, "error": str(e)}
 
 
+def extract_all_components(mesh_path: str, output_dir: str) -> Dict[str, Any]:
+    """
+    Extract all components as separate OBJ files for visualization.
+    Returns paths to each component file.
+    """
+    try:
+        mesh = trimesh.load(mesh_path, force='mesh')
+
+        if isinstance(mesh, trimesh.Scene):
+            mesh = mesh.dump(concatenate=True)
+
+        components = mesh.split(only_watertight=False)
+        if not components or len(components) == 0:
+            components = [mesh]
+
+        # Sort by vertex count (largest first)
+        components = sorted(components, key=lambda x: len(x.vertices) if hasattr(x, 'vertices') else 0, reverse=True)
+
+        # Ensure output directory exists
+        os.makedirs(output_dir, exist_ok=True)
+
+        component_files = []
+        for i, comp in enumerate(components):
+            if not hasattr(comp, 'vertices') or len(comp.vertices) == 0:
+                continue
+
+            output_path = os.path.join(output_dir, f"component_{i}.obj")
+            comp.export(output_path)
+
+            component_files.append({
+                "index": i,
+                "path": output_path,
+                "vertex_count": len(comp.vertices),
+                "face_count": len(comp.faces) if hasattr(comp, 'faces') else 0
+            })
+
+        return {
+            "success": True,
+            "component_count": len(component_files),
+            "components": component_files
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def main():
     parser = argparse.ArgumentParser(description='Mesh processing tool using trimesh')
-    parser.add_argument('command', choices=['analyze', 'delete', 'keep_largest', 'export', 'extract'],
+    parser.add_argument('command', choices=['analyze', 'delete', 'keep_largest', 'export', 'extract', 'extract_all'],
                         help='Command to execute')
     parser.add_argument('--input', '-i', required=True, help='Input mesh path')
-    parser.add_argument('--output', '-o', help='Output mesh path')
+    parser.add_argument('--output', '-o', help='Output mesh path or directory')
     parser.add_argument('--indices', '-d', help='Comma-separated list of component indices to delete')
     parser.add_argument('--format', '-f', default='obj', help='Export format (obj, glb, stl, ply)')
     parser.add_argument('--component', '-c', type=int, help='Component index for extraction')
@@ -309,6 +355,12 @@ def main():
             result = {"success": False, "error": "Component index required for extract command"}
         else:
             result = extract_component(args.input, args.component, args.output)
+
+    elif args.command == 'extract_all':
+        if not args.output:
+            result = {"success": False, "error": "Output directory required for extract_all command"}
+        else:
+            result = extract_all_components(args.input, args.output)
 
     print(json.dumps(result), flush=True)
 

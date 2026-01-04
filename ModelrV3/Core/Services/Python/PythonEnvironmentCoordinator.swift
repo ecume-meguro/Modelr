@@ -216,6 +216,7 @@ class PythonEnvironment: ObservableObject {
         maskPath: String,
         steps: Int,
         resolution: Int,
+        modelVariant: String = "std",
         progress: @escaping (String) -> Void,
         completion: @escaping (Result<URL, Error>) -> Void
     ) async {
@@ -223,20 +224,20 @@ class PythonEnvironment: ObservableObject {
             completion(.failure(PythonError.uvNotFound))
             return
         }
-        
+
         guard dependencyService.hunyuanVenvReady else {
             completion(.failure(PythonError.predictionFailed("Hunyuan3D environment not ready")))
             return
         }
-        
+
         let hunyuanDir = appSupportDir.appendingPathComponent("Hunyuan3D")
         let timestamp = Int(Date().timeIntervalSince1970)
         let outputPath = hunyuanDir.appendingPathComponent("generated_model_\(timestamp).obj")
-        
+
         await MainActor.run {
             isGenerationCancelled = false
         }
-        
+
         processManager.start3DGeneration(
             uvPath: uvPath,
             imagePath: imagePath,
@@ -244,6 +245,7 @@ class PythonEnvironment: ObservableObject {
             outputPath: outputPath,
             steps: steps,
             resolution: resolution,
+            modelVariant: modelVariant,
             progressCallback: progress,
             completion: completion
         )

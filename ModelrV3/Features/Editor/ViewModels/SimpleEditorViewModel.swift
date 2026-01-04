@@ -112,6 +112,8 @@ class SimpleEditorViewModel: ObservableObject {
     @Published var customSteps: CGFloat = 35
     @Published var customResolution: CGFloat = 256
     @Published var generationStages: [GenerationStage: StageProgress] = [:]
+    @Published var selectedHunyuanModel: Hunyuan3DModel = .quality
+    @Published var downloadedModels: Set<Hunyuan3DModel> = []
     
     // MARK: - Warning Dialogs
     @Published var showBackWarning: Bool = false
@@ -126,6 +128,13 @@ class SimpleEditorViewModel: ObservableObject {
     @Published var isProcessingMesh: Bool = false
     @Published var processedModelURL: URL?
     @Published var selectedExportFormat: ExportFormat = .obj
+    @Published var componentFiles: [ComponentFile] = []
+
+    struct ComponentFile: Identifiable {
+        let id = UUID()
+        let index: Int
+        let path: String
+    }
 
     struct MeshComponent: Identifiable {
         let id = UUID()
@@ -160,7 +169,36 @@ class SimpleEditorViewModel: ObservableObject {
     @Published var isDragging = false
     
     // MARK: - Generation Types
+    enum Hunyuan3DModel: String, CaseIterable, Identifiable {
+        case fast = "Fast"
+        case quality = "Quality"
+
+        var id: String { rawValue }
+
+        var modelVariant: String {
+            switch self {
+            case .fast: return "mini"
+            case .quality: return "std"
+            }
+        }
+
+        var description: String {
+            switch self {
+            case .fast: return "Hunyuan3D-2 Mini — Faster generation"
+            case .quality: return "Hunyuan3D-2.1 — Higher quality results"
+            }
+        }
+
+        var modelSize: String {
+            switch self {
+            case .fast: return "~2 GB"
+            case .quality: return "~4 GB"
+            }
+        }
+    }
+
     enum GenerationStage: String, CaseIterable {
+        case downloading = "Downloading Model"
         case extracting = "Extracting"
         case loading = "Loading Model"
         case diffusion = "Diffusion Sampling"
@@ -185,6 +223,57 @@ class SimpleEditorViewModel: ObservableObject {
     // MARK: - Initialization
     init(env: PythonEnvironment) {
         self.env = env
+        checkDownloadedModels()
+        loadSavedModelPreference()
+    }
+
+    /// Load the model preference saved during setup
+    private func loadSavedModelPreference() {
+        if let savedVariant = UserDefaults.standard.string(forKey: "SelectedHunyuanModel") {
+            if savedVariant == "mini" {
+                selectedHunyuanModel = .fast
+            } else if savedVariant == "std" {
+                selectedHunyuanModel = .quality
+            }
+        }
+    }
+
+    /// Check which Hunyuan models are already downloaded
+    func checkDownloadedModels() {
+        let fileManager = FileManager.default
+        guard let appSupportDir = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+
+        let hunyuanCacheDir = appSupportDir
+            .appendingPathComponent("ModelrV3")
+            .appendingPathComponent("Hunyuan3D")
+            .appendingPathComponent("hf_cache")
+
+        var downloaded: Set<Hunyuan3DModel> = []
+
+        // Check for quality model (Hunyuan3D-2.1)
+        let qualityModelPath = hunyuanCacheDir.appendingPathComponent("models--tencent--Hunyuan3D-2.1")
+        if fileManager.fileExists(atPath: qualityModelPath.path) {
+            // Check if there are actual model files (not just empty dir)
+            if let contents = try? fileManager.contentsOfDirectory(atPath: qualityModelPath.path),
+               contents.contains("snapshots") || contents.contains("blobs") {
+                downloaded.insert(.quality)
+            }
+        }
+
+        // Check for fast model (Hunyuan3D-2mini)
+        let fastModelPath = hunyuanCacheDir.appendingPathComponent("models--tencent--Hunyuan3D-2mini")
+        if fileManager.fileExists(atPath: fastModelPath.path) {
+            if let contents = try? fileManager.contentsOfDirectory(atPath: fastModelPath.path),
+               contents.contains("snapshots") || contents.contains("blobs") {
+                downloaded.insert(.fast)
+            }
+        }
+
+        downloadedModels = downloaded
+    }
+
+    func isModelDownloaded(_ model: Hunyuan3DModel) -> Bool {
+        downloadedModels.contains(model)
     }
     
     // MARK: - Image Loading
@@ -842,6 +931,7 @@ class SimpleEditorViewModel: ObservableObject {
                 maskPath: tempMaskPath,
                 steps: Int(customSteps),
                 resolution: Int(customResolution),
+                modelVariant: selectedHunyuanModel.modelVariant,
                 progress: { [weak self] status in
                     Task { @MainActor in
                         self?.generationStatus = status
@@ -858,6 +948,8 @@ class SimpleEditorViewModel: ObservableObject {
                                 self?.generationDuration = Date().timeIntervalSince(startTime)
                             }
                             self?.markAllStagesCompleted()
+                            // Update downloaded models list after successful generation
+                            self?.checkDownloadedModels()
                         case .failure(let error):
                             print("[Gen] Error: \(error)")
                         }
@@ -874,7 +966,17 @@ class SimpleEditorViewModel: ObservableObject {
     }
     
     private func updateGenerationStages(status: String) {
-        if status.contains("Extracting") {
+        if status.contains("Downloading") || status.contains("Fetching") {
+            // Show downloading stage only if model wasn't already downloaded
+            if !isModelDownloaded(selectedHunyuanModel) {
+                let (progress, detail) = parseDownloadProgress(status)
+                generationStages[.downloading] = StageProgress(status: .inProgress, progress: progress, detail: detail)
+            }
+        } else if status.contains("Extracting") {
+            // Mark downloading complete if it was shown
+            if generationStages[.downloading] != nil {
+                generationStages[.downloading] = StageProgress(status: .completed, progress: 1.0, detail: "")
+            }
             generationStages[.extracting] = StageProgress(status: .inProgress, progress: 0, detail: "")
         } else if status.contains("Loading") {
             markPreviousStagesCompleted(before: .loading)
@@ -894,6 +996,28 @@ class SimpleEditorViewModel: ObservableObject {
             generationStages[.volumeDecoding] = StageProgress(status: .completed, progress: 1.0, detail: "")
             generationStages[.saving] = StageProgress(status: .inProgress, progress: 0, detail: "")
         }
+    }
+
+    private func parseDownloadProgress(_ status: String) -> (Double, String) {
+        var progress: Double = 0
+        var detail = ""
+
+        // Parse HuggingFace download progress: "Fetching 10 files: 50%|..." or percentage
+        if let percentRange = status.range(of: #"(\d+)%"#, options: .regularExpression) {
+            let percentStr = status[percentRange].dropLast()
+            if let percent = Double(percentStr) {
+                progress = percent / 100.0
+            }
+        }
+
+        // Parse file count if available
+        if let filesRange = status.range(of: #"(\d+)/(\d+)"#, options: .regularExpression) {
+            detail = String(status[filesRange])
+        } else if status.contains("files") {
+            detail = "Downloading..."
+        }
+
+        return (progress, detail)
     }
     
     private func markPreviousStagesCompleted(before stage: GenerationStage) {
@@ -1081,12 +1205,13 @@ class SimpleEditorViewModel: ObservableObject {
     }
 
     func analyzeMesh() async {
-        guard let modelURL = generated3DModelURL else { return }
+        guard let modelURL = currentMeshURL else { return }
 
         await MainActor.run {
             isAnalyzingMesh = true
             meshComponents.removeAll()
             selectedComponentIndices.removeAll()
+            componentFiles.removeAll()
         }
 
         let result = await runMeshProcessor(command: "analyze", inputPath: modelURL.path)
@@ -1112,6 +1237,36 @@ class SimpleEditorViewModel: ObservableObject {
                         size: comp["size"] as? Double ?? 0,
                         isWatertight: comp["is_watertight"] as? Bool ?? false
                     )
+                }
+            }
+        }
+
+        // Extract components for 3D visualization if there are multiple
+        if meshComponents.count > 1 {
+            await extractComponentsForVisualization()
+        }
+    }
+
+    private func extractComponentsForVisualization() async {
+        guard let modelURL = currentMeshURL else { return }
+
+        let tempDir = NSTemporaryDirectory() + "mesh_components_\(UUID().uuidString)"
+
+        let result = await runMeshProcessor(
+            command: "extract_all",
+            inputPath: modelURL.path,
+            outputPath: tempDir
+        )
+
+        await MainActor.run {
+            if let result = result,
+               result["success"] as? Bool == true,
+               let components = result["components"] as? [[String: Any]] {
+
+                componentFiles = components.compactMap { comp -> ComponentFile? in
+                    guard let index = comp["index"] as? Int,
+                          let path = comp["path"] as? String else { return nil }
+                    return ComponentFile(index: index, path: path)
                 }
             }
         }

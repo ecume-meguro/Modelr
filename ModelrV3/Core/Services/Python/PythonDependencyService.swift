@@ -159,7 +159,7 @@ class PythonDependencyService {
         
         let process = Process()
         process.executableURL = URL(fileURLWithPath: uvPath)
-        process.arguments = ["run", hunyuanScript, "--warmup"]
+        process.arguments = ["run", hunyuanScript, "--warmup", "--model", "std"]
         process.currentDirectoryURL = hunyuanDir
         
         var env = ProcessInfo.processInfo.environment

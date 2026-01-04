@@ -114,28 +114,30 @@ class PythonProcessManager {
         outputPath: URL,
         steps: Int,
         resolution: Int,
+        modelVariant: String = "std",
         progressCallback: @escaping (String) -> Void,
         completion: @escaping (Result<URL, Error>) -> Void
     ) {
         let hunyuanDir = appSupportDir.appendingPathComponent("Hunyuan3D")
         let hunyuanVenv = hunyuanDir.appendingPathComponent(".venv")
         let hunyuanScript = hunyuanDir.appendingPathComponent("hunyuan_wrapper.py").path
-        
+
         isGenerationCancelled = false
-        
+
         let process = Process()
         currentGenerationProcess = process
         process.executableURL = URL(fileURLWithPath: uvPath)
-        
+
         var args = [
             "run", hunyuanScript,
             "--image", imagePath,
             "--output", outputPath.path,
             "--output-dir", hunyuanDir.path,
+            "--model", modelVariant,
             "--steps", "\(steps)",
             "--resolution", "\(resolution)"
         ]
-        
+
         if !maskPath.isEmpty {
             args.insert(contentsOf: ["--mask", maskPath], at: 4)
         }
@@ -159,8 +161,11 @@ class PythonProcessManager {
             let data = handle.availableData
             if let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty {
                 print("[Hunyuan] \(line)")
-                
-                if line.contains("Extracting foreground") {
+
+                // Download progress from HuggingFace
+                if line.contains("Downloading") || line.contains("Fetching") || line.contains("downloading") {
+                    progressCallback("Downloading: \(line)")
+                } else if line.contains("Extracting foreground") {
                     progressCallback("Extracting foreground...")
                 } else if line.contains("Loading Hunyuan3D pipeline") {
                     progressCallback("Loading model...")

@@ -169,10 +169,10 @@ struct AppConstants {
     static let minWindowHeight: CGFloat = 700
     
     /// Minimum sidebar width
-    static let minSidebarWidth: CGFloat = 280
-    
+    static let minSidebarWidth: CGFloat = 320
+
     /// Maximum sidebar width
-    static let maxSidebarWidth: CGFloat = 350
+    static let maxSidebarWidth: CGFloat = 420
     
     /// Minimum image area width
     static let minImageAreaWidth: CGFloat = 500

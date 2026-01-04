@@ -34,9 +34,23 @@ struct ImageCanvas: View {
     @ViewBuilder
     private var imageContent: some View {
         Group {
-            if viewModel.currentStep == .postProcess, let modelURL = viewModel.currentMeshURL {
-                ModelViewerContainer(modelURL: modelURL)
+            if viewModel.currentStep == .postProcess {
+                if !viewModel.componentFiles.isEmpty {
+                    // Use component viewer for highlighting when multiple components
+                    ComponentModelViewerContainer(
+                        componentFiles: viewModel.componentFiles.map {
+                            ComponentModelViewer.ComponentFile(index: $0.index, path: $0.path)
+                        },
+                        selectedIndices: viewModel.selectedComponentIndices
+                    )
+                    .id(viewModel.componentFiles.count) // Refresh when components change
                     .padding(AppDesign.Spacing.p24)
+                } else if let modelURL = viewModel.currentMeshURL {
+                    // Fallback to regular viewer for single component
+                    ModelViewerContainer(modelURL: modelURL)
+                        .id(modelURL)
+                        .padding(AppDesign.Spacing.p24)
+                }
             } else if viewModel.currentStep == .generate, let modelURL = viewModel.generated3DModelURL {
                 ModelViewerContainer(modelURL: modelURL)
                     .padding(AppDesign.Spacing.p24)

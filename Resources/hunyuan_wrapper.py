@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Hunyuan3D-2 Model Generation Wrapper for ModelrV3
+Hunyuan3D-2.1 Model Generation Wrapper for ModelrV3
 
-Generates 3D models from masked images using Tencent's Hunyuan3D-2.
+Generates 3D models from masked images using Tencent's Hunyuan3D-2.1.
 Supports self-test mode for validation during app startup.
 Shape generation only (no texture/paint pipeline).
 """
@@ -104,17 +104,17 @@ os.environ["HUGGINGFACE_HUB_CACHE"] = str(HUNYUAN_CACHE_DIR / "hf_cache")
 os.environ["TORCH_HOME"] = str(HUNYUAN_CACHE_DIR / "torch_home")
 
 
-def load_pipeline(model_variant: str = "mini", device: str = "mps"):
-    """Load the Hunyuan3D shape generation pipeline."""
+def load_pipeline(model_variant: str = "std", device: str = "mps"):
+    """Load the Hunyuan3D-2.1 shape generation pipeline."""
     try:
         from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
 
         repo_map = {
             "mini": ("tencent/Hunyuan3D-2mini", "hunyuan3d-dit-v2-mini"),
-            "std": ("tencent/Hunyuan3D-2", "hunyuan3d-dit-v2-0"),
+            "std": ("tencent/Hunyuan3D-2.1", "hunyuan3d-dit-v2-1"),
         }
 
-        repo_id, subfolder = repo_map.get(model_variant, repo_map["mini"])
+        repo_id, subfolder = repo_map.get(model_variant, repo_map["std"])
 
         log_info(f"Loading Hunyuan3D pipeline: {repo_id}/{subfolder}")
 
@@ -183,10 +183,10 @@ def extract_foreground_with_mask(
 def generate_3d_model(
     image: Image.Image,
     output_path: str,
-    model_variant: str = "mini",
+    model_variant: str = "std",
     device: Optional[str] = None,
-    num_steps: int = 30,
-    octree_resolution: int = 256,
+    num_steps: int = 50,
+    octree_resolution: int = 384,
     progress_callback: Optional[Callable[[str, float], None]] = None,
 ) -> str:
     """Generate a 3D model from an RGBA image (shape only, no texture)."""
@@ -247,7 +247,7 @@ def run_self_test(
     mask_path: str,
     original_image_path: str,
     output_dir: str,
-    model_variant: str = "mini",
+    model_variant: str = "std",
 ) -> str:
     """Run self-test: generate 3D model from masked self-test image."""
     try:
@@ -274,8 +274,8 @@ def run_self_test(
             output_path=output_path,
             model_variant=model_variant,
             device=device,
-            num_steps=35,
-            octree_resolution=150,
+            num_steps=50,
+            octree_resolution=384,
         )
 
         print(f"SELF_TEST_MODEL_PATH:{output_path}", flush=True)
@@ -287,10 +287,10 @@ def run_self_test(
         raise
 
 
-def warmup_model(model_variant: str = "mini") -> None:
-    """Pre-download and load the model to warm up the cache."""
+def warmup_model(model_variant: str = "std") -> None:
+    """Pre-download and load the Hunyuan3D-2.1 model to warm up the cache."""
     try:
-        log_info("Warming up Hunyuan3D model (downloading if needed)...")
+        log_info("Warming up Hunyuan3D-2.1 model (downloading if needed)...")
         device = get_device() if logger else "mps"
         _ = load_pipeline(model_variant, device=device)
         log_info("Model warmup complete!")
@@ -300,7 +300,7 @@ def warmup_model(model_variant: str = "mini") -> None:
 
 
 class HunyuanModelManager:
-    def __init__(self, model_variant: str = "mini"):
+    def __init__(self, model_variant: str = "std"):
         self.model_variant = model_variant
         self.pipeline = None
         self.device = None
@@ -311,7 +311,7 @@ class HunyuanModelManager:
             self.pipeline = load_pipeline(self.model_variant, self.device)
             return self.pipeline
         except Exception as e:
-            raise ModelLoadError(f"Failed to load Hunyuan3D model: {e}")
+            raise ModelLoadError(f"Failed to load Hunyuan3D-2.1 model: {e}")
 
     def cleanup(self):
         if self.pipeline is not None:
@@ -328,7 +328,7 @@ class HunyuanModelManager:
                 log_warning(f"Error clearing CUDA cache: {e}")
 
         gc.collect()
-        log_debug("Hunyuan3D model cleanup complete")
+        log_debug("Hunyuan3D-2.1 model cleanup complete")
 
     def __enter__(self):
         self.load()
@@ -339,7 +339,7 @@ class HunyuanModelManager:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Hunyuan3D-2 Shape Generation Wrapper")
+    parser = argparse.ArgumentParser(description="Hunyuan3D-2.1 Shape Generation Wrapper")
     parser.add_argument(
         "--test",
         nargs=2,
@@ -356,9 +356,9 @@ def main():
     )
     parser.add_argument(
         "--model",
-        default="mini",
+        default="std",
         choices=["mini", "std"],
-        help="Model variant: mini (faster) or std (higher quality)",
+        help="Model variant: mini (faster, 2mini) or std (Hunyuan3D-2.1, higher quality)",
     )
     parser.add_argument("--image", help="Input image path for generation")
     parser.add_argument("--mask", help="Mask image path (white=foreground)")
@@ -369,8 +369,8 @@ def main():
     parser.add_argument(
         "--resolution",
         type=int,
-        default=512,
-        help="Octree mesh resolution (default: 512)",
+        default=384,
+        help="Octree mesh resolution (default: 384)",
     )
     parser.add_argument(
         "--no_texture", action="store_true", help="(ignored, texture not supported)"
