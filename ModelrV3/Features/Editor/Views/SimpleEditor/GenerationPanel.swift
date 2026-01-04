@@ -29,8 +29,10 @@ struct GenerationPanel: View {
     private var visibleStages: [GenerationStage] {
         GenerationStage.allCases.filter { stage in
             if stage == .downloading {
-                // Only show downloading stage if using large model and it's not downloaded
-                return viewModel.selectedPreset.usesLargeModel && !viewModel.isLargeModelDownloaded
+                // Show downloading stage if the needed model isn't downloaded
+                let needsLargeModel = viewModel.selectedPreset.usesLargeModel && !viewModel.isLargeModelDownloaded
+                let needsSmallModel = !viewModel.selectedPreset.usesLargeModel && !viewModel.isSmallModelDownloaded
+                return needsLargeModel || needsSmallModel
             }
             return true
         }
@@ -99,6 +101,28 @@ struct GenerationPanel: View {
                         .progressViewStyle(.linear)
                         .tint(AppDesign.accent)
                 }
+
+                // Show download statistics for downloading stage
+                if stage == .downloading && stageData.status == .inProgress && viewModel.downloadTotalBytes > 0 {
+                    HStack {
+                        Text(viewModel.formattedDownloadProgress)
+                            .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
+                            .foregroundStyle(.secondary)
+
+                        Spacer()
+
+                        Text(viewModel.formattedDownloadSpeed)
+                            .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
+                            .foregroundStyle(.secondary)
+
+                        Text("•")
+                            .foregroundStyle(.tertiary)
+
+                        Text(viewModel.formattedTimeRemaining)
+                            .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
     }
@@ -130,18 +154,18 @@ struct GenerationPanel: View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
             // Quality Preset Section (unified model + quality dropdown)
             VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-                HStack(spacing: AppDesign.Spacing.p4) {
-                    AppDesign.SectionLabel("Quality")
-
-                    Image(systemName: "info.circle")
-                        .font(.system(size: AppDesign.FontSize.caption))
-                        .foregroundStyle(.tertiary)
-                        .help("Options marked with ↓ require downloading a larger model (~7 GB) on first use. This provides higher quality results.")
-                }
+                AppDesign.SectionLabel("Quality")
 
                 Menu {
                     // Fast model presets
                     Section {
+                        // Info row explaining the download icon for small model
+                        if !viewModel.isSmallModelDownloaded {
+                            Label("Requires 7.2 GB download on first use", systemImage: "info.circle")
+                                .foregroundStyle(.secondary)
+                                .font(.caption)
+                        }
+
                         ForEach([GenerationPreset.extraDraft, .draft, .normal, .high, .quality], id: \.self) { preset in
                             Button {
                                 viewModel.selectedPreset = preset
@@ -150,6 +174,10 @@ struct GenerationPanel: View {
                             } label: {
                                 HStack {
                                     Text(preset.rawValue)
+                                    if !viewModel.isSmallModelDownloaded {
+                                        Image(systemName: "arrow.down.circle")
+                                            .foregroundStyle(.orange)
+                                    }
                                     Spacer()
                                     Text(preset.estimatedTime)
                                         .foregroundStyle(.secondary)
@@ -160,8 +188,15 @@ struct GenerationPanel: View {
 
                     Divider()
 
-                    // Large model presets (XQuality)
+                    // Large model presets (XQuality) with info about download
                     Section {
+                        // Info row explaining the download icon
+                        if !viewModel.isLargeModelDownloaded {
+                            Label("Requires 7.4 GB download on first use", systemImage: "info.circle")
+                                .foregroundStyle(.secondary)
+                                .font(.caption)
+                        }
+
                         ForEach([GenerationPreset.xQuality, .xQualityHigh, .xQualityMax], id: \.self) { preset in
                             Button {
                                 viewModel.selectedPreset = preset
@@ -185,7 +220,9 @@ struct GenerationPanel: View {
                     HStack {
                         Text(viewModel.selectedPreset.rawValue)
                             .font(.system(size: AppDesign.FontSize.body))
-                        if viewModel.selectedPreset.usesLargeModel && !viewModel.isLargeModelDownloaded {
+                        // Show download icon if needed model isn't downloaded
+                        if (viewModel.selectedPreset.usesLargeModel && !viewModel.isLargeModelDownloaded) ||
+                           (!viewModel.selectedPreset.usesLargeModel && !viewModel.isSmallModelDownloaded) {
                             Image(systemName: "arrow.down.circle")
                                 .font(.system(size: AppDesign.FontSize.caption))
                                 .foregroundStyle(.orange)
@@ -215,13 +252,22 @@ struct GenerationPanel: View {
                         .foregroundStyle(.tertiary)
                 }
 
-                // Show download warning for XQuality presets
+                // Show download warning when model needs downloading
                 if viewModel.selectedPreset.usesLargeModel && !viewModel.isLargeModelDownloaded {
                     HStack(spacing: AppDesign.Spacing.p4) {
                         Image(systemName: "arrow.down.circle")
                             .font(.system(size: AppDesign.FontSize.caption))
                             .foregroundStyle(AppDesign.warning)
-                        Text("Will download \(viewModel.selectedPreset.downloadSize ?? "~7 GB") on first use")
+                        Text("Will download 7.4 GB on first use")
+                            .font(.system(size: AppDesign.FontSize.caption))
+                            .foregroundStyle(AppDesign.warning)
+                    }
+                } else if !viewModel.selectedPreset.usesLargeModel && !viewModel.isSmallModelDownloaded {
+                    HStack(spacing: AppDesign.Spacing.p4) {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.system(size: AppDesign.FontSize.caption))
+                            .foregroundStyle(AppDesign.warning)
+                        Text("Will download 7.2 GB on first use")
                             .font(.system(size: AppDesign.FontSize.caption))
                             .foregroundStyle(AppDesign.warning)
                     }

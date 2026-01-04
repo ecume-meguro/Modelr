@@ -87,6 +87,7 @@ class SimpleEditorViewModel: ObservableObject {
     @Published var customResolution: CGFloat = 256
     @Published var generationStages: [GenerationStage: StageProgress] = [:]
     @Published var isLargeModelDownloaded: Bool = false
+    @Published var isSmallModelDownloaded: Bool = false
 
     // MARK: - Warning Dialogs
     @Published var showBackWarning: Bool = false
@@ -174,11 +175,11 @@ class SimpleEditorViewModel: ObservableObject {
             currentStep = .setup
         }
 
-        checkLargeModelDownloaded()
+        checkModelsDownloaded()
     }
 
-    /// Check if the large model (Hunyuan3D-2.1) is downloaded
-    func checkLargeModelDownloaded() {
+    /// Check if models are downloaded
+    func checkModelsDownloaded() {
         let fileManager = FileManager.default
         guard let appSupportDir = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
 
@@ -187,15 +188,36 @@ class SimpleEditorViewModel: ObservableObject {
             .appendingPathComponent("Hunyuan3D")
             .appendingPathComponent("hf_cache")
 
+        // Check large model (Hunyuan3D-2.1)
         let largeModelPath = hunyuanCacheDir.appendingPathComponent("models--tencent--Hunyuan3D-2.1")
         if fileManager.fileExists(atPath: largeModelPath.path) {
             if let contents = try? fileManager.contentsOfDirectory(atPath: largeModelPath.path),
                contents.contains("snapshots") || contents.contains("blobs") {
                 isLargeModelDownloaded = true
-                return
+            } else {
+                isLargeModelDownloaded = false
             }
+        } else {
+            isLargeModelDownloaded = false
         }
-        isLargeModelDownloaded = false
+
+        // Check small model (Hunyuan3D-2mini)
+        let smallModelPath = hunyuanCacheDir.appendingPathComponent("models--tencent--Hunyuan3D-2mini")
+        if fileManager.fileExists(atPath: smallModelPath.path) {
+            if let contents = try? fileManager.contentsOfDirectory(atPath: smallModelPath.path),
+               contents.contains("snapshots") || contents.contains("blobs") {
+                isSmallModelDownloaded = true
+            } else {
+                isSmallModelDownloaded = false
+            }
+        } else {
+            isSmallModelDownloaded = false
+        }
+    }
+
+    /// Check if the large model (Hunyuan3D-2.1) is downloaded (legacy)
+    func checkLargeModelDownloaded() {
+        checkModelsDownloaded()
     }
 
     // MARK: - Image Loading

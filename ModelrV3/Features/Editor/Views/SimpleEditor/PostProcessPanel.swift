@@ -33,9 +33,9 @@ struct PostProcessPanel: View {
             let count = viewModel.selectedComponentIndices.count
             Text("This will permanently delete \(count) component\(count == 1 ? "" : "s") from the mesh.")
         }
-        .alert("Keep Selected Only?", isPresented: $viewModel.showKeepSelectedConfirmation) {
+        .alert("Keep Only Selected?", isPresented: $viewModel.showKeepSelectedConfirmation) {
             Button("Cancel", role: .cancel) { }
-            Button("Keep Selected", role: .destructive) {
+            Button("Keep Only Selected", role: .destructive) {
                 Task { await viewModel.keepSelectedComponents() }
             }
         } message: {
@@ -199,7 +199,7 @@ struct PostProcessPanel: View {
                     // Only Keep Selected
                     if canKeep {
                         AppDesign.GlassButtonSecondary(
-                            "Keep Selected",
+                            "Keep Only Selected",
                             icon: "checkmark.circle"
                         ) {
                             viewModel.showKeepSelectedConfirmation = true
