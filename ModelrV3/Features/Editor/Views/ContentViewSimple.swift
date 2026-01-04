@@ -51,8 +51,8 @@ struct ContentViewSimple: View {
     // Generation settings
     @State private var selectedPreset: QualityPreset = .normal
     @State private var showAdvancedSettings = false
-    @State private var customSteps: Double = 35
-    @State private var customResolution: Double = 256
+    @State private var customSteps: CGFloat = 35
+    @State private var customResolution: CGFloat = 256
 
     // Multi-stage generation progress
     @State private var generationStages: [GenerationStage: StageProgress] = [:]
@@ -80,37 +80,24 @@ struct ContentViewSimple: View {
         case failed     // Remaining steps after cancellation
     }
 
-    // 10 Neon colors for mask regions
-    private let maskColors: [Color] = [
-        Color(red: 0x39/255, green: 0xFF/255, blue: 0x14/255),  // #39FF14 Neon Green
-        Color(red: 0xFF/255, green: 0x10/255, blue: 0xF0/255),  // #FF10F0 Neon Pink
-        Color(red: 0xFF/255, green: 0xFF/255, blue: 0x00/255),  // #FFFF00 Neon Yellow
-        Color(red: 0x00/255, green: 0xCA/255, blue: 0xFF/255),  // #00CAFF Neon Blue
-        Color(red: 0xFF/255, green: 0x7E/255, blue: 0x00/255),  // #FF7E00 Neon Orange
-        Color(red: 0xB9/255, green: 0x15/255, blue: 0xCC/255),  // #B915CC Neon Purple
-        Color(red: 0xFF/255, green: 0x00/255, blue: 0x4D/255),  // #FF004D Neon Red
-        Color(red: 0x00/255, green: 0xFF/255, blue: 0xFF/255),  // #00FFFF Neon Cyan
-        Color(red: 0xDF/255, green: 0xFF/255, blue: 0x00/255),  // #DFFF00 Electric Lime
-        Color(red: 0xFF/255, green: 0x00/255, blue: 0xFF/255),  // #FF00FF Hot Magenta
-    ]
-
     private func colorForMask(_ index: Int) -> Color {
-        maskColors[index % maskColors.count]
+        AppDesign.neonColors[index % AppDesign.neonColors.count]
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            // Image area (main content)
-            imageArea
-                .frame(minWidth: 500)
-
-            Divider()
-
+        NavigationSplitView {
             // Sidebar
             sidebar
-                .frame(width: 260)
+                .navigationSplitViewColumnWidth(min: 280, ideal: 300, max: 350)
+                .background(.ultraThinMaterial)
+        } detail: {
+            // Image area (main content)
+            imageArea
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(NSColor.windowBackgroundColor))
         }
-        .frame(minWidth: 800, minHeight: 600)
+        .navigationSplitViewStyle(.balanced)
+        .frame(minWidth: 1000, minHeight: 700)
         .onDrop(of: [.image, .fileURL], isTargeted: $isDragging) { providers in
             handleDrop(providers: providers)
         }
@@ -130,26 +117,56 @@ struct ContentViewSimple: View {
 
     private var imageArea: some View {
         ZStack {
-            Color(NSColor.textBackgroundColor).opacity(0.3)
+            // Subtle textured background
+            Color(NSColor.textBackgroundColor).opacity(0.1)
+            
+            // Checkerboard for transparency feel
+            AppDesign.Checkerboard()
+                .opacity(0.5)
+                .allowsHitTesting(false)
 
             imageContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            
+            // Breadcrumb / Filename overlay
+            VStack {
+                HStack {
+                    if let path = inputImagePath {
+                        let fileName = URL(fileURLWithPath: path).lastPathComponent
+                        HStack(spacing: AppDesign.Spacing.p8) {
+                            Image(systemName: "doc.fill")
+                                .font(.system(size: 10))
+                            Text(fileName)
+                                .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                        }
+                        .padding(.horizontal, AppDesign.Spacing.p12)
+                        .padding(.vertical, AppDesign.Spacing.p6)
+                        .background(.ultraThinMaterial)
+                        .clipShape(Capsule())
+                        .overlay(Capsule().stroke(Color.white.opacity(0.1), lineWidth: 1))
+                        .padding(AppDesign.Spacing.p16)
+                    }
+                    Spacer()
+                }
+                Spacer()
+            }
 
-            // Scroll wheel zoom overlay - captures scroll and converts to zoom
-            // Only show when NOT viewing 3D model (3D viewer has its own controls)
+            // Scroll wheel zoom overlay
             if !(currentStep == .generate && generated3DModelURL != nil) {
                 ScrollWheelZoomOverlay(zoomScale: $zoomScale, minZoom: 0.5, maxZoom: 5.0)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
     }
 
     @ViewBuilder
     private var imageContent: some View {
-        ZStack {
-
+        Group {
             if currentStep == .generate, let modelURL = generated3DModelURL {
                 ModelViewerContainer(modelURL: modelURL)
+                    .padding(AppDesign.Spacing.p24)
             } else if currentStep == .generate, let composite = compositeImage {
-                // Show composite image preview before/during generation
+                // Show composite image preview
                 GeometryReader { geo in
                     let size = fitSize(composite.size, in: geo.size)
                     VStack {
@@ -157,8 +174,9 @@ struct ContentViewSimple: View {
                             .resizable()
                             .aspectRatio(contentMode: .fit)
                             .frame(width: size.width, height: size.height)
+                            .shadow(color: .black.opacity(0.2), radius: 20, y: 10)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(width: geo.size.width, height: geo.size.height)
                 }
             } else if let image = inputImage {
                 GeometryReader { geo in
@@ -169,9 +187,9 @@ struct ContentViewSimple: View {
                             .resizable()
                             .aspectRatio(contentMode: .fit)
                             .frame(width: size.width, height: size.height)
+                            .shadow(color: .black.opacity(0.15), radius: 15, y: 8)
 
                         if currentStep == .segment {
-                            // Show ALL masks - non-selected first, then selected on top
                             // Non-selected masks
                             ForEach(Array(allMasks.enumerated()).filter { $0.offset != selectedMaskIndex }, id: \.offset) { index, maskData in
                                 let color = colorForMask(index)
@@ -185,28 +203,7 @@ struct ContentViewSimple: View {
                                             .resizable()
                                             .frame(width: size.width, height: size.height)
                                     )
-                                    .opacity(0.60)
-                                    .allowsHitTesting(false)
-
-                                // Border
-                                Rectangle()
-                                    .fill(color)
-                                    .frame(width: size.width, height: size.height)
-                                    .mask(
-                                        ZStack {
-                                            Image(nsImage: maskData.image)
-                                                .resizable()
-                                                .frame(width: size.width, height: size.height)
-                                            Image(nsImage: maskData.image)
-                                                .resizable()
-                                                .frame(width: size.width, height: size.height)
-                                                .padding(8)
-                                                .blur(radius: 1)
-                                                .blendMode(.destinationOut)
-                                        }
-                                        .compositingGroup()
-                                    )
-                                    .opacity(1.0)
+                                    .opacity(0.4)
                                     .allowsHitTesting(false)
                             }
 
@@ -224,7 +221,7 @@ struct ContentViewSimple: View {
                                             .resizable()
                                             .frame(width: size.width, height: size.height)
                                     )
-                                    .opacity(0.90)
+                                    .opacity(0.7)
                                     .allowsHitTesting(false)
 
                                 // Border
@@ -239,7 +236,7 @@ struct ContentViewSimple: View {
                                             Image(nsImage: maskData.image)
                                                 .resizable()
                                                 .frame(width: size.width, height: size.height)
-                                                .padding(12)
+                                                .padding(6)
                                                 .blur(radius: 1)
                                                 .blendMode(.destinationOut)
                                         }
@@ -252,9 +249,10 @@ struct ContentViewSimple: View {
                             // Points overlay
                             ForEach(selectedPoints) { point in
                                 Circle()
-                                    .fill(point.isPositive ? Color.green : Color.red)
-                                    .frame(width: 14, height: 14)
+                                    .fill(point.isPositive ? AppDesign.success : AppDesign.destructive)
+                                    .frame(width: 12, height: 12)
                                     .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                                    .shadow(color: .black.opacity(0.3), radius: 2)
                                     .position(
                                         x: point.normalizedCoords.x * size.width,
                                         y: point.normalizedCoords.y * size.height
@@ -262,47 +260,26 @@ struct ContentViewSimple: View {
                             }
                         }
 
-                        // Touchup mode - show editable mask
+                        // Touchup mode
                         if currentStep == .touchup, let maskImage = editableMaskImage {
-                            // Mask overlay
                             Rectangle()
-                                .fill(Color.red)
+                                .fill(AppDesign.maskColor)
                                 .frame(width: size.width, height: size.height)
                                 .mask(
                                     Image(nsImage: maskImage)
                                         .resizable()
                                         .frame(width: size.width, height: size.height)
                                 )
-                                .opacity(0.70)
-                                .allowsHitTesting(false)
-
-                            // Border
-                            Rectangle()
-                                .fill(Color.red)
-                                .frame(width: size.width, height: size.height)
-                                .mask(
-                                    ZStack {
-                                        Image(nsImage: maskImage)
-                                            .resizable()
-                                            .frame(width: size.width, height: size.height)
-                                        Image(nsImage: maskImage)
-                                            .resizable()
-                                            .frame(width: size.width, height: size.height)
-                                            .padding(10)
-                                            .blur(radius: 1)
-                                            .blendMode(.destinationOut)
-                                    }
-                                    .compositingGroup()
-                                )
-                                .opacity(1.0)
+                                .opacity(0.6)
                                 .allowsHitTesting(false)
 
                             // Brush preview circle
                             if let pos = brushPreviewPosition {
                                 let scaledBrushSize = brushSize * size.width / 500.0
                                 Circle()
-                                    .stroke(brushMode == .add ? Color.green : Color.red, lineWidth: 2)
+                                    .stroke(brushMode == .add ? AppDesign.success : AppDesign.eraserColor, lineWidth: 2)
                                     .frame(width: scaledBrushSize, height: scaledBrushSize)
+                                    .background(Circle().fill((brushMode == .add ? AppDesign.success : AppDesign.eraserColor).opacity(0.1)))
                                     .position(x: pos.x * size.width, y: pos.y * size.height)
                                     .allowsHitTesting(false)
                             }
@@ -324,21 +301,26 @@ struct ContentViewSimple: View {
                             }
                         }
                         .frame(width: size.width, height: size.height)
+                        .position(x: geo.size.width / 2, y: geo.size.height / 2)
                     )
                     .onTapGesture { location in
+                        // Adjusted tap location to be relative to the centered image frame
+                        let imageX = (geo.size.width - size.width) / 2
+                        let imageY = (geo.size.height - size.height) / 2
+                        
                         let normalized = CGPoint(
-                            x: (location.x - (geo.size.width - size.width) / 2) / size.width,
-                            y: (location.y - (geo.size.height - size.height) / 2) / size.height
+                            x: (location.x - imageX) / size.width,
+                            y: (location.y - imageY) / size.height
                         )
                         guard normalized.x >= 0 && normalized.x <= 1 && normalized.y >= 0 && normalized.y <= 1 else { return }
 
                         if currentStep == .segment && !allMasks.isEmpty {
-                            // Left-click to select existing mask regions
                             if let clickedIndex = findMaskAtPoint(normalized, displaySize: size) {
-                                selectedMaskIndex = clickedIndex
+                                withAnimation(.spring(response: 0.3)) {
+                                    selectedMaskIndex = clickedIndex
+                                }
                             }
                         } else if currentStep == .touchup {
-                            // Single click to paint
                             saveUndoState()
                             paintOnMask(at: normalized)
                         }
@@ -347,9 +329,12 @@ struct ContentViewSimple: View {
                         if currentStep == .touchup {
                             switch phase {
                             case .active(let location):
+                                let imageX = (geo.size.width - size.width) / 2
+                                let imageY = (geo.size.height - size.height) / 2
+                                
                                 let normalized = CGPoint(
-                                    x: (location.x - (geo.size.width - size.width) / 2) / size.width,
-                                    y: (location.y - (geo.size.height - size.height) / 2) / size.height
+                                    x: (location.x - imageX) / size.width,
+                                    y: (location.y - imageY) / size.height
                                 )
                                 if normalized.x >= 0 && normalized.x <= 1 && normalized.y >= 0 && normalized.y <= 1 {
                                     brushPreviewPosition = normalized
@@ -367,15 +352,17 @@ struct ContentViewSimple: View {
                         currentStep == .touchup ?
                         DragGesture(minimumDistance: 1)
                             .onChanged { value in
-                                // Save mask state at start of stroke
                                 if !isStrokeInProgress {
                                     isStrokeInProgress = true
                                     saveUndoState()
                                 }
 
+                                let imageX = (geo.size.width - size.width) / 2
+                                let imageY = (geo.size.height - size.height) / 2
+                                
                                 let normalized = CGPoint(
-                                    x: (value.location.x - (geo.size.width - size.width) / 2) / size.width,
-                                    y: (value.location.y - (geo.size.height - size.height) / 2) / size.height
+                                    x: (value.location.x - imageX) / size.width,
+                                    y: (value.location.y - imageY) / size.height
                                 )
                                 if normalized.x >= 0 && normalized.x <= 1 && normalized.y >= 0 && normalized.y <= 1 {
                                     brushPreviewPosition = normalized
@@ -398,41 +385,59 @@ struct ContentViewSimple: View {
                 .overlay(alignment: .bottomTrailing) {
                     // Zoom controls
                     if zoomScale != 1.0 {
-                        Button(action: { withAnimation { zoomScale = 1.0 } }) {
+                        Button(action: { withAnimation(.spring()) { zoomScale = 1.0 } }) {
                             HStack(spacing: 4) {
                                 Text("\(Int(zoomScale * 100))%")
-                                    .font(.caption.monospacedDigit())
+                                    .font(.system(size: AppDesign.FontSize.caption, weight: .medium, design: .monospaced))
                                 Image(systemName: "arrow.counterclockwise")
-                                    .font(.caption)
+                                    .font(.system(size: AppDesign.FontSize.caption))
                             }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
                             .background(.ultraThinMaterial)
-                            .cornerRadius(6)
+                            .clipShape(Capsule())
+                            .overlay(Capsule().stroke(Color.white.opacity(0.1), lineWidth: 1))
                         }
                         .buttonStyle(.plain)
-                        .padding(12)
+                        .padding(AppDesign.Spacing.p24)
+                        .transition(.scale.combined(with: .opacity))
                     }
                 }
             } else {
                 // Drop zone
-                VStack(spacing: 12) {
-                    Image(systemName: "photo")
-                        .font(.system(size: 40))
-                        .foregroundColor(.secondary)
+                VStack(spacing: AppDesign.Spacing.p24) {
+                    ZStack {
+                        Circle()
+                            .fill(.ultraThinMaterial)
+                            .frame(width: 100, height: 100)
+                            .overlay(Circle().stroke(Color.primary.opacity(0.1), lineWidth: 1))
+                        
+                        Image(systemName: "square.and.arrow.down")
+                            .font(.system(size: 40, weight: .light))
+                            .foregroundColor(.accentColor)
+                    }
+                    .shadow(color: .black.opacity(0.1), radius: 20)
 
-                    Text("Drop image here")
-                        .foregroundColor(.secondary)
+                    VStack(spacing: AppDesign.Spacing.p8) {
+                        Text("Ready for Creation")
+                            .font(.system(size: AppDesign.FontSize.title3, weight: .bold))
+                        
+                        Text("Drag and drop an image here or click to browse")
+                            .font(.system(size: AppDesign.FontSize.body))
+                            .foregroundColor(.secondary)
+                    }
 
-                    Button("Select File") { selectImage() }
-                        .buttonStyle(.borderedProminent)
+                    AppDesign.GlassButton("Select Image", icon: "photo") {
+                        selectImage()
+                    }
+                    .controlSize(.large)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [6, 3]))
-                        .foregroundColor(.gray.opacity(0.4))
-                        .padding(20)
+                    RoundedRectangle(cornerRadius: 24)
+                        .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [8, 4]))
+                        .foregroundColor(.primary.opacity(0.1))
+                        .padding(AppDesign.Spacing.p48)
                 )
             }
         }
@@ -441,573 +446,517 @@ struct ContentViewSimple: View {
     // MARK: - Sidebar
 
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            // Title
-            Text("Modelr")
-                .font(.title2.bold())
+        VStack(alignment: .leading, spacing: 0) {
+            // Title Area
+            VStack(alignment: .leading, spacing: AppDesign.Spacing.p4) {
+                AppDesign.HeaderText(text: "Modelr", size: AppDesign.FontSize.title2)
+                AppDesign.SubheaderText(text: "V3 Professional")
+            }
+            .padding(.horizontal, AppDesign.Spacing.p16)
+            .padding(.top, AppDesign.Spacing.p24)
+            .padding(.bottom, AppDesign.Spacing.p16)
 
             Divider()
+                .padding(.horizontal, AppDesign.Spacing.p16)
 
-            // Step 1: Input
-            stepSection(number: 1, title: "Input", isActive: currentStep == .input, isDone: inputImage != nil) {
-                if inputImage != nil {
-                    HStack(spacing: 6) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 12))
-                            .foregroundColor(.green)
-                        Text("Image loaded")
-                            .font(.caption)
+            ScrollView {
+                VStack(alignment: .leading, spacing: AppDesign.Spacing.p16) {
+                    // Step 1: Input
+                    stepSection(number: 1, title: "Input", isActive: currentStep == .input, isDone: inputImage != nil) {
+                        VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+                            if inputImage != nil {
+                                AppDesign.CompletedRow("Image loaded")
+                            } else {
+                                AppDesign.HintText("Drop an image or click 'Select Image' in the center area to begin.")
+                            }
+                        }
                     }
-                }
-            }
 
-            // Step 2: Segment
-            stepSection(number: 2, title: "Segment", isActive: currentStep == .segment, isDone: currentStep == .touchup || currentStep == .generate) {
-                if currentStep == .segment {
-                    // Full segment controls when active
-                    VStack(alignment: .leading, spacing: 8) {
-                        // Pre-segmented toggle (if image has alpha)
-                        if imageHasAlpha {
-                            Toggle(isOn: $useExistingAlpha) {
-                                Text("Already segmented")
-                                    .font(.caption)
-                            }
-                            .toggleStyle(.checkbox)
-                            .onChange(of: useExistingAlpha) { _, newValue in
-                                if newValue {
-                                    createMaskFromAlpha()
-                                } else {
-                                    allMasks.removeAll()
-                                    selectedMaskIndex = 0
-                                }
-                            }
+                    // Step 2: Segment
+                    stepSection(number: 2, title: "Segment", isActive: currentStep == .segment, isDone: currentStep == .touchup || currentStep == .generate) {
+                        VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+                            if currentStep == .segment {
+                                segmentationControls
 
-                            if useExistingAlpha {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .font(.system(size: 12))
-                                        .foregroundColor(.green)
-                                    Text("Using existing transparency")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-
-                            Divider()
-                                .padding(.vertical, 4)
-                        }
-
-                        if !useExistingAlpha {
-                            // Text prompt
-                            HStack {
-                                TextField("e.g. dog, tree, person", text: $textPrompt)
-                                    .textFieldStyle(.roundedBorder)
-                                    .onSubmit { runTextPrediction() }
-
-                                Button("Find") { runTextPrediction() }
-                                    .disabled(textPrompt.isEmpty || env.isProcessing)
-                            }
-
-                            Text("Or right-click on the object")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-
-                        // Message if text search found nothing
-                        if textSearchPerformed && allMasks.isEmpty && !env.isProcessing {
-                            HStack(spacing: 6) {
-                                Image(systemName: "exclamationmark.circle")
-                                    .foregroundColor(.orange)
-                                Text("No '\(textPrompt)' found in image")
-                                    .font(.caption)
-                                    .foregroundColor(.orange)
-                            }
-                            .padding(.vertical, 6)
-                            .padding(.horizontal, 8)
-                            .background(Color.orange.opacity(0.1))
-                            .cornerRadius(6)
-                        }
-
-                        // Mask selection (when multiple masks found)
-                        if allMasks.count > 1 {
-                            Text("Select region:")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .padding(.top, 4)
-
-                            ForEach(Array(allMasks.enumerated()), id: \.offset) { index, maskData in
-                                let isSelected = index == selectedMaskIndex
-                                let color = colorForMask(index)
-
-                                Button(action: { selectedMaskIndex = index }) {
-                                    HStack(spacing: 8) {
-                                        // Neon color indicator
-                                        Circle()
-                                            .fill(color)
-                                            .frame(width: 12, height: 12)
-                                            .shadow(color: color.opacity(0.6), radius: isSelected ? 4 : 0)
-
-                                        Text("Region \(index + 1)")
-                                            .font(.caption)
-                                            .fontWeight(isSelected ? .semibold : .regular)
-
-                                        Spacer()
-
-                                        // Confidence percentage
-                                        Text(String(format: "%.0f%%", maskData.score * 100))
-                                            .font(.caption.monospacedDigit())
-                                            .foregroundColor(isSelected ? color : .secondary)
-
-                                        if isSelected {
-                                            Image(systemName: "checkmark.circle.fill")
-                                                .font(.caption)
-                                                .foregroundColor(color)
-                                        }
+                                sectionFooter {
+                                    AppDesign.GlassButton("Next: Touchup", icon: "wand.and.stars", disabled: allMasks.isEmpty) {
+                                        startTouchup()
                                     }
-                                    .padding(.vertical, 4)
-                                    .padding(.horizontal, 6)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 6)
-                                            .fill(isSelected ? color.opacity(0.15) : Color.clear)
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        } // End of if !useExistingAlpha
 
-                        // Clear button - available in both modes
-                        if !selectedPoints.isEmpty || !allMasks.isEmpty {
-                            HStack {
-                                if !selectedPoints.isEmpty {
-                                    Text("\(selectedPoints.count) point(s)")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                                Spacer()
-                                Button("Clear") {
-                                    clearSegmentation()
-                                    useExistingAlpha = false
-                                }
-                                    .font(.caption)
-                            }
-                        }
-                    }
-                } else if currentStep == .touchup || currentStep == .generate {
-                    // Completed state - show checkmark with selected region
-                    HStack(spacing: 6) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 12))
-                            .foregroundColor(.green)
-                        Text("Region \(selectedMaskIndex + 1) selected")
-                            .font(.caption)
-                    }
-                }
-            }
-
-            // Step 3: Touchup
-            stepSection(number: 3, title: "Touchup", isActive: currentStep == .touchup, isDone: currentStep == .generate) {
-                if currentStep == .touchup {
-                    VStack(alignment: .leading, spacing: 10) {
-                        // Brush mode toggle
-                        Text("Brush mode:")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-
-                        HStack(spacing: 8) {
-                            Button(action: { brushMode = .add }) {
-                                HStack {
-                                    Image(systemName: "plus.circle.fill")
-                                    Text("Add")
-                                }
-                                .padding(.vertical, 6)
-                                .padding(.horizontal, 12)
-                                .background(brushMode == .add ? Color.green.opacity(0.2) : Color.clear)
-                                .cornerRadius(6)
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundColor(brushMode == .add ? .green : .secondary)
-
-                            Button(action: { brushMode = .remove }) {
-                                HStack {
-                                    Image(systemName: "minus.circle.fill")
-                                    Text("Remove")
-                                }
-                                .padding(.vertical, 6)
-                                .padding(.horizontal, 12)
-                                .background(brushMode == .remove ? Color.red.opacity(0.2) : Color.clear)
-                                .cornerRadius(6)
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundColor(brushMode == .remove ? .red : .secondary)
-                        }
-
-                        // Brush size slider
-                        HStack {
-                            Text("Brush size:")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Text("\(Int(brushSize))px")
-                                .font(.caption.monospacedDigit())
-                                .foregroundColor(.primary)
-                        }
-
-                        HStack(spacing: 8) {
-                            Text("1")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                            Slider(value: $brushSize, in: 1...150)
-                                .controlSize(.small)
-                            Text("150")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-
-                        Text("Paint on the image to refine the mask")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                } else if currentStep == .generate {
-                    // Completed state
-                    HStack(spacing: 6) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 12))
-                            .foregroundColor(.green)
-                        Text("Mask refined")
-                            .font(.caption)
-                    }
-                }
-            }
-
-            // Step 4: Generate
-            stepSection(number: 4, title: "Generate 3D", isActive: currentStep == .generate, isDone: generated3DModelURL != nil) {
-                if currentStep == .generate {
-                    if isGenerating {
-                        // Multi-stage progress UI
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(GenerationStage.allCases, id: \.self) { stage in
-                                stageProgressRow(stage: stage)
-                            }
-                        }
-                        .padding(.vertical, 4)
-                    } else if generated3DModelURL != nil {
-                        // Completed state
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(.green)
-                                Text("Generation Complete")
-                                    .font(.caption)
-                                    .fontWeight(.medium)
-                            }
-
-                            // Duration stats
-                            if let duration = generationDuration {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "clock")
-                                        .font(.system(size: 10))
-                                        .foregroundColor(.secondary)
-                                    Text(formatDuration(duration))
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-
-                            Button(action: {
-                                if let url = generated3DModelURL {
-                                    NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
-                                }
-                            }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "folder")
-                                    Text("Show in Finder")
-                                }
-                                .font(.caption)
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundColor(.accentColor)
-                        }
-                    } else {
-                        // Settings before generation
-                        VStack(alignment: .leading, spacing: 10) {
-                            // Preset dropdown
-                            HStack {
-                                Text("Quality:")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                                Picker("", selection: $selectedPreset) {
-                                    ForEach(QualityPreset.allCases) { preset in
-                                        Text(preset.rawValue).tag(preset)
+                                    AppDesign.InlineButton("Back to Input", icon: "arrow.left") {
+                                        handleBackAction()
                                     }
                                 }
-                                .pickerStyle(.menu)
-                                .frame(width: 120)
-                                .onChange(of: selectedPreset) { _, newValue in
-                                    // Sync custom values when preset changes
-                                    customSteps = Double(newValue.steps)
-                                    customResolution = Double(newValue.resolution)
-                                }
+                            } else {
+                                AppDesign.CompletedRow("Region \(selectedMaskIndex + 1) selected")
                             }
+                        }
+                    }
 
-                            // Preset info
-                            HStack(spacing: 8) {
-                                Text(selectedPreset.description)
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                                Text(selectedPreset.estimatedTime)
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.secondary)
-                            }
+                    // Step 3: Touchup
+                    stepSection(number: 3, title: "Touchup", isActive: currentStep == .touchup, isDone: currentStep == .generate) {
+                        VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+                            if currentStep == .touchup {
+                                touchupControls
 
-                            // Advanced settings disclosure
-                            DisclosureGroup(
-                                isExpanded: $showAdvancedSettings,
-                                content: {
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        // Steps slider
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            HStack {
-                                                Text("Steps:")
-                                                    .font(.caption)
-                                                    .foregroundColor(.secondary)
-                                                Spacer()
-                                                Text("\(Int(customSteps))")
-                                                    .font(.caption.monospacedDigit())
-                                            }
-                                            Slider(value: $customSteps, in: 10...100, step: 5)
-                                                .controlSize(.small)
-                                        }
-
-                                        // Resolution slider
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            HStack {
-                                                Text("Resolution:")
-                                                    .font(.caption)
-                                                    .foregroundColor(.secondary)
-                                                Spacer()
-                                                Text("\(Int(customResolution))")
-                                                    .font(.caption.monospacedDigit())
-                                            }
-                                            Slider(value: $customResolution, in: 64...512, step: 32)
-                                                .controlSize(.small)
-                                        }
-
-                                        Text("Higher values = better quality, longer time")
-                                            .font(.system(size: 9))
-                                            .foregroundColor(.secondary)
+                                sectionFooter {
+                                    AppDesign.GlassButton("Next: Generate 3D", icon: "cube.fill") {
+                                        transitionToGenerate()
                                     }
-                                    .padding(.top, 4)
-                                },
-                                label: {
-                                    Text("Advanced")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
+
+                                    AppDesign.InlineButton("Back to Segment", icon: "arrow.left") {
+                                        handleBackAction()
+                                    }
                                 }
-                            )
+                            } else {
+                                AppDesign.CompletedRow("Mask refined")
+                            }
+                        }
+                    }
+
+                    // Step 4: Generate
+                    stepSection(number: 4, title: "Generate 3D", isActive: currentStep == .generate, isDone: generated3DModelURL != nil) {
+                        VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+                            if currentStep == .generate {
+                                generationControls
+
+                                if !isGenerating && generated3DModelURL == nil {
+                                    sectionFooter {
+                                        AppDesign.GlassButton("Generate Model", icon: "sparkles") {
+                                            generate3D()
+                                        }
+                                        AppDesign.InlineButton("Back to Touchup", icon: "arrow.left") {
+                                            handleBackAction()
+                                        }
+                                    }
+                                } else if isGenerating {
+                                    sectionFooter {
+                                        AppDesign.GlassButtonSecondary("Stop Generation", icon: "stop.fill", destructive: true) {
+                                            stopGeneration()
+                                        }
+                                    }
+                                } else if generated3DModelURL != nil {
+                                    sectionFooter {
+                                        AppDesign.InlineButton("Back to Touchup", icon: "arrow.left") {
+                                            handleBackAction()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Global "Start Over" at the very bottom of the scroll view
+                    if inputImage != nil {
+                        Divider().padding(.vertical, AppDesign.Spacing.p8)
+                        
+                        AppDesign.InlineButton("Start Over", icon: "arrow.counterclockwise") {
+                            showStartOverWarning = true
+                        }
+                        .padding(.leading, 36)
+                        .alert("Start Over?", isPresented: $showStartOverWarning) {
+                            Button("Cancel", role: .cancel) { }
+                            Button("Start Over", role: .destructive) { clearAll() }
+                        } message: {
+                            Text("This will discard all progress and return to the home screen.")
                         }
                     }
                 }
+                .padding(AppDesign.Spacing.p16)
             }
 
-            Spacer()
-
-            // Status
+            // Bottom Area: Status only
             if env.isProcessing {
-                HStack {
-                    ProgressView().scaleEffect(0.6)
-                    Text(env.status)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                VStack(spacing: 0) {
+                    Divider()
+                    AppDesign.LoadingIndicator(text: env.status)
+                        .padding(AppDesign.Spacing.p16)
+                }
+                .background(.ultraThinMaterial)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sectionFooter(@ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
+            content()
+        }
+        .padding(.top, AppDesign.Spacing.p12)
+    }
+
+    @ViewBuilder
+    private var segmentationControls: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+            if imageHasAlpha {
+                alphaToggleSection
+                Divider().padding(.vertical, AppDesign.Spacing.p4)
+            }
+
+            if !useExistingAlpha {
+                textPromptSection
+                
+                if textSearchPerformed && allMasks.isEmpty && !env.isProcessing {
+                    AppDesign.WarningMessage(text: "No '\(textPrompt)' found in image")
+                }
+
+                if allMasks.count > 1 {
+                    maskSelectionSection
                 }
             }
 
-            // Action buttons stack: Next (blue), Back (gray), Start Over (red)
-            actionButtons
+            if !selectedPoints.isEmpty || !allMasks.isEmpty {
+                clearSelectionButton
+            }
         }
-        .padding()
-        .background(Color(NSColor.windowBackgroundColor))
+    }
+
+    @ViewBuilder
+    private var alphaToggleSection: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
+            Toggle(isOn: $useExistingAlpha) {
+                Text("Already segmented")
+                    .font(.system(size: AppDesign.FontSize.body))
+            }
+            .toggleStyle(.checkbox)
+            .onChange(of: useExistingAlpha) { _, newValue in
+                if newValue {
+                    createMaskFromAlpha()
+                } else {
+                    allMasks.removeAll()
+                    selectedMaskIndex = 0
+                }
+            }
+
+            if useExistingAlpha {
+                AppDesign.CompletedRow("Using existing transparency")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var textPromptSection: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
+            AppDesign.SectionLabel("Text Prompt")
+            
+            HStack(spacing: AppDesign.Spacing.p8) {
+                AppDesign.StyledTextField(placeholder: "e.g. dog, tree, person", text: $textPrompt) {
+                    runTextPrediction()
+                }
+
+                Button(action: runTextPrediction) {
+                    Image(systemName: "magnifyingglass")
+                }
+                .buttonStyle(.bordered)
+                .disabled(textPrompt.isEmpty || env.isProcessing)
+            }
+            
+            AppDesign.HintText("Or right-click on the object in view")
+        }
+    }
+
+    @ViewBuilder
+    private var maskSelectionSection: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
+            AppDesign.SectionLabel("Select Region")
+
+            ForEach(Array(allMasks.enumerated()), id: \.offset) { index, maskData in
+                maskRow(index: index, score: maskData.score)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func maskRow(index: Int, score: Double) -> some View {
+        let isSelected = index == selectedMaskIndex
+        let color = colorForMask(index)
+
+        Button(action: { selectedMaskIndex = index }) {
+            HStack(spacing: AppDesign.Spacing.p8) {
+                Circle()
+                    .fill(color)
+                    .frame(width: 10, height: 10)
+                    .shadow(color: color.opacity(0.6), radius: isSelected ? 4 : 0)
+
+                Text("Region \(index + 1)")
+                    .font(.system(size: AppDesign.FontSize.subheadline, weight: isSelected ? .semibold : .regular))
+
+                Spacer()
+
+                Text(String(format: "%.0f%%", score * 100))
+                    .font(.system(size: AppDesign.FontSize.caption, design: .monospaced))
+                    .foregroundColor(isSelected ? color : .secondary)
+
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: AppDesign.FontSize.caption))
+                        .foregroundColor(color)
+                }
+            }
+            .padding(.vertical, AppDesign.Spacing.p6)
+            .padding(.horizontal, AppDesign.Spacing.p8)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isSelected ? color.opacity(0.12) : Color.primary.opacity(0.03))
+            )
+            .overlay {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(color.opacity(0.3), lineWidth: 1)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var clearSelectionButton: some View {
+        HStack(spacing: AppDesign.Spacing.p8) {
+            AppDesign.InlineButton("Clear Selection", icon: "trash") {
+                clearSegmentation()
+                useExistingAlpha = false
+            }
+            if !selectedPoints.isEmpty {
+                Text("•")
+                    .font(.system(size: AppDesign.FontSize.caption))
+                    .foregroundStyle(.tertiary)
+                AppDesign.HintText("\(selectedPoints.count) point(s)")
+            }
+            Spacer()
+        }
+        .padding(.top, AppDesign.Spacing.p8)
+    }
+
+    @ViewBuilder
+    private var touchupControls: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p16) {
+            VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
+                AppDesign.SectionLabel("Mode")
+                HStack(spacing: AppDesign.Spacing.p8) {
+                    AppDesign.GlassToggle(title: "Add", icon: "plus.circle.fill", isSelected: brushMode == .add, tint: .green) {
+                        brushMode = .add
+                    }
+                    AppDesign.GlassToggle(title: "Remove", icon: "minus.circle.fill", isSelected: brushMode == .remove, tint: .red) {
+                        brushMode = .remove
+                    }
+                }
+            }
+
+            AppDesign.SliderRow(label: "Brush Size", value: $brushSize, range: 1...150, valueSuffix: "px")
+
+            AppDesign.HintText("Paint on the image to refine the mask edges")
+            
+            HStack {
+                Spacer()
+                AppDesign.InlineButton("Undo", icon: "arrow.uturn.backward") {
+                    undo()
+                }
+                .disabled(maskHistory.isEmpty)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var generationControls: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p16) {
+            if isGenerating {
+                VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
+                    ForEach(GenerationStage.allCases, id: \.self) { stage in
+                        stageProgressRow(stage: stage)
+                    }
+                }
+            } else if let url = generated3DModelURL {
+                VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+                    AppDesign.CompletedRow("Generation Complete")
+
+                    if let duration = generationDuration {
+                        HStack(spacing: AppDesign.Spacing.p4) {
+                            Image(systemName: "clock")
+                                .font(.system(size: AppDesign.FontSize.caption))
+                                .foregroundColor(.secondary)
+                            Text(formatDuration(duration))
+                                .font(.system(size: AppDesign.FontSize.caption))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    AppDesign.GlassButtonSecondary("Show in Finder", icon: "folder") {
+                        NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
+                    }
+                }
+            } else {
+                VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+                    VStack(alignment: .leading, spacing: AppDesign.Spacing.p4) {
+                        AppDesign.SectionLabel("Quality Preset")
+                        Picker("", selection: $selectedPreset) {
+                            ForEach(QualityPreset.allCases) { preset in
+                                Text(preset.rawValue).tag(preset)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .onChange(of: selectedPreset) { _, newValue in
+                            customSteps = CGFloat(newValue.steps)
+                            customResolution = CGFloat(newValue.resolution)
+                        }
+                    }
+
+                    HStack(spacing: AppDesign.Spacing.p8) {
+                        Text(selectedPreset.description)
+                            .font(.system(size: AppDesign.FontSize.caption))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text(selectedPreset.estimatedTime)
+                            .font(.system(size: AppDesign.FontSize.caption))
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal, AppDesign.Spacing.p4)
+
+                    Divider()
+
+                    DisclosureGroup(isExpanded: $showAdvancedSettings) {
+                        VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+                            AppDesign.SliderRow(label: "Steps", value: $customSteps, range: 10...100, step: 5)
+                            AppDesign.SliderRow(label: "Resolution", value: $customResolution, range: 64...512, step: 32)
+                            AppDesign.HintText("Higher values produce better detail but take longer.")
+                        }
+                        .padding(.top, AppDesign.Spacing.p8)
+                    } label: {
+                        Text("Advanced Settings")
+                            .font(.system(size: AppDesign.FontSize.subheadline, weight: .medium))
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder
     private func stepSection(number: Int, title: String, isActive: Bool, isDone: Bool, @ViewBuilder content: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                ZStack {
-                    Circle()
-                        .fill(isDone ? Color.green : (isActive ? Color.accentColor : Color.gray.opacity(0.3)))
-                        .frame(width: 20, height: 20)
-
-                    if isDone {
-                        Image(systemName: "checkmark")
-                            .font(.caption2.bold())
-                            .foregroundColor(.white)
-                    } else {
-                        Text("\(number)")
-                            .font(.caption2.bold())
-                            .foregroundColor(isActive ? .white : .secondary)
-                    }
-                }
-
-                Text(title)
-                    .font(.subheadline)
-                    .fontWeight(isActive ? .semibold : .regular)
-                    .foregroundColor(isActive ? .primary : .secondary)
-            }
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
+            AppDesign.StepIndicator(number: number, title: title, isActive: isActive, isDone: isDone)
 
             if isActive || isDone {
                 content()
-                    .padding(.leading, 28)
+                    .padding(.leading, 36)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+        .padding(.vertical, isActive ? AppDesign.Spacing.p4 : 0)
     }
 
     @ViewBuilder
     private func stageProgressRow(stage: GenerationStage) -> some View {
         let stageData = generationStages[stage] ?? StageProgress()
 
-        HStack(spacing: 8) {
-            // Status indicator - fixed size container for alignment
+        HStack(spacing: AppDesign.Spacing.p12) {
+            // Status indicator
             Group {
                 switch stageData.status {
                 case .completed:
                     Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 12))
-                        .foregroundColor(.green)
+                        .font(.system(size: AppDesign.FontSize.body))
+                        .foregroundColor(AppDesign.success)
                 case .inProgress:
                     ProgressView()
-                        .scaleEffect(0.4)
+                        .controlSize(.small)
+                        .scaleEffect(0.6)
                 case .pending:
                     Circle()
-                        .fill(Color.gray.opacity(0.25))
+                        .fill(Color.secondary.opacity(0.2))
                         .frame(width: 12, height: 12)
                 case .cancelled:
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 12))
-                        .foregroundColor(.orange)
+                    Image(systemName: "minus.circle.fill")
+                        .font(.system(size: AppDesign.FontSize.body))
+                        .foregroundColor(AppDesign.warning)
                 case .failed:
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 12))
-                        .foregroundColor(.red.opacity(0.6))
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: AppDesign.FontSize.body))
+                        .foregroundColor(AppDesign.destructive)
                 }
             }
-            .frame(width: 14, height: 14)
+            .frame(width: 16, height: 16)
 
             // Stage info
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
+                HStack(spacing: AppDesign.Spacing.p4) {
                     Text(stage.rawValue)
-                        .font(.caption)
-                        .fontWeight(stageData.status == .inProgress ? .medium : .regular)
+                        .font(.system(size: AppDesign.FontSize.subheadline, weight: stageData.status == .inProgress ? .semibold : .regular))
                         .foregroundColor(stageTextColor(stageData.status))
 
-                    // Show "Stopped" or "Skipped" label for cancelled/failed
                     if stageData.status == .cancelled {
                         Text("Stopped")
-                            .font(.system(size: 9))
-                            .foregroundColor(.orange)
-                    } else if stageData.status == .failed {
-                        Text("Skipped")
-                            .font(.system(size: 9))
-                            .foregroundColor(.red.opacity(0.6))
+                            .font(.system(size: AppDesign.FontSize.caption, weight: .bold))
+                            .foregroundColor(AppDesign.warning)
                     }
                 }
 
-                // Progress bar for stages with progress
                 if stageData.status == .inProgress && stageData.progress > 0 {
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            RoundedRectangle(cornerRadius: 2)
-                                .fill(Color.gray.opacity(0.2))
-                                .frame(height: 4)
-
-                            RoundedRectangle(cornerRadius: 2)
-                                .fill(Color.accentColor)
-                                .frame(width: geo.size.width * stageData.progress, height: 4)
-                        }
-                    }
-                    .frame(height: 4)
+                    ProgressView(value: stageData.progress)
+                        .progressViewStyle(.linear)
+                        .tint(AppDesign.accent)
                 }
 
-                // Detail text
                 if !stageData.detail.isEmpty && stageData.status == .inProgress {
                     Text(stageData.detail)
-                        .font(.system(size: 9))
+                        .font(.system(size: AppDesign.FontSize.caption, design: .monospaced))
                         .foregroundColor(.secondary)
                 }
             }
 
             Spacer()
 
-            // Percentage for active stages
             if stageData.status == .inProgress && stageData.progress > 0 {
                 Text("\(Int(stageData.progress * 100))%")
-                    .font(.caption2.monospacedDigit())
+                    .font(.system(size: AppDesign.FontSize.caption, weight: .medium, design: .monospaced))
                     .foregroundColor(.secondary)
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, AppDesign.Spacing.p4)
     }
 
     @ViewBuilder
     private var actionButtons: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: AppDesign.Spacing.p12) {
             // Next button (blue) or loading state
             switch currentStep {
             case .input:
-                // Show loading state while SAM model loads
                 if !env.samModelReady {
-                    HStack(spacing: 8) {
+                    HStack(spacing: AppDesign.Spacing.p8) {
                         ProgressView()
-                            .scaleEffect(0.7)
-                        Text("Loading model...")
-                            .font(.caption)
+                            .controlSize(.small)
+                        Text("Loading models...")
+                            .font(.system(size: AppDesign.FontSize.subheadline))
                             .foregroundColor(.secondary)
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, AppDesign.Spacing.p8)
+                } else {
+                    // Hidden or empty, transition handled automatically on drop
                 }
 
             case .segment:
-                Button(action: { startTouchup() }) {
-                    Text("Next: Touchup")
-                        .frame(maxWidth: .infinity)
+                AppDesign.GlassButton("Next: Touchup", icon: "wand.and.stars", disabled: allMasks.isEmpty) {
+                    startTouchup()
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(allMasks.isEmpty)
 
             case .touchup:
-                Button(action: {
+                AppDesign.GlassButton("Next: Generate 3D", icon: "cube.fill") {
                     transitionToGenerate()
-                }) {
-                    Text("Next: Generate 3D")
-                        .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
 
             case .generate:
-                // Show Generate button when not generating and no model yet
                 if !isGenerating && generated3DModelURL == nil {
-                    Button(action: { generate3D() }) {
-                        Text("Generate")
-                            .frame(maxWidth: .infinity)
+                    AppDesign.GlassButton("Generate Model", icon: "sparkles") {
+                        generate3D()
                     }
-                    .buttonStyle(.borderedProminent)
                 } else if isGenerating {
-                    // Stop button - styled like back button but red
-                    Button(action: { stopGeneration() }) {
-                        Text("Stop Generation")
-                            .frame(maxWidth: .infinity)
+                    AppDesign.GlassButtonSecondary("Stop Generation", icon: "stop.fill", destructive: true) {
+                        stopGeneration()
                     }
-                    .buttonStyle(.bordered)
-                    .foregroundColor(.red)
-                    .tint(.red)
                 }
             }
 
-            // Back button with destination - only show if not on first step
+            // Back button
             if currentStep != .input {
                 let backDestination: String = {
                     switch currentStep {
@@ -1018,58 +967,39 @@ struct ContentViewSimple: View {
                     }
                 }()
 
-                Button(action: {
+                AppDesign.GlassButtonSecondary("Back to \(backDestination)", icon: "arrow.left", disabled: isGenerating) {
                     handleBackAction()
-                }) {
-                    Text("Back: \(backDestination)")
-                        .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
-                .foregroundColor(.secondary)
-                .disabled(isGenerating)
                 .alert("Discard Touchup Changes?", isPresented: $showBackWarning) {
                     Button("Cancel", role: .cancel) { }
-                    Button("Discard", role: .destructive) {
-                        goBack()
-                    }
+                    Button("Discard", role: .destructive) { goBack() }
                 } message: {
-                    Text("Your touchup edits will be lost if you go back to the Segment step.")
+                    Text("Your manual mask refinements will be lost.")
                 }
                 .alert("Discard Generated Model?", isPresented: $showDiscardModelWarning) {
                     Button("Cancel", role: .cancel) { }
-                    Button("Discard", role: .destructive) {
-                        goBack()
-                    }
+                    Button("Discard", role: .destructive) { goBack() }
                 } message: {
-                    Text("The generated 3D model will be discarded. You can regenerate after making changes.")
+                    Text("The current 3D model will be discarded.")
                 }
                 .alert("Discard Image?", isPresented: $showDiscardImageWarning) {
                     Button("Cancel", role: .cancel) { }
-                    Button("Discard", role: .destructive) {
-                        clearAll()
-                    }
+                    Button("Discard", role: .destructive) { clearAll() }
                 } message: {
-                    Text("The current image will be discarded. You'll need to load a new image to continue.")
+                    Text("The current image and all progress will be lost.")
                 }
             }
 
-            // Start Over button (red) - only show if we have an image
-            if inputImage != nil {
-                Button(action: { showStartOverWarning = true }) {
-                    Text("Start Over")
-                        .foregroundColor(.red)
-                        .frame(maxWidth: .infinity)
+            // Start Over button
+            if inputImage != nil && !isGenerating {
+                AppDesign.InlineButton("Start Over", icon: "arrow.counterclockwise") {
+                    showStartOverWarning = true
                 }
-                .buttonStyle(.bordered)
-                .tint(.red)
-                .disabled(isGenerating)
                 .alert("Start Over?", isPresented: $showStartOverWarning) {
                     Button("Cancel", role: .cancel) { }
-                    Button("Start Over", role: .destructive) {
-                        clearAll()
-                    }
+                    Button("Start Over", role: .destructive) { clearAll() }
                 } message: {
-                    Text("This will discard your current image and all progress. You'll need to load a new image to continue.")
+                    Text("This will discard all progress and return to the home screen.")
                 }
             }
         }
@@ -1098,31 +1028,33 @@ struct ContentViewSimple: View {
 
     /// Executes the back navigation with proper state cleanup
     private func goBack() {
-        switch currentStep {
-        case .input:
-            break
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+            switch currentStep {
+            case .input:
+                break
 
-        case .segment:
-            // Segment → Input: Clear segmentation data, keep image
-            clearSegmentation()
-            currentStep = .input
+            case .segment:
+                // Segment → Input: Clear segmentation data, keep image
+                clearSegmentation()
+                currentStep = .input
 
-        case .touchup:
-            // Touchup → Segment: Clear touchup data, keep masks for re-selection
-            editableMaskImage = nil
-            maskHistory.removeAll()
-            brushPreviewPosition = nil
-            currentStep = .segment
+            case .touchup:
+                // Touchup → Segment: Clear touchup data, keep masks for re-selection
+                editableMaskImage = nil
+                maskHistory.removeAll()
+                brushPreviewPosition = nil
+                currentStep = .segment
 
-        case .generate:
-            // Generate → Touchup: Clear generation data, keep touchup mask
-            compositeImage = nil
-            generated3DModelURL = nil
-            generationStages = [:]
-            generationStatus = ""
-            generationStartTime = nil
-            generationDuration = nil
-            currentStep = .touchup
+            case .generate:
+                // Generate → Touchup: Clear generation data, keep touchup mask
+                compositeImage = nil
+                generated3DModelURL = nil
+                generationStages = [:]
+                generationStatus = ""
+                generationStartTime = nil
+                generationDuration = nil
+                currentStep = .touchup
+            }
         }
     }
 
@@ -1130,39 +1062,45 @@ struct ContentViewSimple: View {
 
     /// Input → Segment: Prepare for segmentation
     private func transitionToSegment() {
-        // Clear any old segmentation data from previous session
-        clearSegmentation()
-        currentStep = .segment
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+            // Clear any old segmentation data from previous session
+            clearSegmentation()
+            currentStep = .segment
+        }
     }
 
     /// Touchup → Generate: Create composite and show settings
     private func transitionToGenerate() {
         createCompositeImage()
-        currentStep = .generate
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+            currentStep = .generate
+        }
         // Don't auto-start - let user configure settings and click Generate
     }
 
     // MARK: - Actions
 
     private func clearAll() {
-        inputImage = nil
-        inputImagePath = nil
-        allMasks.removeAll()
-        selectedMaskIndex = 0
-        selectedPoints.removeAll()
-        textPrompt = ""
-        textSearchPerformed = false
-        useExistingAlpha = false
-        imageHasAlpha = false
-        editableMaskImage = nil
-        maskHistory.removeAll()
-        compositeImage = nil
-        generated3DModelURL = nil
-        generationStages = [:]
-        generationStartTime = nil
-        generationDuration = nil
-        zoomScale = 1.0
-        currentStep = .input
+        withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) {
+            inputImage = nil
+            inputImagePath = nil
+            allMasks.removeAll()
+            selectedMaskIndex = 0
+            selectedPoints.removeAll()
+            textPrompt = ""
+            textSearchPerformed = false
+            useExistingAlpha = false
+            imageHasAlpha = false
+            editableMaskImage = nil
+            maskHistory.removeAll()
+            compositeImage = nil
+            generated3DModelURL = nil
+            generationStages = [:]
+            generationStartTime = nil
+            generationDuration = nil
+            zoomScale = 1.0
+            currentStep = .input
+        }
     }
 
     private func clearSegmentation() {
@@ -1587,7 +1525,9 @@ struct ContentViewSimple: View {
         checkImageHasAlpha()
 
         // Transition to segment step
-        currentStep = .segment
+        withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) {
+            currentStep = .segment
+        }
         Task { await initializeImage() }
     }
 
@@ -1920,14 +1860,21 @@ struct ContentViewSimple: View {
     }
 
     private func fitSize(_ imageSize: CGSize, in containerSize: CGSize) -> CGSize {
+        guard imageSize.width > 0 && imageSize.height > 0 && containerSize.width > 0 && containerSize.height > 0 else {
+            return .zero
+        }
+        
         let imageAspect = imageSize.width / imageSize.height
         let containerAspect = containerSize.width / containerSize.height
 
+        // Use a safe margin that scales with window size
+        let margin: CGFloat = containerSize.width < 600 ? 0.95 : 0.9
+        
         if imageAspect > containerAspect {
-            let width = containerSize.width * 0.9
+            let width = containerSize.width * margin
             return CGSize(width: width, height: width / imageAspect)
         } else {
-            let height = containerSize.height * 0.9
+            let height = containerSize.height * margin
             return CGSize(width: height * imageAspect, height: height)
         }
     }

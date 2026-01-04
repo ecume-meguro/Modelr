@@ -174,41 +174,47 @@ struct ModelViewerContainer: View {
     var body: some View {
         ZStack {
             // Background
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color(NSColor(calibratedWhite: 0.12, alpha: 1.0)))
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color(NSColor(calibratedWhite: 0.1, alpha: 1.0)))
+                .shadow(color: .black.opacity(0.3), radius: 20, y: 10)
 
             if let url = modelURL {
                 ModelViewer(modelURL: url)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
                 // Interaction hint
                 VStack {
                     Spacer()
                     HStack {
                         Spacer()
-                        Text("Drag to rotate • Scroll to zoom")
-                            .font(.caption2)
-                            .foregroundColor(.white.opacity(0.7))
-                            .padding(6)
-                            .background(Color.black.opacity(0.5))
-                            .cornerRadius(4)
+                        HStack(spacing: AppDesign.Spacing.p6) {
+                            Image(systemName: "hand.draw")
+                            Text("Drag to rotate • Scroll to zoom")
+                        }
+                        .font(.system(size: AppDesign.FontSize.xs, weight: .medium))
+                        .foregroundColor(.white.opacity(0.8))
+                        .padding(.horizontal, AppDesign.Spacing.p12)
+                        .padding(.vertical, AppDesign.Spacing.p6)
+                        .background(.ultraThinMaterial.opacity(0.8))
+                        .clipShape(Capsule())
+                        .overlay(Capsule().stroke(Color.white.opacity(0.1), lineWidth: 1))
                     }
                 }
-                .padding(8)
+                .padding(AppDesign.Spacing.p12)
             } else {
-                VStack(spacing: 8) {
+                VStack(spacing: AppDesign.Spacing.p12) {
                     Image(systemName: "cube.transparent")
-                        .font(.system(size: 32))
-                        .foregroundColor(.gray)
-                    Text("No 3D model")
-                        .font(.caption)
-                        .foregroundColor(.gray)
+                        .font(.system(size: 40, weight: .light))
+                        .foregroundColor(.secondary)
+                    Text("Preparing 3D View...")
+                        .font(.system(size: AppDesign.FontSize.body))
+                        .foregroundColor(.secondary)
                 }
             }
         }
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.1), lineWidth: 1)
         )
     }
 }
