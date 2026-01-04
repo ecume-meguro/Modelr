@@ -74,16 +74,16 @@ struct SimpleEditorSidebar: View {
                     SegmentationPanel(viewModel: viewModel)
                     
                     sectionFooter {
-                        AppDesign.GlassButton("Next: Touchup", icon: "wand.and.stars", disabled: viewModel.allMasks.isEmpty) {
+                        AppDesign.GlassButton("Next: Touchup", icon: "wand.and.stars", disabled: viewModel.totalValidMasks == 0) {
                             viewModel.startTouchup()
                         }
-                        
+
                         AppDesign.InlineButton("Back to Input", icon: "arrow.left") {
                             viewModel.handleBackAction()
                         }
                     }
                 } else {
-                    AppDesign.CompletedRow("Region \(viewModel.selectedMaskIndex + 1) selected")
+                    AppDesign.CompletedRow("\(viewModel.totalValidMasks) object(s) selected")
                 }
             }
         }

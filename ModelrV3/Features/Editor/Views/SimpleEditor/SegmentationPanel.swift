@@ -1,35 +1,41 @@
 import SwiftUI
 
-/// Segmentation panel for ContentViewSimple
+/// Multi-segmentation panel - allows selecting multiple objects to merge
 struct SegmentationPanel: View {
     @ObservedObject var viewModel: SimpleEditorViewModel
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+            // Alpha toggle section
             if viewModel.imageHasAlpha {
                 alphaToggleSection
                 Divider().padding(.vertical, AppDesign.Spacing.p4)
             }
-            
+
             if !viewModel.useExistingAlpha {
-                textPromptSection
-
-                if viewModel.textSearchPerformed && viewModel.allMasks.isEmpty && !viewModel.isSegmenting {
-                    AppDesign.WarningMessage(text: "No '\(viewModel.textPrompt)' found in image")
+                // Segmentation entries list
+                ForEach(Array(viewModel.segmentations.enumerated()), id: \.element.id) { index, entry in
+                    SegmentationEntryView(
+                        entry: entry,
+                        index: index,
+                        isActive: index == viewModel.activeSegmentationIndex,
+                        viewModel: viewModel
+                    )
                 }
 
-                if viewModel.allMasks.count > 1 {
-                    maskSelectionSection
+                // Add another object button
+                if viewModel.totalValidMasks > 0 {
+                    addAnotherButton
                 }
 
-                // Show clear button right after region selectors
-                if !viewModel.selectedPoints.isEmpty || !viewModel.allMasks.isEmpty {
-                    clearSelectionButton
+                // Summary
+                if viewModel.totalValidMasks > 1 {
+                    summarySection
                 }
             }
         }
     }
-    
+
     @ViewBuilder
     private var alphaToggleSection: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
@@ -42,107 +48,288 @@ struct SegmentationPanel: View {
                 if newValue {
                     viewModel.createMaskFromAlpha()
                 } else {
-                    viewModel.allMasks.removeAll()
-                    viewModel.selectedMaskIndex = 0
+                    viewModel.clearAllSegmentations()
                 }
             }
-            
+
             if viewModel.useExistingAlpha {
                 AppDesign.CompletedRow("Using existing transparency")
             }
         }
     }
-    
+
     @ViewBuilder
-    private var textPromptSection: some View {
-        VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-            AppDesign.SectionLabel("Text Prompt")
-            
-            HStack(spacing: AppDesign.Spacing.p8) {
-                AppDesign.StyledTextField(placeholder: "e.g. dog, tree, person", text: $viewModel.textPrompt) {
-                    viewModel.runTextPrediction()
+    private var addAnotherButton: some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.2)) {
+                viewModel.addSegmentation()
+            }
+        } label: {
+            HStack(spacing: AppDesign.Spacing.p6) {
+                Image(systemName: "plus.circle.fill")
+                    .font(.system(size: AppDesign.FontSize.body))
+                Text("Add Another Object")
+                    .font(.system(size: AppDesign.FontSize.subheadline, weight: .medium))
+            }
+            .foregroundStyle(AppDesign.accent)
+        }
+        .buttonStyle(.plain)
+        .padding(.top, AppDesign.Spacing.p4)
+    }
+
+    @ViewBuilder
+    private var summarySection: some View {
+        HStack(spacing: AppDesign.Spacing.p6) {
+            Image(systemName: "square.stack.3d.up.fill")
+                .font(.system(size: AppDesign.FontSize.caption))
+                .foregroundStyle(.secondary)
+            Text("\(viewModel.totalValidMasks) objects will be merged")
+                .font(.system(size: AppDesign.FontSize.caption))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.top, AppDesign.Spacing.p4)
+    }
+}
+
+// MARK: - Segmentation Entry View
+struct SegmentationEntryView: View {
+    let entry: SegmentationEntry
+    let index: Int
+    let isActive: Bool
+    @ObservedObject var viewModel: SimpleEditorViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header - always visible
+            entryHeader
+
+            // Content - only when expanded
+            if entry.isExpanded {
+                entryContent
+                    .padding(.top, AppDesign.Spacing.p8)
+            }
+        }
+        .padding(AppDesign.Spacing.p10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isActive ? Color.primary.opacity(0.05) : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(
+                    isActive ? AppDesign.accent.opacity(0.3) : Color.primary.opacity(0.1),
+                    lineWidth: 1
+                )
+        )
+        .animation(.easeOut(duration: 0.2), value: entry.isExpanded)
+    }
+
+    private var segmentationColor: Color {
+        viewModel.colorForSegmentation(index)
+    }
+
+    @ViewBuilder
+    private var entryHeader: some View {
+        HStack(spacing: AppDesign.Spacing.p8) {
+            // Expand/collapse button
+            Button {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    viewModel.expandSegmentation(at: index)
                 }
-                
+            } label: {
+                Image(systemName: entry.isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: AppDesign.FontSize.caption, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 12)
+            }
+            .buttonStyle(.plain)
+
+            // Clickable entry name - switches to this object
+            Button {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    viewModel.expandSegmentation(at: index)
+                }
+            } label: {
+                HStack(spacing: AppDesign.Spacing.p6) {
+                    Circle()
+                        .fill(segmentationColor)
+                        .frame(width: 8, height: 8)
+                    Text(entry.name)
+                        .font(.system(size: AppDesign.FontSize.subheadline, weight: isActive ? .bold : .semibold))
+                        .foregroundStyle(isActive ? segmentationColor : .primary)
+                }
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            // Status indicator
+            if entry.isProcessing {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.7)
+            } else if entry.hasValidMask {
+                // Thumbnail of selected mask with neon color border
+                if let mask = entry.selectedMask {
+                    Image(nsImage: mask)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 24, height: 24)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .strokeBorder(segmentationColor, lineWidth: 2)
+                        )
+                }
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: AppDesign.FontSize.caption))
+                    .foregroundStyle(segmentationColor)
+            }
+
+            // Remove button (only if more than one segmentation)
+            if viewModel.segmentations.count > 1 {
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        viewModel.removeSegmentation(at: index)
+                    }
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: AppDesign.FontSize.body))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var entryContent: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
+            // Text prompt input
+            HStack(spacing: AppDesign.Spacing.p8) {
+                TextField("e.g. dog, tree, person", text: textPromptBinding)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit {
+                        viewModel.runTextPrediction()
+                    }
+
                 Button(action: viewModel.runTextPrediction) {
                     Image(systemName: "magnifyingglass")
                 }
                 .buttonStyle(.bordered)
-                .disabled(viewModel.textPrompt.isEmpty || viewModel.env.isProcessing)
+                .disabled(entry.textPrompt.isEmpty || entry.isProcessing)
             }
-            
+
             AppDesign.HintText("Or right-click on the object in view")
-        }
-    }
-    
-    @ViewBuilder
-    private var maskSelectionSection: some View {
-        VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-            AppDesign.SectionLabel("Select Region")
-            
-            ForEach(Array(viewModel.allMasks.enumerated()), id: \.offset) { index, maskData in
-                maskRow(index: index, score: maskData.score)
+
+            // Warning if no results
+            if entry.isSearchPerformed && entry.allMasks.isEmpty && !entry.isProcessing {
+                AppDesign.WarningMessage(text: "No '\(entry.textPrompt)' found")
+            }
+
+            // Region selection (if multiple masks)
+            if entry.allMasks.count > 1 {
+                regionSelectionSection
+            }
+
+            // Points indicator
+            if !entry.points.isEmpty {
+                HStack(spacing: AppDesign.Spacing.p4) {
+                    Image(systemName: "hand.point.up.left.fill")
+                        .font(.system(size: AppDesign.FontSize.caption))
+                        .foregroundStyle(.secondary)
+                    Text("\(entry.points.count) point(s) placed")
+                        .font(.system(size: AppDesign.FontSize.caption))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            // Clear button
+            if entry.hasValidMask || !entry.points.isEmpty {
+                HStack {
+                    AppDesign.InlineButton("Clear", icon: "trash") {
+                        viewModel.clearActiveSegmentation()
+                    }
+                    Spacer()
+                }
             }
         }
     }
-    
+
     @ViewBuilder
-    private func maskRow(index: Int, score: Double) -> some View {
-        let isSelected = index == viewModel.selectedMaskIndex
-        let color = viewModel.colorForMask(index)
-        
-        Button(action: { viewModel.selectedMaskIndex = index }) {
-            HStack(spacing: AppDesign.Spacing.p8) {
-                Circle()
-                    .fill(color)
-                    .frame(width: 10, height: 10)
-                    .shadow(color: color.opacity(0.6), radius: isSelected ? 4 : 0)
-                
-                Text("Region \(index + 1)")
-                    .font(.system(size: AppDesign.FontSize.subheadline, weight: isSelected ? .semibold : .regular))
-                
+    private var regionSelectionSection: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p6) {
+            AppDesign.SectionLabel("Select Region")
+
+            ForEach(Array(entry.allMasks.enumerated()), id: \.offset) { maskIndex, maskData in
+                regionRow(maskIndex: maskIndex, score: maskData.score)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func regionRow(maskIndex: Int, score: Double) -> some View {
+        let isSelected = maskIndex == entry.selectedMaskIndex
+        let color = viewModel.colorForMask(maskIndex)
+        let maskImage = entry.allMasks[maskIndex].image
+
+        Button {
+            viewModel.selectMask(at: maskIndex, for: index)
+        } label: {
+            HStack(spacing: AppDesign.Spacing.p10) {
+                // Mask preview thumbnail
+                Image(nsImage: maskImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 32, height: 32)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .strokeBorder(isSelected ? color : Color.primary.opacity(0.2), lineWidth: isSelected ? 2 : 1)
+                    )
+
+                // Region name
+                Text("Region \(maskIndex + 1)")
+                    .font(.system(size: AppDesign.FontSize.caption, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(isSelected ? color : .primary)
+
                 Spacer()
-                
+
+                // Confidence percentage
                 Text(String(format: "%.0f%%", score * 100))
-                    .font(.system(size: AppDesign.FontSize.caption, design: .monospaced))
-                    .foregroundColor(isSelected ? color : .secondary)
-                
+                    .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
+                    .foregroundStyle(isSelected ? color : .secondary)
+
+                // Checkmark if selected
                 if isSelected {
                     Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: AppDesign.FontSize.caption))
-                        .foregroundColor(color)
+                        .font(.system(size: AppDesign.FontSize.body))
+                        .foregroundStyle(color)
                 }
             }
             .padding(.vertical, AppDesign.Spacing.p6)
             .padding(.horizontal, AppDesign.Spacing.p8)
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(isSelected ? color.opacity(0.12) : Color.primary.opacity(0.03))
+                    .fill(isSelected ? color.opacity(0.15) : Color.primary.opacity(0.03))
             )
-            .overlay {
-                if isSelected {
-                    RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(color.opacity(0.3), lineWidth: 1)
-                }
-            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(isSelected ? color.opacity(0.5) : Color.clear, lineWidth: 1)
+            )
         }
         .buttonStyle(.plain)
     }
-    
-    @ViewBuilder
-    private var clearSelectionButton: some View {
-        HStack(spacing: AppDesign.Spacing.p8) {
-            AppDesign.InlineButton("Clear Selection", icon: "trash") {
-                viewModel.clearSegmentation()
-                viewModel.useExistingAlpha = false
+
+    // Binding to update the text prompt in the segmentations array
+    private var textPromptBinding: Binding<String> {
+        Binding(
+            get: { entry.textPrompt },
+            set: { newValue in
+                if index < viewModel.segmentations.count {
+                    viewModel.segmentations[index].textPrompt = newValue
+                }
             }
-            if !viewModel.selectedPoints.isEmpty {
-                Text("•")
-                    .font(.system(size: AppDesign.FontSize.caption))
-                    .foregroundStyle(.tertiary)
-                AppDesign.HintText("\(viewModel.selectedPoints.count) point(s)")
-            }
-            Spacer()
-        }
-        .padding(.top, AppDesign.Spacing.p8)
+        )
     }
 }

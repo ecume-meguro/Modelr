@@ -1,31 +1,80 @@
 import SwiftUI
 import Foundation
 
+// MARK: - Segmentation Entry Model
+/// Represents a single segmentation with its own prompt and mask selection
+struct SegmentationEntry: Identifiable {
+    let id: UUID
+    var name: String
+    var textPrompt: String = ""
+    var points: [SAMPoint] = []
+    var allMasks: [(image: NSImage, score: Double, url: URL)] = []
+    var selectedMaskIndex: Int = 0
+    var isExpanded: Bool = true
+    var isSearchPerformed: Bool = false
+    var isProcessing: Bool = false
+
+    init(name: String) {
+        self.id = UUID()
+        self.name = name
+    }
+
+    var selectedMask: NSImage? {
+        guard selectedMaskIndex < allMasks.count else { return nil }
+        return allMasks[selectedMaskIndex].image
+    }
+
+    var hasValidMask: Bool {
+        !allMasks.isEmpty && selectedMaskIndex < allMasks.count
+    }
+
+    var promptDescription: String {
+        if !textPrompt.isEmpty {
+            return "\"\(textPrompt)\""
+        } else if !points.isEmpty {
+            return "\(points.count) point(s)"
+        }
+        return "Empty"
+    }
+}
+
 /// ViewModel for ContentViewSimple - manages all state and business logic
 @MainActor
 class SimpleEditorViewModel: ObservableObject {
     // MARK: - Dependencies
     let env: PythonEnvironment
-    
+
     // MARK: - Core Image State
     @Published var inputImage: NSImage?
     @Published var inputImagePath: String?
     @Published var imagePixelSize: CGSize = .zero
     @Published var zoomScale: CGFloat = 1.0
-    
+
     // MARK: - Workflow State
     enum Step { case input, segment, touchup, generate }
     @Published var currentStep: Step = .input
-    
-    // MARK: - Segmentation State
-    @Published var textPrompt: String = ""
-    @Published var textSearchPerformed: Bool = false
-    @Published var isSegmenting: Bool = false  // True while prediction is running
-    @Published var selectedPoints: [SAMPoint] = []
+
+    // MARK: - Multi-Segmentation State
+    @Published var segmentations: [SegmentationEntry] = []
+    @Published var activeSegmentationIndex: Int = 0
     @Published var useExistingAlpha: Bool = false
     @Published var imageHasAlpha: Bool = false
-    @Published var allMasks: [(image: NSImage, score: Double, url: URL)] = []
-    @Published var selectedMaskIndex: Int = 0
+
+    /// Currently active segmentation entry
+    var activeSegmentation: SegmentationEntry? {
+        guard activeSegmentationIndex < segmentations.count else { return nil }
+        return segmentations[activeSegmentationIndex]
+    }
+
+    /// Check if any segmentation is currently processing
+    var isAnySegmenting: Bool {
+        segmentations.contains { $0.isProcessing }
+    }
+
+    /// Total number of valid masks across all segmentations
+    var totalValidMasks: Int {
+        segmentations.filter { $0.hasValidMask }.count
+    }
     
     // MARK: - Touchup State
     enum BrushMode { case add, remove }
@@ -104,8 +153,9 @@ class SimpleEditorViewModel: ObservableObject {
             inputImagePath = url.path
         }
 
-        // Clear all previous data
-        clearSegmentation()
+        // Clear all previous data and initialize first segmentation
+        segmentations.removeAll()
+        addSegmentation()
         editableMaskImage = nil
         maskHistory.removeAll()
         brushPreviewPosition = nil
@@ -208,105 +258,179 @@ class SimpleEditorViewModel: ObservableObject {
         imageHasAlpha = hasTransparency
     }
     
-    // MARK: - Segmentation
-    func runTextPrediction() {
-        guard !textPrompt.isEmpty else { return }
-        textSearchPerformed = true
-        isSegmenting = true
-        Task {
-            await performTextSearch()
-            await MainActor.run { isSegmenting = false }
+    // MARK: - Multi-Segmentation Management
+
+    /// Add a new segmentation entry and make it active
+    func addSegmentation() {
+        // Collapse all existing segmentations
+        for i in segmentations.indices {
+            segmentations[i].isExpanded = false
+        }
+
+        let newEntry = SegmentationEntry(name: "Object \(segmentations.count + 1)")
+        segmentations.append(newEntry)
+        activeSegmentationIndex = segmentations.count - 1
+    }
+
+    /// Remove a segmentation entry by index
+    func removeSegmentation(at index: Int) {
+        guard index < segmentations.count else { return }
+        segmentations.remove(at: index)
+
+        // Adjust active index
+        if segmentations.isEmpty {
+            addSegmentation()
+        } else if activeSegmentationIndex >= segmentations.count {
+            activeSegmentationIndex = segmentations.count - 1
+        }
+
+        // Rename remaining entries
+        for i in segmentations.indices {
+            segmentations[i].name = "Object \(i + 1)"
         }
     }
 
-    private func performTextSearch() async {
+    /// Expand a segmentation and collapse others
+    func expandSegmentation(at index: Int) {
+        guard index < segmentations.count else { return }
+
+        for i in segmentations.indices {
+            segmentations[i].isExpanded = (i == index)
+        }
+        activeSegmentationIndex = index
+    }
+
+    /// Run text prediction for active segmentation
+    func runTextPrediction() {
+        guard activeSegmentationIndex < segmentations.count else { return }
+        guard !segmentations[activeSegmentationIndex].textPrompt.isEmpty else { return }
+
+        segmentations[activeSegmentationIndex].isSearchPerformed = true
+        segmentations[activeSegmentationIndex].isProcessing = true
+
+        let index = activeSegmentationIndex
+        let text = segmentations[index].textPrompt
+
+        Task {
+            await performTextSearch(for: index, text: text)
+            await MainActor.run {
+                if index < segmentations.count {
+                    segmentations[index].isProcessing = false
+                }
+            }
+        }
+    }
+
+    private func performTextSearch(for index: Int, text: String) async {
         do {
             let (maskURLs, _, scores, _) = try await env.predict(
                 points: [],
                 box: nil,
-                text: textPrompt,
+                text: text,
                 imageSize: imagePixelSize
             )
 
-            // Load masks from URLs
             var masks: [(image: NSImage, score: Double, url: URL)] = []
             for (url, score) in zip(maskURLs, scores) {
                 if let image = NSImage(contentsOf: url) {
                     masks.append((image: image, score: score, url: url))
                 }
             }
+
             await MainActor.run {
-                allMasks = masks
-                selectedMaskIndex = 0
+                if index < segmentations.count {
+                    segmentations[index].allMasks = masks
+                    segmentations[index].selectedMaskIndex = 0
+                }
             }
         } catch {
             print("[Text] Error: \(error)")
         }
     }
 
+    /// Add a point to active segmentation and run prediction
     func addPoint(at normalized: CGPoint) {
+        guard activeSegmentationIndex < segmentations.count else { return }
+
         let point = SAMPoint(normalizedCoords: normalized.clamped, label: 1)
-        selectedPoints.append(point)
-        isSegmenting = true
+        segmentations[activeSegmentationIndex].points.append(point)
+        segmentations[activeSegmentationIndex].isProcessing = true
+
+        let index = activeSegmentationIndex
+        let points = segmentations[index].points
+
         Task {
-            await runPointPrediction()
-            await MainActor.run { isSegmenting = false }
+            await runPointPrediction(for: index, points: points)
+            await MainActor.run {
+                if index < segmentations.count {
+                    segmentations[index].isProcessing = false
+                }
+            }
         }
     }
 
-    private func runPointPrediction() async {
-        guard !selectedPoints.isEmpty else { return }
+    private func runPointPrediction(for index: Int, points: [SAMPoint]) async {
+        guard !points.isEmpty else { return }
         do {
             let (maskURLs, _, scores, _) = try await env.predict(
-                points: selectedPoints,
+                points: points,
                 box: nil,
                 text: nil,
                 imageSize: imagePixelSize
             )
 
-            // Load masks from URLs
             var masks: [(image: NSImage, score: Double, url: URL)] = []
             for (url, score) in zip(maskURLs, scores) {
                 if let image = NSImage(contentsOf: url) {
                     masks.append((image: image, score: score, url: url))
                 }
             }
+
             await MainActor.run {
-                allMasks = masks
-                selectedMaskIndex = 0
+                if index < segmentations.count {
+                    segmentations[index].allMasks = masks
+                    segmentations[index].selectedMaskIndex = 0
+                }
             }
         } catch {
             print("[Point] Error: \(error)")
         }
     }
+
+    /// Select mask for a specific segmentation
+    func selectMask(at maskIndex: Int, for segmentationIndex: Int) {
+        guard segmentationIndex < segmentations.count else { return }
+        guard maskIndex < segmentations[segmentationIndex].allMasks.count else { return }
+        segmentations[segmentationIndex].selectedMaskIndex = maskIndex
+    }
     
     func createMaskFromAlpha() {
         guard let image = inputImage,
               let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
-        
+
         let width = cgImage.width
         let height = cgImage.height
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        
+
         guard let sourceContext = CGContext(
             data: nil, width: width, height: height,
             bitsPerComponent: 8, bytesPerRow: width * 4,
             space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ), let sourceData = sourceContext.data else { return }
-        
+
         sourceContext.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        
+
         guard let maskContext = CGContext(
             data: nil, width: width, height: height,
             bitsPerComponent: 8, bytesPerRow: width * 4,
             space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ), let maskData = maskContext.data else { return }
-        
+
         let sourcePixels = sourceData.bindMemory(to: UInt8.self, capacity: width * height * 4)
         let maskPixels = maskData.bindMemory(to: UInt8.self, capacity: width * height * 4)
-        
+
         for i in 0..<(width * height) {
             let offset = i * 4
             let alpha = sourcePixels[offset + 3]
@@ -314,54 +438,70 @@ class SimpleEditorViewModel: ObservableObject {
             maskPixels[offset + 0] = white
             maskPixels[offset + 1] = white
             maskPixels[offset + 2] = white
-            maskPixels[offset + 3] = white  // Alpha must match for SwiftUI mask()
+            maskPixels[offset + 3] = white
         }
-        
+
         guard let maskCGImage = maskContext.makeImage() else { return }
         let maskNSImage = NSImage(cgImage: maskCGImage, size: NSSize(width: width, height: height))
-        
-        // Save to temp file
+
         let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("alpha_mask_\(UUID().uuidString).png")
-        
+
         if let tiff = maskNSImage.tiffRepresentation,
            let bitmap = NSBitmapImageRep(data: tiff),
            let png = bitmap.representation(using: .png, properties: [:]) {
             try? png.write(to: tempURL)
         }
-        
-        allMasks = [(image: maskNSImage, score: 1.0, url: tempURL)]
-        selectedMaskIndex = 0
+
+        // Create a single segmentation entry from alpha
+        segmentations.removeAll()
+        var entry = SegmentationEntry(name: "From Alpha")
+        entry.allMasks = [(image: maskNSImage, score: 1.0, url: tempURL)]
+        entry.selectedMaskIndex = 0
+        entry.isSearchPerformed = true
+        segmentations.append(entry)
+        activeSegmentationIndex = 0
     }
-    
-    func clearSegmentation() {
-        allMasks.removeAll()
-        selectedMaskIndex = 0
-        selectedPoints.removeAll()
-        textPrompt = ""
-        textSearchPerformed = false
-        isSegmenting = false
+
+    /// Clear all segmentations and start fresh
+    func clearAllSegmentations() {
+        segmentations.removeAll()
         editableMaskImage = nil
+        addSegmentation()  // Add initial empty segmentation
     }
-    
+
+    /// Clear active segmentation only
+    func clearActiveSegmentation() {
+        guard activeSegmentationIndex < segmentations.count else { return }
+        segmentations[activeSegmentationIndex].textPrompt = ""
+        segmentations[activeSegmentationIndex].points.removeAll()
+        segmentations[activeSegmentationIndex].allMasks.removeAll()
+        segmentations[activeSegmentationIndex].selectedMaskIndex = 0
+        segmentations[activeSegmentationIndex].isSearchPerformed = false
+    }
+
+    /// Find which mask was clicked in active segmentation
     func findMaskAtPoint(_ normalized: CGPoint, displaySize: CGSize) -> Int? {
-        for (index, maskData) in allMasks.enumerated().reversed() {
+        guard activeSegmentationIndex < segmentations.count else { return nil }
+        let masks = segmentations[activeSegmentationIndex].allMasks
+
+        for (index, maskData) in masks.enumerated().reversed() {
             let image = maskData.image
             guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { continue }
-            
+
             let pixelX = Int(normalized.x * CGFloat(cgImage.width))
             let pixelY = Int(normalized.y * CGFloat(cgImage.height))
-            
+
             guard pixelX >= 0, pixelX < cgImage.width, pixelY >= 0, pixelY < cgImage.height else { continue }
-            
+
             guard let dataProvider = cgImage.dataProvider,
                   let data = dataProvider.data,
                   let bytes = CFDataGetBytePtr(data) else { continue }
-            
+
             let bytesPerPixel = cgImage.bitsPerPixel / 8
             let bytesPerRow = cgImage.bytesPerRow
             let pixelOffset = pixelY * bytesPerRow + pixelX * bytesPerPixel
-            
+
             let alpha: UInt8
             if bytesPerPixel >= 4 {
                 alpha = bytes[pixelOffset + 3]
@@ -370,7 +510,7 @@ class SimpleEditorViewModel: ObservableObject {
             } else {
                 continue
             }
-            
+
             if alpha > 128 {
                 return index
             }
@@ -380,13 +520,75 @@ class SimpleEditorViewModel: ObservableObject {
     
     // MARK: - Touchup
     func startTouchup() {
-        guard selectedMaskIndex < allMasks.count else { return }
-        editableMaskImage = allMasks[selectedMaskIndex].image
+        // Merge all selected masks from all segmentations
+        let mergedMask = mergeAllSelectedMasks()
+        guard mergedMask != nil else { return }
+
+        editableMaskImage = mergedMask
         maskHistory.removeAll()
-        
+
         withAnimation(.easeOut(duration: 0.25)) {
             currentStep = .touchup
         }
+    }
+
+    /// Merge all selected masks from all segmentations using OR operation
+    func mergeAllSelectedMasks() -> NSImage? {
+        let validSegmentations = segmentations.filter { $0.hasValidMask }
+        guard !validSegmentations.isEmpty else { return nil }
+
+        // Get reference size from first mask
+        guard let firstMask = validSegmentations.first?.selectedMask,
+              let firstCG = firstMask.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+
+        let width = firstCG.width
+        let height = firstCG.height
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let totalPixels = width * height
+
+        // Create output context
+        guard let outputContext = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let outputData = outputContext.data else { return nil }
+
+        let outputPixels = outputData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
+
+        // Initialize to black (empty mask)
+        memset(outputPixels, 0, totalPixels * 4)
+
+        // OR all masks together
+        for segmentation in validSegmentations {
+            guard let mask = segmentation.selectedMask,
+                  let cgMask = mask.cgImage(forProposedRect: nil, context: nil, hints: nil) else { continue }
+
+            // Draw mask to temp context
+            guard let maskContext = CGContext(
+                data: nil, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ), let maskData = maskContext.data else { continue }
+
+            maskContext.draw(cgMask, in: CGRect(x: 0, y: 0, width: width, height: height))
+            let maskPixels = maskData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
+
+            // OR operation: if any mask has white, result is white
+            for i in 0..<totalPixels {
+                let offset = i * 4
+                if maskPixels[offset] > 128 {  // R channel indicates mask
+                    outputPixels[offset + 0] = 255
+                    outputPixels[offset + 1] = 255
+                    outputPixels[offset + 2] = 255
+                    outputPixels[offset + 3] = 255
+                }
+            }
+        }
+
+        guard let mergedCG = outputContext.makeImage() else { return nil }
+        return NSImage(cgImage: mergedCG, size: NSSize(width: width, height: height))
     }
     
     func saveUndoState() {
@@ -684,7 +886,7 @@ class SimpleEditorViewModel: ObservableObject {
             case .input:
                 break
             case .segment:
-                clearSegmentation()
+                segmentations.removeAll()
                 inputImage = nil
                 inputImagePath = nil
                 imagePixelSize = .zero
@@ -711,12 +913,8 @@ class SimpleEditorViewModel: ObservableObject {
         withAnimation(.easeOut(duration: 0.2)) {
             inputImage = nil
             inputImagePath = nil
-            allMasks.removeAll()
-            selectedMaskIndex = 0
-            selectedPoints.removeAll()
-            textPrompt = ""
-            textSearchPerformed = false
-            isSegmenting = false
+            segmentations.removeAll()
+            activeSegmentationIndex = 0
             useExistingAlpha = false
             imageHasAlpha = false
             editableMaskImage = nil
@@ -735,7 +933,11 @@ class SimpleEditorViewModel: ObservableObject {
     func colorForMask(_ index: Int) -> Color {
         AppDesign.neonColors[index % AppDesign.neonColors.count]
     }
-    
+
+    func colorForSegmentation(_ index: Int) -> Color {
+        AppDesign.neonColors[index % AppDesign.neonColors.count]
+    }
+
     func stageTextColor(_ status: StageStatus) -> Color {
         switch status {
         case .completed: return AppDesign.success

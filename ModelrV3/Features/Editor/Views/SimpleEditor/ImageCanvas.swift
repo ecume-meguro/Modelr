@@ -126,49 +126,148 @@ struct ImageCanvas: View {
     
     @ViewBuilder
     private func segmentationOverlays(size: CGSize) -> some View {
-        // Non-selected masks
-        ForEach(Array(viewModel.allMasks.enumerated()).filter { $0.offset != viewModel.selectedMaskIndex }, id: \.offset) { index, maskData in
-            let color = viewModel.colorForMask(index)
-            Rectangle()
-                .fill(color)
-                .frame(width: size.width, height: size.height)
-                .mask(
-                    Image(nsImage: maskData.image)
-                        .resizable()
-                        .frame(width: size.width, height: size.height)
-                )
-                .opacity(0.4)
-                .allowsHitTesting(false)
+        // Show selected masks from non-active (completed) segmentations with their unique neon color
+        ForEach(Array(viewModel.segmentations.enumerated()), id: \.element.id) { segIndex, entry in
+            if segIndex != viewModel.activeSegmentationIndex, let selectedMask = entry.selectedMask {
+                let color = viewModel.colorForSegmentation(segIndex)
+
+                // Strong fill with 90% opacity
+                Rectangle()
+                    .fill(color)
+                    .frame(width: size.width, height: size.height)
+                    .mask(
+                        Image(nsImage: selectedMask)
+                            .resizable()
+                            .frame(width: size.width, height: size.height)
+                    )
+                    .opacity(0.9)
+                    .allowsHitTesting(false)
+
+                // 100% border
+                Rectangle()
+                    .fill(color)
+                    .frame(width: size.width, height: size.height)
+                    .mask(
+                        ZStack {
+                            Image(nsImage: selectedMask)
+                                .resizable()
+                                .frame(width: size.width, height: size.height)
+                            Image(nsImage: selectedMask)
+                                .resizable()
+                                .frame(width: size.width, height: size.height)
+                                .padding(4)
+                                .blur(radius: 1)
+                                .blendMode(.destinationOut)
+                        }
+                        .compositingGroup()
+                    )
+                    .opacity(1.0)
+                    .allowsHitTesting(false)
+            }
         }
-        
-        // Selected mask
-        if viewModel.selectedMaskIndex < viewModel.allMasks.count {
-            let maskData = viewModel.allMasks[viewModel.selectedMaskIndex]
-            let color = viewModel.colorForMask(viewModel.selectedMaskIndex)
-            
+
+        // Active segmentation - show all masks with selection
+        if viewModel.activeSegmentationIndex < viewModel.segmentations.count {
+            let activeEntry = viewModel.segmentations[viewModel.activeSegmentationIndex]
+            let activeColor = viewModel.colorForSegmentation(viewModel.activeSegmentationIndex)
+
+            // Non-selected masks in active segmentation (dimmer, for region selection)
+            ForEach(Array(activeEntry.allMasks.enumerated()).filter { $0.offset != activeEntry.selectedMaskIndex }, id: \.offset) { index, maskData in
+                let color = viewModel.colorForMask(index)
+                Rectangle()
+                    .fill(color)
+                    .frame(width: size.width, height: size.height)
+                    .mask(
+                        Image(nsImage: maskData.image)
+                            .resizable()
+                            .frame(width: size.width, height: size.height)
+                    )
+                    .opacity(0.4)
+                    .allowsHitTesting(false)
+            }
+
+            // Selected mask in active segmentation - use segmentation's neon color with 90% opacity
+            if activeEntry.selectedMaskIndex < activeEntry.allMasks.count {
+                let maskData = activeEntry.allMasks[activeEntry.selectedMaskIndex]
+
+                Rectangle()
+                    .fill(activeColor)
+                    .frame(width: size.width, height: size.height)
+                    .mask(
+                        Image(nsImage: maskData.image)
+                            .resizable()
+                            .frame(width: size.width, height: size.height)
+                    )
+                    .opacity(0.9)
+                    .allowsHitTesting(false)
+
+                // 100% border
+                Rectangle()
+                    .fill(activeColor)
+                    .frame(width: size.width, height: size.height)
+                    .mask(
+                        ZStack {
+                            Image(nsImage: maskData.image)
+                                .resizable()
+                                .frame(width: size.width, height: size.height)
+                            Image(nsImage: maskData.image)
+                                .resizable()
+                                .frame(width: size.width, height: size.height)
+                                .padding(4)
+                                .blur(radius: 1)
+                                .blendMode(.destinationOut)
+                        }
+                        .compositingGroup()
+                    )
+                    .opacity(1.0)
+                    .allowsHitTesting(false)
+            }
+
+            // Points overlay for active segmentation
+            ForEach(activeEntry.points) { point in
+                Circle()
+                    .fill(point.isPositive ? AppDesign.success : AppDesign.destructive)
+                    .frame(width: 12, height: 12)
+                    .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                    .shadow(color: .black.opacity(0.3), radius: 2)
+                    .position(
+                        x: point.normalizedCoords.x * size.width,
+                        y: point.normalizedCoords.y * size.height
+                    )
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private func touchupOverlays(size: CGSize) -> some View {
+        if let maskImage = viewModel.editableMaskImage {
+            // Use first neon color for merged mask with 90% opacity
+            let maskColor = AppDesign.neonColors[0]
+
             Rectangle()
-                .fill(color)
+                .fill(maskColor)
                 .frame(width: size.width, height: size.height)
                 .mask(
-                    Image(nsImage: maskData.image)
+                    Image(nsImage: maskImage)
                         .resizable()
                         .frame(width: size.width, height: size.height)
                 )
-                .opacity(0.7)
+                .opacity(0.9)
                 .allowsHitTesting(false)
-            
+
+            // 100% border for the mask
             Rectangle()
-                .fill(color)
+                .fill(maskColor)
                 .frame(width: size.width, height: size.height)
                 .mask(
                     ZStack {
-                        Image(nsImage: maskData.image)
+                        Image(nsImage: maskImage)
                             .resizable()
                             .frame(width: size.width, height: size.height)
-                        Image(nsImage: maskData.image)
+                        Image(nsImage: maskImage)
                             .resizable()
                             .frame(width: size.width, height: size.height)
-                            .padding(6)
+                            .padding(4)
                             .blur(radius: 1)
                             .blendMode(.destinationOut)
                     }
@@ -176,36 +275,7 @@ struct ImageCanvas: View {
                 )
                 .opacity(1.0)
                 .allowsHitTesting(false)
-        }
-        
-        // Points overlay
-        ForEach(viewModel.selectedPoints) { point in
-            Circle()
-                .fill(point.isPositive ? AppDesign.success : AppDesign.destructive)
-                .frame(width: 12, height: 12)
-                .overlay(Circle().stroke(Color.white, lineWidth: 2))
-                .shadow(color: .black.opacity(0.3), radius: 2)
-                .position(
-                    x: point.normalizedCoords.x * size.width,
-                    y: point.normalizedCoords.y * size.height
-                )
-        }
-    }
-    
-    @ViewBuilder
-    private func touchupOverlays(size: CGSize) -> some View {
-        if let maskImage = viewModel.editableMaskImage {
-            Rectangle()
-                .fill(AppDesign.maskColor)
-                .frame(width: size.width, height: size.height)
-                .mask(
-                    Image(nsImage: maskImage)
-                        .resizable()
-                        .frame(width: size.width, height: size.height)
-                )
-                .opacity(0.6)
-                .allowsHitTesting(false)
-            
+
             // Brush preview
             if let pos = viewModel.brushPreviewPosition {
                 let scaledBrushSize = viewModel.brushSize * size.width / 500.0
@@ -350,17 +420,21 @@ extension View {
             .onTapGesture { location in
                 let imageX = (geo.size.width - displaySize.width) / 2
                 let imageY = (geo.size.height - displaySize.height) / 2
-                
+
                 let normalized = CGPoint(
                     x: (location.x - imageX) / displaySize.width,
                     y: (location.y - imageY) / displaySize.height
                 )
                 guard normalized.x >= 0 && normalized.x <= 1 && normalized.y >= 0 && normalized.y <= 1 else { return }
-                
-                if viewModel.currentStep == .segment && !viewModel.allMasks.isEmpty {
-                    if let clickedIndex = viewModel.findMaskAtPoint(normalized, displaySize: displaySize) {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            viewModel.selectedMaskIndex = clickedIndex
+
+                if viewModel.currentStep == .segment {
+                    // Check if active segmentation has masks to select from
+                    let activeIndex = viewModel.activeSegmentationIndex
+                    if activeIndex < viewModel.segmentations.count && !viewModel.segmentations[activeIndex].allMasks.isEmpty {
+                        if let clickedIndex = viewModel.findMaskAtPoint(normalized, displaySize: displaySize) {
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                viewModel.selectMask(at: clickedIndex, for: activeIndex)
+                            }
                         }
                     }
                 } else if viewModel.currentStep == .touchup {
