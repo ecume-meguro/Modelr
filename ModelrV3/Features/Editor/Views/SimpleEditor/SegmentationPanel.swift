@@ -311,8 +311,8 @@ struct RegionRowButton: View {
             let shiftHeld = NSEvent.modifierFlags.contains(.shift)
             onSelect(shiftHeld)
         } label: {
-            HStack(spacing: AppDesign.Spacing.p10) {
-                // Mask preview thumbnail
+            HStack(alignment: .top, spacing: AppDesign.Spacing.p10) {
+                // Mask preview thumbnail - acts as vertical indicator
                 Image(nsImage: maskImage)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
@@ -323,23 +323,28 @@ struct RegionRowButton: View {
                             .strokeBorder(isSelected ? color : Color.primary.opacity(0.2), lineWidth: isSelected ? 2 : 1)
                     )
 
-                // Region name
-                Text("Region \(maskIndex + 1)")
-                    .font(.system(size: AppDesign.FontSize.caption, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(isSelected ? color : .primary)
+                // Region info - wraps to multiple lines
+                VStack(alignment: .leading, spacing: 2) {
+                    // Header: region name + checkmark
+                    HStack(spacing: AppDesign.Spacing.p6) {
+                        Text("Region \(maskIndex + 1)")
+                            .font(.system(size: AppDesign.FontSize.caption, weight: isSelected ? .semibold : .regular))
+                            .foregroundStyle(isSelected ? color : .primary)
 
-                Spacer()
+                        Spacer(minLength: 0)
 
-                // Confidence percentage
-                Text(String(format: "%.0f%%", score * 100))
-                    .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
-                    .foregroundStyle(isSelected ? color : .secondary)
+                        // Checkmark if selected
+                        if isSelected {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: AppDesign.FontSize.body))
+                                .foregroundStyle(color)
+                        }
+                    }
 
-                // Checkmark if selected
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: AppDesign.FontSize.body))
-                        .foregroundStyle(color)
+                    // Confidence percentage
+                    Text(String(format: "%.0f%% confidence", score * 100))
+                        .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
+                        .foregroundStyle(isSelected ? color : .secondary)
                 }
             }
             .padding(.vertical, AppDesign.Spacing.p6)

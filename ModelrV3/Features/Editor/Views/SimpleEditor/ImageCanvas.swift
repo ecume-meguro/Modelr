@@ -85,64 +85,80 @@ struct ImageCanvas: View {
 
     @ViewBuilder
     private var modelSelectorView: some View {
-        VStack(spacing: AppDesign.Spacing.p48) {
-            // Header
-            VStack(spacing: AppDesign.Spacing.p16) {
-                Text("Modelr")
-                    .font(.system(size: 64, weight: .bold))
-                    .tracking(-2)
-                    .foregroundStyle(.primary)
+        GeometryReader { geo in
+            let isCompact = geo.size.width < 500 || geo.size.height < 500
+            let titleSize: CGFloat = isCompact ? 36 : 64
+            let spacing: CGFloat = isCompact ? AppDesign.Spacing.p24 : AppDesign.Spacing.p48
 
-                Text("Professional Image to 3D Workflow")
-                    .font(.system(size: AppDesign.FontSize.title3, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: spacing) {
+                    // Header
+                    VStack(spacing: AppDesign.Spacing.p12) {
+                        Text("Modelr")
+                            .font(.system(size: titleSize, weight: .bold))
+                            .tracking(-2)
+                            .foregroundStyle(.primary)
 
-            // Model Selection
-            VStack(spacing: AppDesign.Spacing.p24) {
-                Text("Choose your 3D generation model")
-                    .font(.system(size: AppDesign.FontSize.headline, weight: .semibold))
-                    .foregroundStyle(.primary)
+                        if !isCompact {
+                            Text("Professional Image to 3D Workflow")
+                                .font(.system(size: AppDesign.FontSize.title3, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
 
-                HStack(spacing: AppDesign.Spacing.p24) {
-                    ForEach(SetupModelChoice.allCases, id: \.self) { choice in
-                        modelChoiceCard(choice: choice, isRecommended: choice == .fast)
+                    // Model Selection
+                    VStack(spacing: AppDesign.Spacing.p16) {
+                        Text("Choose your 3D generation model")
+                            .font(.system(size: isCompact ? AppDesign.FontSize.subheadline : AppDesign.FontSize.headline, weight: .semibold))
+                            .foregroundStyle(.primary)
+
+                        // Stack vertically on compact, horizontally on larger
+                        let cardLayout = isCompact ? AnyLayout(VStackLayout(spacing: AppDesign.Spacing.p12)) : AnyLayout(HStackLayout(spacing: AppDesign.Spacing.p24))
+                        cardLayout {
+                            ForEach(SetupModelChoice.allCases, id: \.self) { choice in
+                                modelChoiceCard(choice: choice, isRecommended: choice == .fast, isCompact: isCompact)
+                            }
+                        }
+
+                        // Model info (hide on compact)
+                        if !isCompact {
+                            VStack(spacing: AppDesign.Spacing.p4) {
+                                HStack(spacing: AppDesign.Spacing.p32) {
+                                    Text("Small, Fast → \(SetupModelChoice.fast.modelName)")
+                                    Text("Large, Higher Quality → \(SetupModelChoice.quality.modelName)")
+                                }
+                                .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                            }
+                            .padding(.top, AppDesign.Spacing.p8)
+                        }
+                    }
+
+                    // CTA
+                    VStack(spacing: AppDesign.Spacing.p16) {
+                        AppDesign.GlassButton("Get Started", icon: "arrow.right") {
+                            viewModel.startSetup()
+                        }
+                        .controlSize(isCompact ? .regular : .large)
+
+                        HStack(spacing: AppDesign.Spacing.p8) {
+                            Image(systemName: "info.circle.fill")
+                                .font(.system(size: AppDesign.FontSize.caption))
+                            Text("Requires ~10 GB for initial download")
+                                .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                        }
+                        .foregroundStyle(.tertiary)
                     }
                 }
-
-                // Model info
-                VStack(spacing: AppDesign.Spacing.p4) {
-                    HStack(spacing: AppDesign.Spacing.p32) {
-                        Text("Small, Fast → \(SetupModelChoice.fast.modelName)")
-                        Text("Large, Higher Quality → \(SetupModelChoice.quality.modelName)")
-                    }
-                    .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-                }
-                .padding(.top, AppDesign.Spacing.p8)
+                .padding(isCompact ? AppDesign.Spacing.p16 : AppDesign.Spacing.p24)
+                .frame(minHeight: geo.size.height)
             }
-
-            // CTA
-            VStack(spacing: AppDesign.Spacing.p24) {
-                AppDesign.GlassButton("Get Started", icon: "arrow.right") {
-                    viewModel.startSetup()
-                }
-                .controlSize(.large)
-
-                HStack(spacing: AppDesign.Spacing.p8) {
-                    Image(systemName: "info.circle.fill")
-                        .font(.system(size: AppDesign.FontSize.caption))
-                    Text("Requires ~10 GB for initial download")
-                        .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
-                }
-                .foregroundStyle(.tertiary)
-            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     @ViewBuilder
-    private func modelChoiceCard(choice: SetupModelChoice, isRecommended: Bool) -> some View {
+    private func modelChoiceCard(choice: SetupModelChoice, isRecommended: Bool, isCompact: Bool = false) -> some View {
         let isSelected = viewModel.selectedModelChoice == choice
 
         Button {
@@ -150,7 +166,7 @@ struct ImageCanvas: View {
                 viewModel.selectedModelChoice = choice
             }
         } label: {
-            VStack(spacing: AppDesign.Spacing.p12) {
+            VStack(spacing: isCompact ? AppDesign.Spacing.p8 : AppDesign.Spacing.p12) {
                 HStack {
                     if isRecommended {
                         Text("Recommended")
@@ -162,13 +178,13 @@ struct ImageCanvas: View {
                     }
                     Spacer()
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: AppDesign.FontSize.title3))
+                        .font(.system(size: isCompact ? AppDesign.FontSize.body : AppDesign.FontSize.title3))
                         .foregroundStyle(isSelected ? AppDesign.accent : .secondary.opacity(0.5))
                 }
 
                 VStack(spacing: AppDesign.Spacing.p4) {
                     Text(choice.displayName)
-                        .font(.system(size: AppDesign.FontSize.headline, weight: .semibold))
+                        .font(.system(size: isCompact ? AppDesign.FontSize.subheadline : AppDesign.FontSize.headline, weight: .semibold))
                         .foregroundStyle(.primary)
 
                     Text(choice.downloadSize)
@@ -176,8 +192,8 @@ struct ImageCanvas: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .padding(AppDesign.Spacing.p16)
-            .frame(width: 180)
+            .padding(isCompact ? AppDesign.Spacing.p12 : AppDesign.Spacing.p16)
+            .frame(maxWidth: isCompact ? .infinity : 180)
             .background(
                 RoundedRectangle(cornerRadius: 12)
                     .fill(isSelected ? AppDesign.accent.opacity(0.1) : Color.primary.opacity(0.03))
@@ -501,40 +517,48 @@ struct ImageCanvas: View {
     
     @ViewBuilder
     private var dropZoneView: some View {
-        VStack(spacing: AppDesign.Spacing.p24) {
-            ZStack {
-                Circle()
-                    .fill(.ultraThinMaterial)
-                    .frame(width: 100, height: 100)
-                    .overlay(Circle().stroke(Color.primary.opacity(0.1), lineWidth: 1))
-                
-                Image(systemName: "square.and.arrow.down")
-                    .font(.system(size: 40, weight: .light))
-                    .foregroundColor(.accentColor)
+        GeometryReader { geo in
+            let isCompact = geo.size.width < 400 || geo.size.height < 350
+            let iconSize: CGFloat = isCompact ? 60 : 100
+            let imageSize: CGFloat = isCompact ? 28 : 40
+            let borderPadding: CGFloat = isCompact ? AppDesign.Spacing.p16 : AppDesign.Spacing.p48
+
+            VStack(spacing: isCompact ? AppDesign.Spacing.p16 : AppDesign.Spacing.p24) {
+                ZStack {
+                    Circle()
+                        .fill(.ultraThinMaterial)
+                        .frame(width: iconSize, height: iconSize)
+                        .overlay(Circle().stroke(Color.primary.opacity(0.1), lineWidth: 1))
+
+                    Image(systemName: "square.and.arrow.down")
+                        .font(.system(size: imageSize, weight: .light))
+                        .foregroundColor(.accentColor)
+                }
+                .shadow(color: .black.opacity(0.1), radius: isCompact ? 10 : 20)
+
+                VStack(spacing: AppDesign.Spacing.p8) {
+                    Text("Ready for Creation")
+                        .font(.system(size: isCompact ? AppDesign.FontSize.headline : AppDesign.FontSize.title3, weight: .bold))
+
+                    Text(isCompact ? "Drop image or click to browse" : "Drag and drop an image here or click to browse")
+                        .font(.system(size: isCompact ? AppDesign.FontSize.caption : AppDesign.FontSize.body))
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+
+                AppDesign.GlassButton("Select Image", icon: "photo") {
+                    selectImage()
+                }
+                .controlSize(isCompact ? .regular : .large)
             }
-            .shadow(color: .black.opacity(0.1), radius: 20)
-            
-            VStack(spacing: AppDesign.Spacing.p8) {
-                Text("Ready for Creation")
-                    .font(.system(size: AppDesign.FontSize.title3, weight: .bold))
-                
-                Text("Drag and drop an image here or click to browse")
-                    .font(.system(size: AppDesign.FontSize.body))
-                    .foregroundColor(.secondary)
-            }
-            
-            AppDesign.GlassButton("Select Image", icon: "photo") {
-                selectImage()
-            }
-            .controlSize(.large)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: isCompact ? 16 : 24)
+                    .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [8, 4]))
+                    .foregroundColor(.primary.opacity(0.1))
+                    .padding(borderPadding)
+            )
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: 24)
-                .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [8, 4]))
-                .foregroundColor(.primary.opacity(0.1))
-                .padding(AppDesign.Spacing.p48)
-        )
     }
     
     // MARK: - Actions

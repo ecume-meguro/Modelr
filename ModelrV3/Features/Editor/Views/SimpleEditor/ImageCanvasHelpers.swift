@@ -193,7 +193,8 @@ struct ScrollWheelZoomOverlay: NSViewRepresentable {
 
         func handleScroll(deltaY: CGFloat) {
             let currentScale = zoomScale.wrappedValue
-            let newScale = currentScale * (1.0 + deltaY * 0.05)
+            // Invert deltaY so scroll up = zoom in, scroll down = zoom out
+            let newScale = currentScale * (1.0 - deltaY * 0.05)
             zoomScale.wrappedValue = max(minZoom, min(maxZoom, newScale))
         }
     }

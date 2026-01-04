@@ -127,14 +127,16 @@ struct PostProcessPanel: View {
                 viewModel.toggleComponentSelection(component.index)
             }
         } label: {
-            HStack(spacing: AppDesign.Spacing.p10) {
-                // Color indicator
+            HStack(alignment: .top, spacing: AppDesign.Spacing.p10) {
+                // Color indicator - stretches vertically with content
                 RoundedRectangle(cornerRadius: 4)
                     .fill(color)
-                    .frame(width: 8, height: 24)
+                    .frame(width: 6)
+                    .frame(maxHeight: .infinity)
 
                 // Component info
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 4) {
+                    // Header with component name and badges
                     HStack(spacing: AppDesign.Spacing.p4) {
                         Text("Component \(component.index + 1)")
                             .font(.system(size: AppDesign.FontSize.subheadline, weight: isSelected ? .semibold : .regular))
@@ -148,9 +150,17 @@ struct PostProcessPanel: View {
                                 .padding(.vertical, 2)
                                 .background(color.opacity(0.8), in: Capsule())
                         }
+
+                        Spacer(minLength: 0)
+
+                        // Selection indicator
+                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: AppDesign.FontSize.title3))
+                            .foregroundStyle(isSelected ? color : Color.secondary.opacity(0.5))
                     }
 
-                    HStack(spacing: AppDesign.Spacing.p8) {
+                    // Stats - wraps to multiple lines using flexible layout
+                    FlowLayout(spacing: AppDesign.Spacing.p6) {
                         Label("\(formatNumber(component.vertexCount))", systemImage: "circle.grid.3x3")
                         Label("\(formatNumber(component.faceCount))", systemImage: "triangle")
                         if component.isWatertight {
@@ -161,13 +171,6 @@ struct PostProcessPanel: View {
                     .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
                     .foregroundStyle(.secondary)
                 }
-
-                Spacer()
-
-                // Selection indicator
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: AppDesign.FontSize.title3))
-                    .foregroundStyle(isSelected ? color : Color.secondary.opacity(0.5))
             }
             .padding(.vertical, AppDesign.Spacing.p8)
             .padding(.horizontal, AppDesign.Spacing.p10)
@@ -181,6 +184,7 @@ struct PostProcessPanel: View {
             )
         }
         .buttonStyle(.plain)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder
@@ -195,7 +199,7 @@ struct PostProcessPanel: View {
                 let canDelete = count < viewModel.meshComponents.count
                 let canKeep = count > 0 && count < viewModel.meshComponents.count
 
-                HStack(spacing: AppDesign.Spacing.p8) {
+                VStack(alignment: .leading, spacing: AppDesign.Spacing.p6) {
                     // Only Keep Selected
                     if canKeep {
                         AppDesign.GlassButtonSecondary(
@@ -240,79 +244,88 @@ struct PostProcessPanel: View {
     @ViewBuilder
     private var keepLargestSection: some View {
         if viewModel.isEditingKeepLargest {
-            // Expanded edit mode
-            HStack(spacing: AppDesign.Spacing.p8) {
-                Text("Keep largest")
-                    .font(.system(size: AppDesign.FontSize.subheadline))
-                    .foregroundStyle(.secondary)
-
-                // Number input
-                HStack(spacing: 0) {
-                    Button {
-                        if viewModel.keepLargestCount > 1 {
-                            viewModel.keepLargestCount -= 1
-                        }
-                    } label: {
-                        Image(systemName: "minus")
-                            .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
-                            .frame(width: 24, height: 24)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.primary)
-
-                    Text("\(viewModel.keepLargestCount)")
-                        .font(.system(size: AppDesign.FontSize.subheadline, weight: .semibold, design: .monospaced))
-                        .frame(width: 32)
-
-                    Button {
-                        if viewModel.keepLargestCount < viewModel.meshComponents.count - 1 {
-                            viewModel.keepLargestCount += 1
-                        }
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
-                            .frame(width: 24, height: 24)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.primary)
-                }
-                .padding(.horizontal, AppDesign.Spacing.p4)
-                .padding(.vertical, AppDesign.Spacing.p4)
-                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
-
-                Text("items")
-                    .font(.system(size: AppDesign.FontSize.subheadline))
-                    .foregroundStyle(.secondary)
-
-                Spacer()
-
-                // Apply button
-                Button {
-                    viewModel.showKeepLargestConfirmation = true
-                } label: {
-                    Text("Apply")
-                        .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
-                        .padding(.horizontal, AppDesign.Spacing.p10)
-                        .padding(.vertical, AppDesign.Spacing.p6)
-                        .background(AppDesign.accent, in: RoundedRectangle(cornerRadius: 6))
-                        .foregroundStyle(.white)
-                }
-                .buttonStyle(.plain)
-                .disabled(viewModel.isProcessingMesh || viewModel.keepLargestCount >= viewModel.meshComponents.count)
-
-                // Cancel button
-                Button {
-                    withAnimation(.easeOut(duration: 0.15)) {
-                        viewModel.isEditingKeepLargest = false
-                        viewModel.keepLargestCount = 1
-                    }
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+            // Expanded edit mode - stacks vertically for narrow sidebars
+            VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
+                // Row 1: Label + stepper
+                HStack(spacing: AppDesign.Spacing.p8) {
+                    Text("Keep largest")
+                        .font(.system(size: AppDesign.FontSize.subheadline))
                         .foregroundStyle(.secondary)
-                        .frame(width: 24, height: 24)
+
+                    // Number input
+                    HStack(spacing: 0) {
+                        Button {
+                            if viewModel.keepLargestCount > 1 {
+                                viewModel.keepLargestCount -= 1
+                            }
+                        } label: {
+                            Image(systemName: "minus")
+                                .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                                .frame(width: 24, height: 24)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.primary)
+
+                        Text("\(viewModel.keepLargestCount)")
+                            .font(.system(size: AppDesign.FontSize.subheadline, weight: .semibold, design: .monospaced))
+                            .frame(width: 32)
+
+                        Button {
+                            if viewModel.keepLargestCount < viewModel.meshComponents.count - 1 {
+                                viewModel.keepLargestCount += 1
+                            }
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                                .frame(width: 24, height: 24)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.primary)
+                    }
+                    .padding(.horizontal, AppDesign.Spacing.p4)
+                    .padding(.vertical, AppDesign.Spacing.p4)
+                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+
+                    Text("items")
+                        .font(.system(size: AppDesign.FontSize.subheadline))
+                        .foregroundStyle(.secondary)
+
+                    Spacer(minLength: 0)
                 }
-                .buttonStyle(.plain)
+
+                // Row 2: Action buttons
+                HStack(spacing: AppDesign.Spacing.p8) {
+                    // Apply button
+                    Button {
+                        viewModel.showKeepLargestConfirmation = true
+                    } label: {
+                        Text("Apply")
+                            .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                            .padding(.horizontal, AppDesign.Spacing.p10)
+                            .padding(.vertical, AppDesign.Spacing.p6)
+                            .background(AppDesign.accent, in: RoundedRectangle(cornerRadius: 6))
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(viewModel.isProcessingMesh || viewModel.keepLargestCount >= viewModel.meshComponents.count)
+
+                    // Cancel button
+                    Button {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            viewModel.isEditingKeepLargest = false
+                            viewModel.keepLargestCount = 1
+                        }
+                    } label: {
+                        Text("Cancel")
+                            .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, AppDesign.Spacing.p10)
+                            .padding(.vertical, AppDesign.Spacing.p6)
+                    }
+                    .buttonStyle(.plain)
+
+                    Spacer(minLength: 0)
+                }
             }
             .padding(.vertical, AppDesign.Spacing.p4)
         } else {
@@ -348,8 +361,8 @@ struct PostProcessPanel: View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
             AppDesign.SectionLabel("Export")
 
-            // Format picker
-            HStack(spacing: AppDesign.Spacing.p8) {
+            // Format picker - wraps to multiple lines on narrow sidebar
+            FlowLayout(spacing: AppDesign.Spacing.p6) {
                 ForEach(ExportFormat.allCases) { format in
                     formatButton(format)
                 }

@@ -12,7 +12,7 @@ struct SimpleEditorView: View {
     var body: some View {
         NavigationSplitView {
             SimpleEditorSidebar(viewModel: viewModel)
-                .navigationSplitViewColumnWidth(420)
+                .navigationSplitViewColumnWidth(min: 280, ideal: 360, max: 420)
         } detail: {
             ImageCanvas(viewModel: viewModel)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -23,10 +23,10 @@ struct SimpleEditorView: View {
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 EditorToolbarContent(viewModel: viewModel)
-                    .frame(minWidth: 400)
+                    .frame(minWidth: 200)
             }
         }
-        .frame(minWidth: 1000, minHeight: 700)
+        .frame(minWidth: 700, minHeight: 500)
         .background(
             Button("") {
                 if viewModel.currentStep == .touchup {
