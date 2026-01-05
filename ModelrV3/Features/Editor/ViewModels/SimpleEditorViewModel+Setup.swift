@@ -35,6 +35,16 @@ extension SimpleEditorViewModel {
 
         await MainActor.run {
             setupSubStepCompleted.insert(.configuringEnvironment)
+            // Immediately start downloading SAM3 in background once environment is ready
+            Task {
+                await downloadSAMModel(at: modelrDir)
+                await MainActor.run {
+                    setupSubStepCompleted.insert(.downloadingSegmentation)
+                }
+            }
+        }
+        
+        await MainActor.run {
             isConfiguringEnvironment = false
         }
     }
@@ -80,10 +90,20 @@ extension SimpleEditorViewModel {
         setupProgress = 0.2
 
         // Stage 2: Download SAM model
-        currentSetupSubStep = .downloadingSegmentation
-        setupProgress = 0.3
-        await downloadSAMModel(at: modelrDir)
-        setupSubStepCompleted.insert(.downloadingSegmentation)
+        if !setupSubStepCompleted.contains(.downloadingSegmentation) {
+            currentSetupSubStep = .downloadingSegmentation
+            setupProgress = 0.3
+            
+            // If background setup already started it, we just wait for it.
+            // If not, we start it now.
+            // (Note: In current flow it starts immediately after configuringEnvironment)
+            while !setupSubStepCompleted.contains(.downloadingSegmentation) {
+                // If it wasn't even started, we might need a flag to check, 
+                // but configureEnvironmentInBackground starts it.
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+        setupProgress = 0.5
 
         // Stage 3: Setup and download Hunyuan
         currentSetupSubStep = .downloadingGeneration
@@ -275,49 +295,20 @@ extension SimpleEditorViewModel {
     // MARK: - Setup Steps Implementation
 
     private func copyResources(to appSupportDir: URL) async {
-        let resources = ["sam_wrapper.py", "pyproject.toml", "mesh_processor.py"]
-
-        for res in resources {
-            appendConsoleOutput("Copying \(res)...", for: .configuringEnvironment)
-
-            let targetPath = appSupportDir.appendingPathComponent(res)
-            if let sourcePath = Bundle.main.path(forResource: res, ofType: nil) ??
-                                Bundle.main.path(forResource: res, ofType: nil, inDirectory: "Resources") {
-                do {
-                    try? FileManager.default.removeItem(at: targetPath)
-                    try FileManager.default.copyItem(at: URL(fileURLWithPath: sourcePath), to: targetPath)
-                    appendConsoleOutput("✓ Copied \(res)", for: .configuringEnvironment)
-                } catch {
-                    appendConsoleOutput("✗ Failed to copy \(res): \(error.localizedDescription)", for: .configuringEnvironment)
-                }
-            }
-        }
+        appendConsoleOutput("Copying and verifying resources...", for: .configuringEnvironment)
+        await env.copyResources()
+        appendConsoleOutput("✓ Resources prepared", for: .configuringEnvironment)
     }
 
     private func setupPythonEnvironment(at appSupportDir: URL) async {
-        guard let uvPath = Bundle.main.path(forResource: "uv", ofType: nil) ??
-                          Bundle.main.path(forResource: "uv", ofType: nil, inDirectory: "Resources") else {
-            appendConsoleOutput("Error: uv not found in bundle", for: .configuringEnvironment)
-            return
+        appendConsoleOutput("Installing Python and dependencies...", for: .configuringEnvironment)
+        let success = await env.syncEnvironment()
+        
+        if success {
+            appendConsoleOutput("✓ Python environment ready", for: .configuringEnvironment)
+        } else {
+            appendConsoleOutput("✗ Environment setup failed. Check logs.", for: .configuringEnvironment)
         }
-
-        appendConsoleOutput("Installing Python 3.13 and dependencies...", for: .configuringEnvironment)
-
-        let venvDir = appSupportDir.appendingPathComponent(".venv")
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: uvPath)
-        process.arguments = ["sync", "--python", "3.13"]
-        process.currentDirectoryURL = appSupportDir
-        process.environment = [
-            "UV_PROJECT_ENVIRONMENT": venvDir.path,
-            "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
-            "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
-            "UV_PYTHON_PREFERENCE": "only-managed",
-            "PYTHONUNBUFFERED": "1",
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"
-        ]
-
-        await runProcessWithOutput(process, subStep: .configuringEnvironment)
         setupProgress = 0.2
     }
 

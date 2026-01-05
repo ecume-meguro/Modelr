@@ -97,6 +97,21 @@ class PythonEnvironment: ObservableObject {
         isSetup = true
         status = "Ready"
     }
+
+    /// Copy resources to Application Support
+    func copyResources() async {
+        // Use the internal dependency service which has our improved recursive copy logic
+        _ = await dependencyService.setup { _ in } // This calls copyResourceFiles internally
+    }
+
+    /// Sync the Python environment using uv
+    func syncEnvironment(pythonVersion: String = "3.13") async -> Bool {
+        guard dependencyService.cachedUvPath != nil else { return false }
+        
+        // Use the dependency service setup
+        let success = await dependencyService.setup { _ in }
+        return success
+    }
     
     // MARK: - Worker Management
     

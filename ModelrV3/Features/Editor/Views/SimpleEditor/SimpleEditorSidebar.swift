@@ -121,14 +121,34 @@ struct SimpleEditorSidebar: View {
     @ViewBuilder
     private func setupSubStepRow(_ subStep: SimpleEditorViewModel.SetupSubStep) -> some View {
         let isCompleted = viewModel.setupSubStepCompleted.contains(subStep)
-        // For configuringEnvironment, show as active/spinning if it's running in background
+        // Show as active/spinning if it's running in background or is current active step
         let isActive: Bool = {
-            if subStep == .configuringEnvironment && viewModel.isConfiguringEnvironment && !isCompleted {
+            if isCompleted { return false }
+            
+            // Special cases for background tasks
+            if subStep == .configuringEnvironment && viewModel.isConfiguringEnvironment {
                 return true
             }
-            return viewModel.currentSetupSubStep == subStep && !isCompleted
+            if subStep == .downloadingSegmentation {
+                // If environment is done, and it's not completed yet, it means it's running in background
+                // because configureEnvironmentInBackground starts it immediately after.
+                if viewModel.setupSubStepCompleted.contains(.configuringEnvironment) {
+                    return true
+                }
+            }
+            
+            return viewModel.currentSetupSubStep == subStep
         }()
-        let showContent = viewModel.currentSetupSubStep == subStep && !isCompleted
+        let showContent: Bool = {
+            if isCompleted { return false }
+            if viewModel.currentSetupSubStep == subStep { return true }
+            
+            // Also show content for background tasks that are active
+            if subStep == .configuringEnvironment && viewModel.isConfiguringEnvironment { return true }
+            if subStep == .downloadingSegmentation && viewModel.setupSubStepCompleted.contains(.configuringEnvironment) { return true }
+            
+            return false
+        }()
 
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p4) {
             // Subitem header

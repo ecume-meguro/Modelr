@@ -23,20 +23,18 @@ class PythonDependencyService {
     // MARK: - Setup
 
     func setup(statusUpdate: @escaping (String) -> Void) async -> Bool {
-        statusUpdate("Bootstrapping...")
+        statusUpdate("Preparing resources...")
         
-        guard let uvPath = findUVExecutable() else {
+        guard let uvPath = cachedUvPath else {
             statusUpdate("Error: uv not found")
             return false
         }
         
-        cachedUvPath = uvPath
-        
-        // Copy resource files
+        // Copy resource files (recursively copies everything including mlx-sam3)
         copyResourceFiles()
         
-        // Setup SAM environment
-        statusUpdate("Setting up Python environment...")
+        // Setup SAM environment (sync .venv)
+        statusUpdate("Syncing SAM environment...")
         let samSuccess = await syncEnvironment(
             uvPath: uvPath,
             pythonVersion: "3.13",
@@ -44,13 +42,15 @@ class PythonDependencyService {
         )
         
         guard samSuccess else {
-            statusUpdate("Setup failed")
+            statusUpdate("SAM environment sync failed")
             return false
         }
         
-        // Setup Hunyuan environment
+        // Setup Hunyuan environment (sync .venv_hunyuan)
+        statusUpdate("Syncing Hunyuan environment...")
         await setupHunyuanEnvironment(uvPath: uvPath, statusUpdate: statusUpdate)
-        await downloadHunyuanModel(uvPath: uvPath, statusUpdate: statusUpdate)
+        
+        // NOTE: Model downloading is handled by SimpleEditorViewModel after user choice
         
         statusUpdate("Ready")
         return true
@@ -69,26 +69,76 @@ class PythonDependencyService {
     }
     
     private func copyResourceFiles() {
-        let resources = ["sam_wrapper.py", "pyproject.toml", "hunyuan_wrapper.py", "pyproject_hunyuan.toml", "mesh_processor.py"]
+        SecureLogger.shared.info("Starting copyResourceFiles", category: "Python")
+        var sourceURL: URL?
 
-        for res in resources {
-            let targetPath = appSupportDir.appendingPathComponent(res)
-            var sourcePath: String?
-
-            if let override = resourcePathOverride {
-                sourcePath = URL(fileURLWithPath: override).deletingLastPathComponent().appendingPathComponent(res).path
-            } else {
-                sourcePath = Bundle.main.path(forResource: res, ofType: nil)
-                if sourcePath == nil {
-                    sourcePath = Bundle.main.path(forResource: res, ofType: nil, inDirectory: "Resources")
+        if let override = resourcePathOverride {
+            sourceURL = URL(fileURLWithPath: override).deletingLastPathComponent()
+        } else {
+            // Log everything to find the path
+            SecureLogger.shared.debug("resourceURL: \(Bundle.main.resourceURL?.path ?? "nil")", category: "Python")
+            SecureLogger.shared.debug("bundlePath: \(Bundle.main.bundlePath)", category: "Python")
+            
+            let baseResourceURL = Bundle.main.resourceURL
+            let searchPaths = [
+                baseResourceURL,
+                baseResourceURL?.appendingPathComponent("Resources"),
+                baseResourceURL?.appendingPathComponent("Resources/Resources"),
+                Bundle.main.bundleURL.appendingPathComponent("Contents/Resources"),
+                Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/Resources"),
+                URL(fileURLWithPath: Bundle.main.resourcePath ?? "")
+            ]
+            
+            for path in searchPaths {
+                if let p = path {
+                    let check = p.appendingPathComponent("pyproject.toml")
+                    let exists = fileManager.fileExists(atPath: check.path)
+                    SecureLogger.shared.debug("Checking \(p.path) -> \(exists)", category: "Python")
+                    if exists {
+                        sourceURL = p
+                        break
+                    }
                 }
             }
+        }
 
-            if let source = sourcePath {
-                // Always overwrite Python scripts to ensure updates are applied
-                try? fileManager.removeItem(at: targetPath)
-                try? fileManager.copyItem(at: URL(fileURLWithPath: source), to: targetPath)
+        guard let source = sourceURL else {
+            SecureLogger.shared.error("Could not find resource folder containing pyproject.toml", category: "Python")
+            return
+        }
+
+        SecureLogger.shared.info("Copying resources from \(source.path) to \(appSupportDir.path)", category: "Python")
+        copyFolderContents(from: source, to: appSupportDir)
+    }
+
+    private func copyFolderContents(from source: URL, to destination: URL) {
+        do {
+            if !fileManager.fileExists(atPath: destination.path) {
+                try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
             }
+
+            let contents = try fileManager.contentsOfDirectory(at: source, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+            
+            for item in contents {
+                let targetURL = destination.appendingPathComponent(item.lastPathComponent)
+                
+                var isDirectory: ObjCBool = false
+                if fileManager.fileExists(atPath: item.path, isDirectory: &isDirectory) {
+                    if isDirectory.boolValue {
+                        // Recursively copy subdirectories
+                        copyFolderContents(from: item, to: targetURL)
+                    } else {
+                        // Copy file, overwrite if exists
+                        if fileManager.fileExists(atPath: targetURL.path) {
+                            try fileManager.removeItem(at: targetURL)
+                        }
+                        try fileManager.copyItem(at: item, to: targetURL)
+                        SecureLogger.shared.debug("Copied \(item.lastPathComponent)", category: "Python")
+                    }
+                }
+            }
+        } catch {
+            SecureLogger.shared.error("ERROR copying resources: \(error.localizedDescription)", category: "Python")
         }
     }
     
@@ -133,15 +183,33 @@ class PythonDependencyService {
         let hunyuanDir = appSupportDir.appendingPathComponent("Hunyuan3D")
         let hunyuanPyprojectTarget = hunyuanDir.appendingPathComponent("pyproject.toml")
         
-        try? fileManager.createDirectory(at: hunyuanDir, withIntermediateDirectories: true)
-        try? fileManager.removeItem(at: hunyuanPyprojectTarget)
-        try? fileManager.copyItem(at: hunyuanPyprojectSource, to: hunyuanPyprojectTarget)
-        
-        // Copy wrapper script
-        let wrapperSource = appSupportDir.appendingPathComponent("hunyuan_wrapper.py")
-        let wrapperTarget = hunyuanDir.appendingPathComponent("hunyuan_wrapper.py")
-        try? fileManager.removeItem(at: wrapperTarget)
-        try? fileManager.copyItem(at: wrapperSource, to: wrapperTarget)
+        do {
+            try fileManager.createDirectory(at: hunyuanDir, withIntermediateDirectories: true)
+            
+            if fileManager.fileExists(atPath: hunyuanPyprojectTarget.path) {
+                try fileManager.removeItem(at: hunyuanPyprojectTarget)
+            }
+            // Use the file already copied to Application Support as source
+            if fileManager.fileExists(atPath: hunyuanPyprojectSource.path) {
+                try fileManager.copyItem(at: hunyuanPyprojectSource, to: hunyuanPyprojectTarget)
+            }
+            
+            // Copy wrapper script
+            let wrapperSource = appSupportDir.appendingPathComponent("hunyuan_wrapper.py")
+            let wrapperTarget = hunyuanDir.appendingPathComponent("hunyuan_wrapper.py")
+            
+            if fileManager.fileExists(atPath: wrapperTarget.path) {
+                try fileManager.removeItem(at: wrapperTarget)
+            }
+            if fileManager.fileExists(atPath: wrapperSource.path) {
+                try fileManager.copyItem(at: wrapperSource, to: wrapperTarget)
+            }
+            
+            SecureLogger.shared.info("Hunyuan environment files prepared", category: "Python")
+        } catch {
+            SecureLogger.shared.error("Failed to prepare Hunyuan environment files: \(error.localizedDescription)", category: "Python")
+            return
+        }
         
         // Sync Hunyuan environment (must use hunyuanDir as working directory for pyproject.toml)
         let hunyuanVenv = hunyuanDir.appendingPathComponent(".venv")
@@ -151,45 +219,5 @@ class PythonDependencyService {
             venvPath: hunyuanVenv,
             workingDir: hunyuanDir
         )
-    }
-    
-    private func downloadHunyuanModel(uvPath: String, statusUpdate: @escaping (String) -> Void) async {
-        guard hunyuanVenvReady else { return }
-        
-        let hunyuanDir = appSupportDir.appendingPathComponent("Hunyuan3D")
-        let hunyuanVenv = hunyuanDir.appendingPathComponent(".venv")
-        let hunyuanScript = hunyuanDir.appendingPathComponent("hunyuan_wrapper.py").path
-        
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: uvPath)
-        process.arguments = ["run", hunyuanScript, "--warmup", "--model", "std"]
-        process.currentDirectoryURL = hunyuanDir
-        
-        var env = ProcessInfo.processInfo.environment
-        env["UV_PROJECT_ENVIRONMENT"] = hunyuanVenv.path
-        env["UV_PYTHON_INSTALL_DIR"] = appSupportDir.appendingPathComponent("python_runtimes").path
-        env["UV_CACHE_DIR"] = appSupportDir.appendingPathComponent("uv_cache").path
-        env["UV_PYTHON_PREFERENCE"] = "only-managed"
-        env["PYTHONUNBUFFERED"] = "1"
-        process.environment = env
-        
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        
-        pipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            if let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty {
-                print(">>> \(line)")
-            }
-        }
-        
-        do {
-            try process.run()
-            process.waitUntilExit()
-            pipe.fileHandleForReading.readabilityHandler = nil
-        } catch {
-            print(">>> EXEC ERROR: \(error.localizedDescription)")
-        }
     }
 }
