@@ -5,6 +5,7 @@ extension SimpleEditorViewModel {
 
     func transitionToGenerate() {
         createCompositeImage()
+        checkModelsDownloaded()
         withAnimation(.easeOut(duration: 0.25)) {
             currentStep = .generate
         }

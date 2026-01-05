@@ -115,6 +115,10 @@ extension SimpleEditorViewModel {
         // Complete
         setupProgress = 1.0
         setupStatus = "Setup Complete"
+        
+        // Final check for models
+        checkModelsDownloaded()
+        
         isSetupComplete = true
         UserDefaults.standard.set(true, forKey: "SetupComplete")
 
@@ -145,6 +149,7 @@ extension SimpleEditorViewModel {
         if samExists && hunyuanExists {
             isSetupComplete = true
             setupSubStepCompleted = Set(SetupSubStep.allCases)
+            checkModelsDownloaded()
             currentStep = .input
         } else {
             // Need to re-run setup
