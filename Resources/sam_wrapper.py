@@ -30,94 +30,31 @@ import mlx.core as mx
 from sam3 import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
 
-# Optional retry library
-try:
-    from tenacity import (
-        retry,
-        stop_after_attempt,
-        wait_exponential,
-        retry_if_exception_type,
-    )
-    TENACITY_AVAILABLE = True
-except ImportError:
-    TENACITY_AVAILABLE = False
+from modelrv3_core import (
+    get_logger,
+    validate_image_path,
+    validate_coordinates,
+    validate_image_dimensions,
+    check_gpu_available,
+    health_check,
+    get_device,
+    ModelConfig,
+    PerformanceConfig,
+    metrics,
+    log_info,
+    log_error,
+    log_debug,
+    log_warning,
+    load_image,
+    save_mask_rgba,
+)
+from modelrv3_core.exceptions import (
+    ModelLoadError,
+    ImageValidationError,
+    OutOfMemoryError,
+)
 
-# Optional core library
-try:
-    from modelrv3_core import (
-        get_logger,
-        validate_image_path,
-        validate_coordinates,
-        validate_image_dimensions,
-        check_gpu_available,
-        health_check,
-        get_device,
-        ModelConfig,
-        PerformanceConfig,
-        metrics,
-    )
-    from modelrv3_core.logging import log_info, log_error, log_debug, log_warning
-    from modelrv3_core.exceptions import (
-        ModelLoadError,
-        ImageValidationError,
-        OutOfMemoryError,
-    )
-    logger = get_logger("sam_wrapper")
-except ImportError:
-    logger = None
-    log_info = lambda x: print(x, file=sys.stderr)
-    log_error = lambda x: print(f"ERROR: {x}", file=sys.stderr)
-    log_warning = lambda x: print(f"WARNING: {x}", file=sys.stderr)
-    log_debug = lambda x: None
-    get_device = lambda: "mlx"
-    check_gpu_available = lambda: True
-    ModelLoadError = Exception
-    ImageValidationError = Exception
-    OutOfMemoryError = Exception
-
-    def validate_image_path(path: str) -> None:
-        """Validate that image path exists and is a supported format."""
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"Image not found: {path}")
-        ext = os.path.splitext(path)[1].lower()
-        if ext not in ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp']:
-            raise ValueError(f"Unsupported image format: {ext}")
-
-    def validate_image_dimensions(path: str) -> Tuple[int, int]:
-        """Validate image dimensions and return (width, height)."""
-        with Image.open(path) as img:
-            return img.size
-
-    def validate_coordinates(
-        points: List[List[float]],
-        box: Optional[List[float]],
-        width: int,
-        height: int
-    ) -> None:
-        """Validate that coordinates are within image bounds."""
-        for point in points:
-            if len(point) >= 2:
-                x, y = point[0], point[1]
-                if x < 0 or x >= width or y < 0 or y >= height:
-                    log_warning(f"Point ({x}, {y}) outside image bounds ({width}x{height})")
-        if box is not None and len(box) >= 4:
-            x1, y1, x2, y2 = box[:4]
-            if x1 < 0 or y1 < 0 or x2 > width or y2 > height:
-                log_warning(f"Box [{x1},{y1},{x2},{y2}] outside image bounds ({width}x{height})")
-
-    def health_check() -> Dict[str, Any]:
-        """Basic health check."""
-        return {"status": "ok", "gpu_available": True, "device": "mlx"}
-
-    class ModelConfig:
-        @staticmethod
-        def get_checkpoint_dir() -> str:
-            return os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
-
-    class PerformanceConfig:
-        pass
-
-    metrics = None
+logger = get_logger("sam_wrapper")
 
 
 class ModelManager:
@@ -173,31 +110,7 @@ def load_predictor(
 def save_mask(mask: np.ndarray, output_path: str) -> str:
     """Save mask as RGBA PNG with alpha channel."""
     try:
-        # Handle MLX arrays
-        if hasattr(mask, 'tolist'):
-            mask = np.array(mask)
-        
-        # Squeeze extra dimensions
-        while len(mask.shape) > 2:
-            mask = mask.squeeze(0)
-        
-        mask_255 = (mask * 255).astype(np.uint8)
-        h_mask, w_mask = mask_255.shape
-
-        # Blue-ish mask color (BGRA for OpenCV)
-        b, g, r = 200, 100, 50
-
-        rgba = np.zeros((h_mask, w_mask, 4), dtype=np.uint8)
-        rgba[:, :, 0] = b
-        rgba[:, :, 1] = g
-        rgba[:, :, 2] = r
-        rgba[:, :, 3] = mask_255
-
-        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-        cv2.imwrite(output_path, rgba)
-
-        log_debug(f"Mask saved to: {output_path}")
-        return output_path
+        return save_mask_rgba(mask, output_path)
     except Exception as e:
         raise ImageValidationError(f"Failed to save mask: {e}")
 
@@ -273,9 +186,9 @@ def server_mode(model_type: str, script_dir: str, output_dir: str) -> None:
                         response = {"success": False, "error": "Image not found"}
                     else:
                         try:
-                            # Load and preprocess image
-                            image = ImageOps.exif_transpose(Image.open(image_path))
-                            current_image_np = np.array(image.convert("RGB"))
+                            # Use centralized load_image
+                            image = load_image(image_path)
+                            current_image_np = np.array(image)
                             
                             # Set image in processor (computes backbone features)
                             inference_state = processor.set_image(image)

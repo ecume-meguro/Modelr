@@ -231,12 +231,8 @@ class SimpleEditorViewModel: ObservableObject {
         inputImage = image
 
         let ext = url.pathExtension.lowercased()
-        if ext == "webp" || ext == "bmp" || ext == "gif" {
-            if let pngPath = convertToPNG(image: image, originalName: url.deletingPathExtension().lastPathComponent) {
-                inputImagePath = pngPath
-            } else {
-                inputImagePath = url.path
-            }
+        if ["webp", "bmp", "gif"].contains(ext) {
+            inputImagePath = ImageService.shared.convertToPNG(image: image, originalName: url.deletingPathExtension().lastPathComponent) ?? url.path
         } else {
             inputImagePath = url.path
         }
@@ -257,7 +253,7 @@ class SimpleEditorViewModel: ObservableObject {
             imagePixelSize = CGSize(width: CGFloat(rep.pixelsWide), height: CGFloat(rep.pixelsHigh))
         }
 
-        checkImageHasAlpha()
+        imageHasAlpha = ImageService.shared.checkImageHasAlpha(image)
 
         withAnimation(.easeOut(duration: 0.25)) {
             currentStep = .segment
@@ -266,21 +262,9 @@ class SimpleEditorViewModel: ObservableObject {
         Task { await initializeImage() }
     }
 
-    private func convertToPNG(image: NSImage, originalName: String) -> String? {
-        guard let tiffData = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiffData),
-              let pngData = bitmap.representation(using: .png, properties: [:]) else {
-            return nil
-        }
-
-        let tempPath = NSTemporaryDirectory() + "\(originalName)_\(UUID().uuidString.prefix(8)).png"
-        do {
-            try pngData.write(to: URL(fileURLWithPath: tempPath))
-            return tempPath
-        } catch {
-            print("Failed to write PNG: \(error)")
-            return nil
-        }
+    func checkImageHasAlpha() {
+        guard let image = inputImage else { return }
+        imageHasAlpha = ImageService.shared.checkImageHasAlpha(image)
     }
 
     private func initializeImage() async {
@@ -291,55 +275,6 @@ class SimpleEditorViewModel: ObservableObject {
         } catch {
             print("[Init] Failed to set image: \(error)")
         }
-    }
-
-    func checkImageHasAlpha() {
-        guard let image = inputImage,
-              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            imageHasAlpha = false
-            return
-        }
-
-        let alphaInfo = cgImage.alphaInfo
-        let hasAlphaChannel = alphaInfo == .first || alphaInfo == .last ||
-                              alphaInfo == .premultipliedFirst || alphaInfo == .premultipliedLast
-
-        guard hasAlphaChannel else {
-            imageHasAlpha = false
-            return
-        }
-
-        let width = cgImage.width
-        let height = cgImage.height
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-
-        guard let context = CGContext(
-            data: nil,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width * 4,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ), let data = context.data else {
-            imageHasAlpha = false
-            return
-        }
-
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        let pixels = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
-        var hasTransparency = false
-
-        let sampleStep = max(1, (width * height) / 10000)
-        for i in stride(from: 0, to: width * height, by: sampleStep) {
-            let alpha = pixels[i * 4 + 3]
-            if alpha < 250 {
-                hasTransparency = true
-                break
-            }
-        }
-
-        imageHasAlpha = hasTransparency
     }
 
     // MARK: - Navigation

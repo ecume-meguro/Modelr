@@ -19,89 +19,35 @@ import torch
 import numpy as np
 from PIL import Image
 
-try:
-    from modelrv3_core import (
-        get_logger,
-        validate_image_path,
-        validate_output_dir,
-        validate_mask_compatibility,
-        get_device,
-        check_gpu_available,
-        health_check,
-        ModelConfig,
-        PerformanceConfig,
-        metrics,
-    )
-    from modelrv3_core.logging import log_info, log_error, log_debug, log_warning
-    from modelrv3_core.exceptions import (
-        ModelLoadError,
-        ImageValidationError,
-        GenerationError,
-        OutOfMemoryError,
-    )
+from modelrv3_core import (
+    get_logger,
+    validate_image_path,
+    validate_output_dir,
+    validate_mask_compatibility,
+    get_device,
+    check_gpu_available,
+    health_check,
+    ModelConfig,
+    PerformanceConfig,
+    metrics,
+    log_info,
+    log_error,
+    log_debug,
+    log_warning,
+    load_image,
+    extract_foreground,
+)
+from modelrv3_core.exceptions import (
+    ModelLoadError,
+    ImageValidationError,
+    GenerationError,
+    OutOfMemoryError,
+)
 
-    logger = get_logger("hunyuan_wrapper")
+logger = get_logger("hunyuan_wrapper")
 
-    APP_SUPPORT_DIR = str(ModelConfig.get_checkpoint_dir().parent)
-    HUNYUAN_CACHE_DIR = ModelConfig.get_hunyuan_cache_dir()
-except ImportError:
-    logger = None
-    log_info = lambda x: print(x, file=sys.stderr)
-    log_error = lambda x: print(f"ERROR: {x}", file=sys.stderr)
-    log_warning = lambda x: print(f"WARNING: {x}", file=sys.stderr)
-    log_debug = lambda x: None
-    get_device = lambda: (
-        "mps"
-        if torch.backends.mps.is_available()
-        else "cuda"
-        if torch.cuda.is_available()
-        else "cpu"
-    )
-    check_gpu_available = (
-        lambda: torch.backends.mps.is_available() or torch.cuda.is_available()
-    )
-    ModelLoadError = Exception
-    ImageValidationError = Exception
-    GenerationError = Exception
-    OutOfMemoryError = Exception
-
-    def validate_image_path(path):
-        if not os.path.exists(path):
-            raise ImageValidationError(f"File not found: {path}")
-
-    def validate_output_dir(path):
-        os.makedirs(path, exist_ok=True)
-
-    def validate_mask_compatibility(image_path, mask_path):
-        pass
-
-    ModelConfig = type(
-        "ModelConfig",
-        (),
-        {
-            "get_checkpoint_dir": lambda: Path.home()
-            / "Library"
-            / "Application Support"
-            / "ModelrV3",
-            "get_hunyuan_cache_dir": lambda: Path.home()
-            / "Library"
-            / "Application Support"
-            / "ModelrV3"
-            / "Hunyuan3D",
-        },
-    )()
-    PerformanceConfig = type("PerformanceConfig", (), {"ENABLE_METRICS": False})()
-    metrics = {}
-
-    APP_SUPPORT_DIR = os.path.expanduser("~/Library/Application Support/ModelrV3")
-    HUNYUAN_CACHE_DIR = Path(os.path.join(APP_SUPPORT_DIR, "Hunyuan3D"))
-
-HUNYUAN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-os.environ["HY3DGEN_MODELS"] = str(HUNYUAN_CACHE_DIR)
-os.environ["HF_HOME"] = str(HUNYUAN_CACHE_DIR / "hf_home")
-os.environ["HUGGINGFACE_HUB_CACHE"] = str(HUNYUAN_CACHE_DIR / "hf_cache")
-os.environ["TORCH_HOME"] = str(HUNYUAN_CACHE_DIR / "torch_home")
+APP_SUPPORT_DIR = str(ModelConfig.get_checkpoint_dir().parent)
+HUNYUAN_CACHE_DIR = ModelConfig.get_hunyuan_cache_dir()
 
 
 def load_pipeline(model_variant: str = "std", device: str = "mps"):
@@ -142,37 +88,45 @@ def extract_foreground_with_mask(
 ) -> Image.Image:
     """
     Extract foreground from image using a SAM2 mask.
-    SAM2 mask is RGBA where the alpha channel contains the actual mask (0-255).
-    RGB channels are just a constant color tint for visualization.
+    Uses centralized core utility.
     """
     try:
         validate_image_path(image_path)
         validate_image_path(mask_path)
         validate_mask_compatibility(image_path, mask_path)
 
-        log_debug(f"Extracting foreground from {image_path} using mask {mask_path}")
+        log_info(f"[Mask Debug] Image path: {image_path}")
+        log_info(f"[Mask Debug] Mask path: {mask_path}")
 
-        image = Image.open(image_path).convert("RGBA")
-        mask_img = Image.open(mask_path).convert("RGBA")
+        # Load image - preserve alpha if present
+        image = Image.open(image_path)
+        log_info(f"[Mask Debug] Image mode: {image.mode}, size: {image.size}")
 
-        if mask_img.size != image.size:
-            log_debug(f"Resizing mask from {mask_img.size} to {image.size}")
-            mask_img = mask_img.resize(image.size, Image.Resampling.LANCZOS)
+        mask_img = Image.open(mask_path)
+        log_info(f"[Mask Debug] Mask mode: {mask_img.mode}, size: {mask_img.size}")
 
-        image_array = np.array(image)
-        mask_array = np.array(mask_img)
+        # Check mask statistics
+        mask_gray = mask_img.convert("L")
+        mask_arr = np.array(mask_gray)
+        white_pixels = np.sum(mask_arr > 128)
+        black_pixels = np.sum(mask_arr <= 128)
+        total_pixels = mask_arr.size
+        log_info(f"[Mask Debug] Mask stats: {white_pixels} white ({100*white_pixels/total_pixels:.1f}%), {black_pixels} black ({100*black_pixels/total_pixels:.1f}%)")
 
-        alpha_mask = mask_array[:, :, 3]
+        result = extract_foreground(image, mask_img)
+        log_info(f"[Mask Debug] Result mode: {result.mode}, size: {result.size}")
 
-        image_array[:, :, 3] = alpha_mask
+        # Check result alpha statistics
+        result_arr = np.array(result)
+        visible_pixels = np.sum(result_arr[:, :, 3] > 128)
+        log_info(f"[Mask Debug] Result visible pixels: {visible_pixels} ({100*visible_pixels/total_pixels:.1f}%)")
 
-        result = Image.fromarray(image_array, "RGBA")
-
+        # Always save debug composite for inspection
         if output_dir:
             validate_output_dir(output_dir)
-            composite_path = os.path.join(output_dir, "self_test_composite.png")
+            composite_path = os.path.join(output_dir, "debug_composite.png")
             result.save(composite_path)
-            log_debug(f"Saved composite to: {composite_path}")
+            log_info(f"[Mask Debug] Saved debug composite to: {composite_path}")
 
         return result
 
@@ -209,6 +163,33 @@ def generate_3d_model(
         log_info(
             f"Generating 3D shape (steps={num_steps}, resolution={octree_resolution})..."
         )
+
+        # Debug: verify image being sent to pipeline
+        log_info(f"[Pipeline Input] Mode: {image.mode}, Size: {image.size}")
+
+        # Save debug copy of exact image being fed to pipeline
+        debug_input_path = os.path.join(os.path.dirname(output_path) or ".", "DEBUG_hunyuan_input.png")
+        image.save(debug_input_path)
+        log_info(f"[Pipeline Input] DEBUG: Saved input image to: {debug_input_path}")
+
+        img_arr = np.array(image)
+        log_info(f"[Pipeline Input] Array shape: {img_arr.shape}, dtype: {img_arr.dtype}")
+
+        if len(img_arr.shape) == 3:
+            if img_arr.shape[2] == 4:
+                # RGBA
+                transparent = np.sum(img_arr[:, :, 3] == 0)
+                opaque = np.sum(img_arr[:, :, 3] == 255)
+                partial = img_arr.shape[0] * img_arr.shape[1] - transparent - opaque
+                log_info(f"[Pipeline Input] Alpha channel: {opaque} opaque (255), {transparent} transparent (0), {partial} partial")
+                log_info(f"[Pipeline Input] Alpha min={img_arr[:,:,3].min()}, max={img_arr[:,:,3].max()}, mean={img_arr[:,:,3].mean():.1f}")
+            elif img_arr.shape[2] == 3:
+                log_info(f"[Pipeline Input] WARNING: Image is RGB only (no alpha channel!)")
+            else:
+                log_info(f"[Pipeline Input] WARNING: Unexpected channels: {img_arr.shape[2]}")
+        else:
+            log_info(f"[Pipeline Input] WARNING: Unexpected array shape: {img_arr.shape}")
+
         with torch.inference_mode():
             mesh = pipeline(
                 image=image,
@@ -391,12 +372,23 @@ def main():
 
         device = "mps" if torch.backends.mps.is_available() else "cpu"
 
-        if args.mask:
-            image = extract_foreground_with_mask(
-                args.image, args.mask, output_dir=args.output_dir
-            )
+        # Load input image
+        image = Image.open(args.image).convert("RGBA")
+        log_info(f"[Input] Image: {args.image} (Mode: {image.mode}, Size: {image.size})")
+
+        # If mask is provided, use it to ensure correct foreground extraction
+        # This honors the "MAKE SURE NO OTHER IMAGES ARE BEING PROCESSED" requirement
+        if args.mask and os.path.exists(args.mask):
+            log_info(f"[Input] Applying mask: {args.mask}")
+            mask_img = Image.open(args.mask).convert("L")
+            if mask_img.size != image.size:
+                mask_img = mask_img.resize(image.size, Image.Resampling.LANCZOS)
+            
+            # Use the core extraction utility which sets background to white with alpha=0
+            image = extract_foreground(image, mask_img)
+            log_info(f"[Input] Mask applied. Result mode: {image.mode}")
         else:
-            image = Image.open(args.image).convert("RGBA")
+            log_info("[Input] No mask provided or mask not found, using image as-is (assuming already masked)")
 
         output_path = args.output or os.path.join(args.output_dir, "output_model.obj")
 

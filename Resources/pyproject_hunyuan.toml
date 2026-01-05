@@ -64,9 +64,12 @@ dependencies = [
     # Retry library for handling transient network errors
     # Required for: Robust model checkpoint downloads
     "tenacity>=8.2.0,<9.0.0",
-    # Hunyuan3D-2 library (installed from git)
+    # Hunyuan3D-2 library (installed from git, defined in sources)
     # Required for: Main 3D generation pipeline
-    "hy3dgen @ git+https://github.com/tencent/Hunyuan3D-2.git",
+    "hy3dgen",
+    # Shared core module (defined in sources below)
+    # Required for: Logging, validation, config utilities
+    "modelrv3-core",
 ]
 requires-python = ">=3.10,<4.0.0"
 
@@ -83,3 +86,7 @@ override-dependencies = [
     # Version requirement: >=0.41.0 required for numba 0.58+
     "llvmlite>=0.41.0",
 ]
+
+[tool.uv.sources]
+hy3dgen = { git = "https://github.com/tencent/Hunyuan3D-2.git" }
+modelrv3-core = { path = "../modelrv3_core" }

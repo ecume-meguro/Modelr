@@ -4,6 +4,11 @@ import SwiftUI
 extension SimpleEditorViewModel {
 
     func transitionToGenerate() {
+        // If we are coming directly from segment step, we might not have initialized editableMaskImage yet
+        if editableMaskImage == nil {
+            editableMaskImage = mergeAllSelectedMasks()
+        }
+        
         createCompositeImage()
         checkModelsDownloaded()
         withAnimation(.easeOut(duration: 0.25)) {
@@ -12,96 +17,32 @@ extension SimpleEditorViewModel {
     }
 
     func createCompositeImage() {
-        guard let sourceImage = inputImage,
-              let sourceCGImage = sourceImage.cgImage(forProposedRect: nil, context: nil, hints: nil),
-              let maskImage = editableMaskImage,
-              let maskCGImage = maskImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
-
-        let width = sourceCGImage.width
-        let height = sourceCGImage.height
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let totalPixels = width * height
-
-        guard let sourceContext = CGContext(
-            data: nil, width: width, height: height,
-            bitsPerComponent: 8, bytesPerRow: width * 4,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ), let sourceData = sourceContext.data else { return }
-
-        sourceContext.draw(sourceCGImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-
-        guard let maskContext = CGContext(
-            data: nil, width: width, height: height,
-            bitsPerComponent: 8, bytesPerRow: width * 4,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ), let maskData = maskContext.data else { return }
-
-        maskContext.draw(maskCGImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-
-        guard let outputContext = CGContext(
-            data: nil, width: width, height: height,
-            bitsPerComponent: 8, bytesPerRow: width * 4,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ), let outputData = outputContext.data else { return }
-
-        let sourcePixels = sourceData.bindMemory(to: UInt32.self, capacity: totalPixels)
-        let maskPixels = maskData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
-        let outputPixels = outputData.bindMemory(to: UInt32.self, capacity: totalPixels)
-
-        let chunkSize = 65536
-        let chunks = (totalPixels + chunkSize - 1) / chunkSize
-
-        DispatchQueue.concurrentPerform(iterations: chunks) { chunk in
-            let start = chunk * chunkSize
-            let end = min(start + chunkSize, totalPixels)
-
-            for i in start..<end {
-                let maskValue = maskPixels[i * 4]
-                if maskValue > 0 {
-                    let sourceVal = sourcePixels[i]
-                    outputPixels[i] = (sourceVal & 0x00FFFFFF) | 0xFF000000
-                } else {
-                    outputPixels[i] = 0
-                }
-            }
+        guard let sourceImage = inputImage else { return }
+        
+        // Use editableMaskImage if available, otherwise try to merge current segmentations
+        let maskToUse = editableMaskImage ?? mergeAllSelectedMasks()
+        
+        guard let mask = maskToUse else {
+            print("[Generation] Warning: No mask available for composite")
+            return
         }
-
-        guard let finalImage = outputContext.makeImage() else { return }
-        compositeImage = NSImage(cgImage: finalImage, size: NSSize(width: width, height: height))
+        
+        compositeImage = ImageService.shared.createCompositeImage(source: sourceImage, mask: mask)
     }
 
     func generate3D() {
-        guard let composite = compositeImage else { return }
+        guard let composite = compositeImage,
+              let mask = editableMaskImage else { return }
 
-        let tempImagePath = NSTemporaryDirectory() + "composite_\(UUID().uuidString).png"
-        if let tiff = composite.tiffRepresentation,
-           let bitmap = NSBitmapImageRep(data: tiff),
-           let png = bitmap.representation(using: .png, properties: [:]) {
-            do {
-                try png.write(to: URL(fileURLWithPath: tempImagePath))
-            } catch {
-                print("[Generation] Failed to write composite image: \(error)")
-            }
+        // Use the centralized ImageService to convert images to PNG, preserving alpha
+        guard let tempImagePath = ImageService.shared.convertToPNG(image: composite, originalName: "composite"),
+              let tempMaskPath = ImageService.shared.convertToPNG(image: mask, originalName: "mask") else {
+            print("[Generation] Failed to create temporary images for processing")
+            return
         }
 
-        let tempMaskPath: String
-        if let maskImage = editableMaskImage {
-            tempMaskPath = NSTemporaryDirectory() + "mask_\(UUID().uuidString).png"
-            if let tiff = maskImage.tiffRepresentation,
-               let bitmap = NSBitmapImageRep(data: tiff),
-               let png = bitmap.representation(using: .png, properties: [:]) {
-                do {
-                    try png.write(to: URL(fileURLWithPath: tempMaskPath))
-                } catch {
-                    print("[Generation] Failed to write mask image: \(error)")
-                }
-            }
-        } else {
-            tempMaskPath = ""
-        }
+        print("[Generation] Composite image: \(tempImagePath)")
+        print("[Generation] Mask image: \(tempMaskPath)")
 
         isGenerating = true
         generationStartTime = Date()

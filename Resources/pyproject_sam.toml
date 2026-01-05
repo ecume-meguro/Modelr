@@ -1,0 +1,25 @@
+[project]
+name = "modelrv3-sam"
+version = "0.1.0"
+description = "SAM3 environment for ModelrV3 with MLX support"
+requires-python = ">=3.13,<4.0.0"
+dependencies = [
+    # Image processing (for sam_wrapper.py)
+    "opencv-python>=4.8.0",
+    # Local packages (defined in sources below)
+    "mlx-sam3",
+    "modelrv3-core",
+]
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Disable auto-discovery to avoid picking up unrelated folders in Application Support
+packages = []
+py-modules = []
+
+[tool.uv.sources]
+mlx-sam3 = { path = "mlx-sam3" }
+modelrv3-core = { path = "../modelrv3_core" }

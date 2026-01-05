@@ -16,6 +16,12 @@ enum GeneratorModel: String, CaseIterable, Identifiable {
 }
 
 /// Coordinates all Python-related services (dependencies, processes, communication)
+///
+/// Directory structure in ~/Library/Application Support/ModelrV3/:
+/// ├── modelrv3_core/         # Shared Python module
+/// ├── SAM/                   # Segmentation environment
+/// ├── Tools/                 # Mesh processing environment
+/// └── Hunyuan3D/             # 3D generation environment
 class PythonEnvironment: ObservableObject {
     @Published var isSetup = false
     @Published var status = "Initializing..."
@@ -25,51 +31,37 @@ class PythonEnvironment: ObservableObject {
     @Published var samModelReady = false
     @Published var isGenerationCancelled = false
     @Published var selectedGenerator: GeneratorModel = .hunyuan
-    
-    private let appSupportDir: URL
-    private let venvDir: URL
-    private let hunyuanVenvDir: URL
-    
+
+    let appSupportDir: URL
+
     private let dependencyService: PythonDependencyService
     private let processManager: PythonProcessManager
     private var bridge: PythonBridge?
-    
+
     private var currentImagePath: String?
     private var imagePixelSize: CGSize = .zero
-    
+
     /// Used for dependency injection during unit tests
     var resourcePathOverride: String? {
         didSet {
             dependencyService.resourcePathOverride = resourcePathOverride
         }
     }
-    
+
     init() {
         let fileManager = FileManager.default
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         appSupportDir = appSupport.appendingPathComponent("ModelrV3")
-        venvDir = appSupportDir.appendingPathComponent(".venv")
-        hunyuanVenvDir = appSupportDir.appendingPathComponent(".venv_hunyuan")
-        
+
         do {
             try fileManager.createDirectory(at: appSupportDir, withIntermediateDirectories: true)
         } catch {
             print("ERROR: Failed to create directory: \(error.localizedDescription)")
         }
-        
-        dependencyService = PythonDependencyService(appSupportDir: appSupportDir)
-        processManager = PythonProcessManager(
-            appSupportDir: appSupportDir,
-            venvDir: venvDir,
-            hunyuanVenvDir: hunyuanVenvDir
-        )
-        processManager.selectedModel = selectedModel
 
-        // NOTE: Auto-setup disabled - SimpleEditorViewModel handles setup with user-selected model
-        // The old PythonDependencyService had hardcoded "std" model which caused duplicate downloads
-        // Task {
-        //     await setup()
-        // }
+        dependencyService = PythonDependencyService(appSupportDir: appSupportDir)
+        processManager = PythonProcessManager(appSupportDir: appSupportDir)
+        processManager.selectedModel = selectedModel
     }
     
     deinit {
@@ -78,8 +70,9 @@ class PythonEnvironment: ObservableObject {
     
     // MARK: - Setup
     
-    func setup() async {
+    func setup(statusUpdate: ((String) -> Void)? = nil) async -> Bool {
         let success = await dependencyService.setup { [weak self] statusText in
+            statusUpdate?(statusText)
             Task { @MainActor in
                 self?.status = statusText
             }
@@ -89,6 +82,7 @@ class PythonEnvironment: ObservableObject {
             isSetup = success
             status = success ? "Ready" : "Setup failed"
         }
+        return success
     }
 
     /// Mark the Hunyuan environment as ready (called by new setup flow)
@@ -118,6 +112,12 @@ class PythonEnvironment: ObservableObject {
     func startPersistentWorker() async throws {
         guard let uvPath = dependencyService.cachedUvPath else {
             throw PythonError.uvNotFound
+        }
+        
+        // Ensure resources are present before starting
+        if !dependencyService.checkResources() {
+            print("[Python] Resources missing in Application Support, copying...")
+            _ = await setup()
         }
         
         try processManager.startPersistentWorker(uvPath: uvPath)

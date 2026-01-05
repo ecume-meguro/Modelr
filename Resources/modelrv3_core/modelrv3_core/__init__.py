@@ -17,6 +17,10 @@ from .exceptions import (
 from .logging import (
     setup_logging,
     get_logger,
+    log_info,
+    log_error,
+    log_debug,
+    log_warning,
 )
 
 from .validators import (
@@ -44,6 +48,12 @@ from .config import (
     metrics,
 )
 
+from .image import (
+    load_image,
+    save_mask_rgba,
+    extract_foreground,
+)
+
 __all__ = [
     "ModelLoadError",
     "ImageValidationError",
@@ -53,6 +63,10 @@ __all__ = [
     "ProtocolError",
     "setup_logging",
     "get_logger",
+    "log_info",
+    "log_error",
+    "log_debug",
+    "log_warning",
     "validate_image_path",
     "validate_coordinates",
     "validate_output_dir",
@@ -66,4 +80,7 @@ __all__ = [
     "ModelConfig",
     "PerformanceConfig",
     "metrics",
+    "load_image",
+    "save_mask_rgba",
+    "extract_foreground",
 ]

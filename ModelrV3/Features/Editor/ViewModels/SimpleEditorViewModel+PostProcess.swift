@@ -239,17 +239,17 @@ extension SimpleEditorViewModel {
     ) async -> [String: Any]? {
         let appSupportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             .appendingPathComponent("ModelrV3")
-        let scriptPath = appSupportDir.appendingPathComponent("mesh_processor.py").path
-        let venvPythonPath = appSupportDir.appendingPathComponent(".venv/bin/python").path
-
-        if !FileManager.default.fileExists(atPath: scriptPath) {
-            if let bundlePath = Bundle.main.path(forResource: "mesh_processor", ofType: "py") {
-                try? FileManager.default.copyItem(atPath: bundlePath, toPath: scriptPath)
-            }
-        }
+        let toolsDir = appSupportDir.appendingPathComponent("Tools")
+        let scriptPath = toolsDir.appendingPathComponent("mesh_processor.py").path
+        let venvPythonPath = toolsDir.appendingPathComponent(".venv/bin/python").path
 
         guard FileManager.default.fileExists(atPath: venvPythonPath) else {
-            print("[MeshProcessor] Python venv not found at \(venvPythonPath)")
+            print("[MeshProcessor] Tools Python venv not found at \(venvPythonPath)")
+            return nil
+        }
+
+        guard FileManager.default.fileExists(atPath: scriptPath) else {
+            print("[MeshProcessor] mesh_processor.py not found at \(scriptPath)")
             return nil
         }
 
@@ -269,7 +269,7 @@ extension SimpleEditorViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: venvPythonPath)
         process.arguments = args
-        process.currentDirectoryURL = appSupportDir
+        process.currentDirectoryURL = toolsDir
 
         var env = ProcessInfo.processInfo.environment
         env["PYTHONUNBUFFERED"] = "1"

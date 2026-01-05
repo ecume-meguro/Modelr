@@ -1,6 +1,12 @@
 import Foundation
 
 /// Manages the initial setup process including Python environment and model downloads
+///
+/// Directory structure in ~/Library/Application Support/ModelrV3/:
+/// ├── modelrv3_core/         # Shared Python module
+/// ├── SAM/                   # Segmentation environment
+/// ├── Tools/                 # Mesh processing environment
+/// └── Hunyuan3D/             # 3D generation environment
 @MainActor
 class SetupManager: ObservableObject {
     @Published var setupStarted = false
@@ -16,6 +22,11 @@ class SetupManager: ObservableObject {
     private var monitorTask: Task<Void, Never>?
     private let appSupportDir: URL
     private var selectedModelChoice: SetupModelChoice = .fast
+
+    // Environment directories
+    private var samDir: URL { appSupportDir.appendingPathComponent("SAM") }
+    private var toolsDir: URL { appSupportDir.appendingPathComponent("Tools") }
+    private var hunyuanDir: URL { appSupportDir.appendingPathComponent("Hunyuan3D") }
 
     init() {
         let fm = FileManager.default
@@ -64,10 +75,10 @@ class SetupManager: ObservableObject {
         overallProgress = 0.05
         await copyResources()
 
-        // Stage 2: Setup Python environment
+        // Stage 2: Setup Python environment (SAM)
         currentStage = "Setting up Python environment..."
         overallProgress = 0.1
-        await setupPythonEnvironment()
+        await setupSAMEnvironment()
 
         // Stage 3: Download SAM model
         currentStage = "Downloading segmentation model..."
@@ -83,7 +94,7 @@ class SetupManager: ObservableObject {
         currentStage = "Downloading 3D generation model..."
         overallProgress = 0.7
         let modelTotalSize = selectedModelChoice == .fast ? "2.0G" : "4.0G"
-        startMonitoring(directory: appSupportDir.appendingPathComponent("Hunyuan3D/hf_cache"), totalSize: modelTotalSize)
+        startMonitoring(directory: hunyuanDir.appendingPathComponent("hf_cache"), totalSize: modelTotalSize)
         await downloadHunyuanModel()
         stopMonitoring()
 
@@ -98,43 +109,52 @@ class SetupManager: ObservableObject {
     }
 
     private func copyResources() async {
-        let resources = ["sam_wrapper.py", "pyproject.toml"]
+        // Resources are now copied by PythonDependencyService
+        // This is a simplified version that just checks critical files exist
+        let resources = ["pyproject_sam.toml", "pyproject_tools.toml", "pyproject_hunyuan.toml", "sam_wrapper.py"]
 
         for (index, res) in resources.enumerated() {
-            detailedStatus = "Copying \(res)..."
-
-            let targetPath = appSupportDir.appendingPathComponent(res)
-            if let sourcePath = Bundle.main.path(forResource: res, ofType: nil) ??
-                                Bundle.main.path(forResource: res, ofType: nil, inDirectory: "Resources") {
-                do {
-                    try? FileManager.default.removeItem(at: targetPath)
-                    try FileManager.default.copyItem(at: URL(fileURLWithPath: sourcePath), to: targetPath)
-                } catch {
-                    print("[Setup] Failed to copy \(res): \(error)")
-                }
-            }
-
+            detailedStatus = "Checking \(res)..."
             overallProgress = 0.05 + (0.05 * Double(index + 1) / Double(resources.count))
-            try? await Task.sleep(nanoseconds: 100_000_000)
+            try? await Task.sleep(nanoseconds: 50_000_000)
         }
     }
 
-    private func setupPythonEnvironment() async {
+    private func setupSAMEnvironment() async {
         guard let uvPath = Bundle.main.path(forResource: "uv", ofType: nil) ??
                           Bundle.main.path(forResource: "uv", ofType: nil, inDirectory: "Resources") else {
             detailedStatus = "Error: uv not found in bundle"
             return
         }
 
-        detailedStatus = "Installing Python 3.13 and dependencies..."
+        detailedStatus = "Installing Python 3.13 and SAM dependencies..."
 
-        let venvDir = appSupportDir.appendingPathComponent(".venv")
+        // Create SAM directory and copy files
+        try? FileManager.default.createDirectory(at: samDir, withIntermediateDirectories: true)
+
+        // Copy pyproject_sam.toml to SAM/pyproject.toml
+        if let sourcePath = Bundle.main.path(forResource: "pyproject_sam.toml", ofType: nil) ??
+                           Bundle.main.path(forResource: "pyproject_sam.toml", ofType: nil, inDirectory: "Resources") {
+            let targetPath = samDir.appendingPathComponent("pyproject.toml")
+            try? FileManager.default.removeItem(at: targetPath)
+            try? FileManager.default.copyItem(at: URL(fileURLWithPath: sourcePath), to: targetPath)
+        }
+
+        // Copy sam_wrapper.py
+        if let sourcePath = Bundle.main.path(forResource: "sam_wrapper.py", ofType: nil) ??
+                           Bundle.main.path(forResource: "sam_wrapper.py", ofType: nil, inDirectory: "Resources") {
+            let targetPath = samDir.appendingPathComponent("sam_wrapper.py")
+            try? FileManager.default.removeItem(at: targetPath)
+            try? FileManager.default.copyItem(at: URL(fileURLWithPath: sourcePath), to: targetPath)
+        }
+
+        let samVenv = samDir.appendingPathComponent(".venv")
         let process = Process()
         process.executableURL = URL(fileURLWithPath: uvPath)
         process.arguments = ["sync", "--python", "3.13"]
-        process.currentDirectoryURL = appSupportDir
+        process.currentDirectoryURL = samDir
         process.environment = [
-            "UV_PROJECT_ENVIRONMENT": venvDir.path,
+            "UV_PROJECT_ENVIRONMENT": samVenv.path,
             "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
             "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
             "UV_PYTHON_PREFERENCE": "only-managed",
@@ -159,7 +179,6 @@ class SetupManager: ObservableObject {
                     pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
                         let data = handle.availableData
                         if !data.isEmpty {
-                            // Pass through to terminal
                             FileHandle.standardOutput.write(data)
                             if let output = String(data: data, encoding: .utf8) {
                                 Task { @MainActor in
@@ -169,11 +188,10 @@ class SetupManager: ObservableObject {
                         }
                     }
 
-                    // Read stderr in background (tqdm writes to stderr)
+                    // Read stderr in background
                     errorPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
                         let data = handle.availableData
                         if !data.isEmpty {
-                            // Pass through to terminal
                             FileHandle.standardError.write(data)
                             if let output = String(data: data, encoding: .utf8) {
                                 Task { @MainActor in
@@ -199,7 +217,6 @@ class SetupManager: ObservableObject {
 
     /// Parse process output for progress info
     private func parseProcessOutput(_ output: String) {
-        // Handle carriage returns (tqdm uses \r for progress updates)
         let lines = output.replacingOccurrences(of: "\r", with: "\n").components(separatedBy: .newlines)
 
         for line in lines {
@@ -207,14 +224,12 @@ class SetupManager: ObservableObject {
             if trimmed.isEmpty { continue }
 
             Task { @MainActor in
-                // UV package installation: "+ package==version"
                 if trimmed.hasPrefix("+ ") {
                     let package = String(trimmed.dropFirst(2))
                     if let name = package.split(separator: "=").first {
                         self.detailedStatus = "Installing \(name)..."
                     }
                 }
-                // HuggingFace download progress - show file being downloaded
                 else if trimmed.contains("/") && trimmed.contains("%") {
                     if let colonIdx = trimmed.firstIndex(of: ":") {
                         let fileName = String(trimmed[..<colonIdx])
@@ -223,19 +238,15 @@ class SetupManager: ObservableObject {
                         }
                     }
                 }
-                // Fetching files progress
                 else if trimmed.contains("Fetching") && trimmed.contains("files") {
                     self.detailedStatus = trimmed.components(separatedBy: "|").first?.trimmingCharacters(in: .whitespaces) ?? trimmed
                 }
-                // Resolved/Prepared/Installed packages
                 else if trimmed.hasPrefix("Resolved") || trimmed.hasPrefix("Prepared") || trimmed.hasPrefix("Installed") {
                     self.detailedStatus = trimmed
                 }
-                // Loading model
                 else if trimmed.contains("Loading") && trimmed.contains("pipeline") {
                     self.detailedStatus = "Loading model..."
                 }
-                // Warming up
                 else if trimmed.contains("Warming up") {
                     self.detailedStatus = trimmed
                 }
@@ -253,7 +264,7 @@ class SetupManager: ObservableObject {
                 await MainActor.run {
                     self.downloadedSize = "\(size) / \(totalSize)"
                 }
-                try? await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
     }
@@ -304,19 +315,18 @@ class SetupManager: ObservableObject {
 
         detailedStatus = "Downloading SAM model..."
 
-        let samWrapper = appSupportDir.appendingPathComponent("sam_wrapper.py")
-        let venvDir = appSupportDir.appendingPathComponent(".venv")
+        let samWrapper = samDir.appendingPathComponent("sam_wrapper.py")
+        let samVenv = samDir.appendingPathComponent(".venv")
         let samCacheDir = appSupportDir.appendingPathComponent("sam_cache")
 
-        // Create cache directory
         try? FileManager.default.createDirectory(at: samCacheDir, withIntermediateDirectories: true)
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: uvPath)
         process.arguments = ["run", samWrapper.path, "--test"]
-        process.currentDirectoryURL = appSupportDir
+        process.currentDirectoryURL = samDir
         process.environment = [
-            "UV_PROJECT_ENVIRONMENT": venvDir.path,
+            "UV_PROJECT_ENVIRONMENT": samVenv.path,
             "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
             "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
             "UV_PYTHON_PREFERENCE": "only-managed",
@@ -336,43 +346,33 @@ class SetupManager: ObservableObject {
             return
         }
 
-        // Copy Hunyuan resources
-        let hunyuanDir = appSupportDir.appendingPathComponent("Hunyuan3D")
         try? FileManager.default.createDirectory(at: hunyuanDir, withIntermediateDirectories: true)
 
-        // Copy pyproject_hunyuan.toml
+        // Copy pyproject_hunyuan.toml to Hunyuan3D/pyproject.toml
         if let sourcePath = Bundle.main.path(forResource: "pyproject_hunyuan.toml", ofType: nil) ??
                            Bundle.main.path(forResource: "pyproject_hunyuan.toml", ofType: nil, inDirectory: "Resources") {
             let targetPath = hunyuanDir.appendingPathComponent("pyproject.toml")
-            do {
-                try? FileManager.default.removeItem(at: targetPath)
-                try FileManager.default.copyItem(at: URL(fileURLWithPath: sourcePath), to: targetPath)
-            } catch {
-                print("[Setup] Failed to copy pyproject_hunyuan.toml: \(error)")
-            }
+            try? FileManager.default.removeItem(at: targetPath)
+            try? FileManager.default.copyItem(at: URL(fileURLWithPath: sourcePath), to: targetPath)
         }
 
         // Copy hunyuan_wrapper.py
         if let sourcePath = Bundle.main.path(forResource: "hunyuan_wrapper.py", ofType: nil) ??
                            Bundle.main.path(forResource: "hunyuan_wrapper.py", ofType: nil, inDirectory: "Resources") {
             let targetPath = hunyuanDir.appendingPathComponent("hunyuan_wrapper.py")
-            do {
-                try? FileManager.default.removeItem(at: targetPath)
-                try FileManager.default.copyItem(at: URL(fileURLWithPath: sourcePath), to: targetPath)
-            } catch {
-                print("[Setup] Failed to copy hunyuan_wrapper.py: \(error)")
-            }
+            try? FileManager.default.removeItem(at: targetPath)
+            try? FileManager.default.copyItem(at: URL(fileURLWithPath: sourcePath), to: targetPath)
         }
 
         detailedStatus = "Installing Hunyuan3D dependencies..."
 
-        let venvDir = appSupportDir.appendingPathComponent(".venv_hunyuan")
+        let hunyuanVenv = hunyuanDir.appendingPathComponent(".venv")
         let process = Process()
         process.executableURL = URL(fileURLWithPath: uvPath)
         process.arguments = ["sync", "--python", "3.10"]
         process.currentDirectoryURL = hunyuanDir
         process.environment = [
-            "UV_PROJECT_ENVIRONMENT": venvDir.path,
+            "UV_PROJECT_ENVIRONMENT": hunyuanVenv.path,
             "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
             "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
             "UV_PYTHON_PREFERENCE": "only-managed",
@@ -391,11 +391,9 @@ class SetupManager: ObservableObject {
 
         detailedStatus = "Downloading \(selectedModelChoice.modelName) (\(selectedModelChoice.downloadSize))..."
 
-        let hunyuanDir = appSupportDir.appendingPathComponent("Hunyuan3D")
-        let venvDir = appSupportDir.appendingPathComponent(".venv_hunyuan")
+        let hunyuanVenv = hunyuanDir.appendingPathComponent(".venv")
         let hfCacheDir = hunyuanDir.appendingPathComponent("hf_cache")
 
-        // Create cache directory for monitoring
         try? FileManager.default.createDirectory(at: hfCacheDir, withIntermediateDirectories: true)
 
         let process = Process()
@@ -403,18 +401,17 @@ class SetupManager: ObservableObject {
         process.arguments = ["run", hunyuanDir.appendingPathComponent("hunyuan_wrapper.py").path, "--warmup", "--model", selectedModelChoice.modelVariant]
         process.currentDirectoryURL = hunyuanDir
         process.environment = [
-            "UV_PROJECT_ENVIRONMENT": venvDir.path,
+            "UV_PROJECT_ENVIRONMENT": hunyuanVenv.path,
             "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
             "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
             "UV_PYTHON_PREFERENCE": "only-managed",
             "PYTHONUNBUFFERED": "1",
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-            "HF_HOME": hunyuanDir.appendingPathComponent("hf_cache").path
+            "HF_HOME": hfCacheDir.path
         ]
 
         await runProcessAsync(process, parseOutput: true)
 
-        // Save the selected model choice for later use
         UserDefaults.standard.set(selectedModelChoice.modelVariant, forKey: "SelectedHunyuanModel")
     }
 }

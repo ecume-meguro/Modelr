@@ -4,7 +4,6 @@ import AppKit
 /// Handles JSON communication with Python worker processes
 class PythonBridge {
     private var responseBuffer = Data()
-    private var pendingContinuation: CheckedContinuation<SAMResponse, Error>?
     private let processQueue = DispatchQueue(label: "com.modelr.python.bridge")
     
     private weak var processManager: PythonProcessManager?
@@ -19,6 +18,10 @@ class PythonBridge {
     // MARK: - Communication
     
     func sendRequest(_ request: SAMRequest) async throws -> SAMResponse {
+        return try await sendGenericRequest(request)
+    }
+
+    private func sendGenericRequest<T: Codable, R: Codable>(_ request: T) async throws -> R {
         guard let stdin = processManager?.stdinPipe?.fileHandleForWriting else {
             throw PythonError.workerNotRunning
         }
@@ -27,20 +30,32 @@ class PythonBridge {
         guard var jsonString = String(data: jsonData, encoding: .utf8) else {
             throw PythonError.encodingError
         }
-        print("[SAM Request] \(jsonString)")
+        print("[Python Request] \(jsonString)")
         jsonString += "\n"
         
         return try await withCheckedThrowingContinuation { continuation in
-            self.pendingContinuation = continuation
+            self.pendingGenericContinuation = { data in
+                do {
+                    let response = try JSONDecoder().decode(R.self, from: data)
+                    continuation.resume(returning: response)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
             
             do {
                 try stdin.write(contentsOf: Data(jsonString.utf8))
             } catch {
-                self.pendingContinuation = nil
+                self.pendingGenericContinuation = nil
                 continuation.resume(throwing: error)
             }
         }
     }
+    
+    private var pendingGenericContinuation: ((Data) -> Void)?
+    
+    // Legacy support
+    private var pendingContinuation: CheckedContinuation<SAMResponse, Error>?
     
     func waitForResponse(timeout: TimeInterval) async throws -> SAMResponse {
         try await withCheckedThrowingContinuation { continuation in
@@ -65,17 +80,22 @@ class PythonBridge {
             guard let line = String(data: lineData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !line.isEmpty else { continue }
             
-            do {
-                let response = try JSONDecoder().decode(SAMResponse.self, from: Data(line.utf8))
-                if let continuation = pendingContinuation {
-                    pendingContinuation = nil
-                    continuation.resume(returning: response)
-                }
-            } catch {
-                print("Failed to decode response: \(error), line: \(line)")
-                if let continuation = pendingContinuation {
-                    pendingContinuation = nil
-                    continuation.resume(throwing: PythonError.invalidResponse(line))
+            if let genericCont = pendingGenericContinuation {
+                pendingGenericContinuation = nil
+                genericCont(Data(line.utf8))
+            } else {
+                do {
+                    let response = try JSONDecoder().decode(SAMResponse.self, from: Data(line.utf8))
+                    if let continuation = pendingContinuation {
+                        pendingContinuation = nil
+                        continuation.resume(returning: response)
+                    }
+                } catch {
+                    print("Failed to decode response: \(error), line: \(line)")
+                    if let continuation = pendingContinuation {
+                        pendingContinuation = nil
+                        continuation.resume(throwing: PythonError.invalidResponse(line))
+                    }
                 }
             }
         }

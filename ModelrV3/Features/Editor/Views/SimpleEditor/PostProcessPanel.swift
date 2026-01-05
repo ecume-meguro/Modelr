@@ -193,6 +193,12 @@ struct PostProcessPanel: View {
             // Keep Largest section with edit mode
             keepLargestSection
 
+            // Divider when expanded
+            if viewModel.isEditingKeepLargest {
+                Divider()
+                    .padding(.vertical, AppDesign.Spacing.p2)
+            }
+
             // Selection-based actions
             if !viewModel.selectedComponentIndices.isEmpty {
                 let count = viewModel.selectedComponentIndices.count
@@ -244,114 +250,118 @@ struct PostProcessPanel: View {
     @ViewBuilder
     private var keepLargestSection: some View {
         if viewModel.isEditingKeepLargest {
-            // Expanded edit mode - stacks vertically for narrow sidebars
-            VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-                // Row 1: Label + stepper
-                HStack(spacing: AppDesign.Spacing.p8) {
+            // Expanded edit mode
+            VStack(alignment: .leading, spacing: AppDesign.Spacing.p10) {
+                // Inline stepper row
+                HStack(spacing: AppDesign.Spacing.p6) {
                     Text("Keep largest")
-                        .font(.system(size: AppDesign.FontSize.subheadline))
+                        .font(.system(size: AppDesign.FontSize.caption))
                         .foregroundStyle(.secondary)
 
-                    // Number input
+                    // Compact stepper
                     HStack(spacing: 0) {
+                        // Minus button
                         Button {
                             if viewModel.keepLargestCount > 1 {
                                 viewModel.keepLargestCount -= 1
                             }
                         } label: {
                             Image(systemName: "minus")
-                                .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
-                                .frame(width: 24, height: 24)
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(viewModel.keepLargestCount > 1 ? .primary : .tertiary)
+                                .frame(width: 22, height: 22)
+                                .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.primary)
+                        .buttonStyle(.borderless)
+                        .disabled(viewModel.keepLargestCount <= 1)
 
                         Text("\(viewModel.keepLargestCount)")
-                            .font(.system(size: AppDesign.FontSize.subheadline, weight: .semibold, design: .monospaced))
-                            .frame(width: 32)
+                            .font(.system(size: AppDesign.FontSize.caption, weight: .semibold, design: .monospaced))
+                            .frame(width: 20)
 
+                        // Plus button
                         Button {
-                            if viewModel.keepLargestCount < viewModel.meshComponents.count - 1 {
+                            let maxCount = viewModel.meshComponents.count - 1
+                            if viewModel.keepLargestCount < maxCount {
                                 viewModel.keepLargestCount += 1
                             }
                         } label: {
                             Image(systemName: "plus")
-                                .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
-                                .frame(width: 24, height: 24)
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(viewModel.keepLargestCount < viewModel.meshComponents.count - 1 ? .primary : .tertiary)
+                                .frame(width: 22, height: 22)
+                                .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.primary)
+                        .buttonStyle(.borderless)
+                        .disabled(viewModel.keepLargestCount >= viewModel.meshComponents.count - 1)
                     }
-                    .padding(.horizontal, AppDesign.Spacing.p4)
-                    .padding(.vertical, AppDesign.Spacing.p4)
-                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+                    .padding(.horizontal, 2)
+                    .padding(.vertical, 2)
+                    .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
 
-                    Text("items")
-                        .font(.system(size: AppDesign.FontSize.subheadline))
-                        .foregroundStyle(.secondary)
+                    Text("of \(viewModel.meshComponents.count)")
+                        .font(.system(size: AppDesign.FontSize.caption))
+                        .foregroundStyle(.tertiary)
 
                     Spacer(minLength: 0)
-                }
 
-                // Row 2: Action buttons
-                HStack(spacing: AppDesign.Spacing.p8) {
-                    // Apply button
-                    Button {
-                        viewModel.showKeepLargestConfirmation = true
-                    } label: {
-                        Text("Apply")
-                            .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
-                            .padding(.horizontal, AppDesign.Spacing.p10)
-                            .padding(.vertical, AppDesign.Spacing.p6)
-                            .background(AppDesign.accent, in: RoundedRectangle(cornerRadius: 6))
-                            .foregroundStyle(.white)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(viewModel.isProcessingMesh || viewModel.keepLargestCount >= viewModel.meshComponents.count)
-
-                    // Cancel button
+                    // Cancel
                     Button {
                         withAnimation(.easeOut(duration: 0.15)) {
                             viewModel.isEditingKeepLargest = false
                             viewModel.keepLargestCount = 1
                         }
                     } label: {
-                        Text("Cancel")
-                            .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(.secondary)
-                            .padding(.horizontal, AppDesign.Spacing.p10)
-                            .padding(.vertical, AppDesign.Spacing.p6)
+                            .frame(width: 20, height: 20)
+                            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
+                            .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
-
-                    Spacer(minLength: 0)
+                    .buttonStyle(.borderless)
                 }
+
+                // Apply button - full width
+                Button {
+                    viewModel.showKeepLargestConfirmation = true
+                } label: {
+                    Text("Keep \(viewModel.keepLargestCount) Largest")
+                        .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, AppDesign.Spacing.p6)
+                        .background(AppDesign.accent, in: RoundedRectangle(cornerRadius: 6))
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.borderless)
+                .disabled(viewModel.isProcessingMesh || viewModel.keepLargestCount >= viewModel.meshComponents.count)
             }
-            .padding(.vertical, AppDesign.Spacing.p4)
         } else {
-            // Collapsed mode - button with edit
-            HStack(spacing: AppDesign.Spacing.p8) {
+            // Collapsed mode
+            HStack(spacing: AppDesign.Spacing.p6) {
                 AppDesign.GlassButtonSecondary("Keep Largest Only", icon: "star.fill") {
                     viewModel.keepLargestCount = 1
                     viewModel.showKeepLargestConfirmation = true
                 }
                 .disabled(viewModel.isProcessingMesh || viewModel.meshComponents.count <= 1)
 
-                // Edit button
-                Button {
-                    withAnimation(.easeOut(duration: 0.15)) {
-                        viewModel.isEditingKeepLargest = true
-                        viewModel.keepLargestCount = 1
+                // Edit button to customize count
+                if viewModel.meshComponents.count > 2 {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            viewModel.isEditingKeepLargest = true
+                            viewModel.keepLargestCount = 1
+                        }
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 24, height: 24)
+                            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
+                            .contentShape(Rectangle())
                     }
-                } label: {
-                    Image(systemName: "pencil")
-                        .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 28, height: 28)
-                        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+                    .buttonStyle(.borderless)
                 }
-                .buttonStyle(.plain)
-                .disabled(viewModel.meshComponents.count <= 2)
             }
         }
     }

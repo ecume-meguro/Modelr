@@ -22,25 +22,28 @@ extension SimpleEditorViewModel {
 
     /// Configure environment while user is choosing model
     private func configureEnvironmentInBackground() async {
-        let fm = FileManager.default
-        guard let appSupportDir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
-        let modelrDir = appSupportDir.appendingPathComponent("ModelrV3")
+        appendConsoleOutput("Initializing Python environment...", for: .configuringEnvironment)
+        
+        let success = await env.setup { [weak self] status in
+            Task { @MainActor in
+                self?.appendConsoleOutput(status, for: .configuringEnvironment)
+            }
+        }
 
-        // Create directory
-        try? fm.createDirectory(at: modelrDir, withIntermediateDirectories: true)
-
-        // Copy resources and setup environment
-        await copyResources(to: modelrDir)
-        await setupPythonEnvironment(at: modelrDir)
-
-        await MainActor.run {
-            setupSubStepCompleted.insert(.configuringEnvironment)
-            // Immediately start downloading SAM3 in background once environment is ready
-            Task {
-                await downloadSAMModel(at: modelrDir)
-                await MainActor.run {
-                    setupSubStepCompleted.insert(.downloadingSegmentation)
+        if success {
+            await MainActor.run {
+                setupSubStepCompleted.insert(.configuringEnvironment)
+                // Immediately start downloading SAM3 in background once environment is ready
+                Task {
+                    await downloadSAMModel(at: env.appSupportDir) // We'll need to expose appSupportDir or use a fixed path
+                    await MainActor.run {
+                        setupSubStepCompleted.insert(.downloadingSegmentation)
+                    }
                 }
+            }
+        } else {
+            await MainActor.run {
+                appendConsoleOutput("✗ Environment setup failed.", for: .configuringEnvironment)
             }
         }
         
@@ -299,27 +302,8 @@ extension SimpleEditorViewModel {
 
     // MARK: - Setup Steps Implementation
 
-    private func copyResources(to appSupportDir: URL) async {
-        appendConsoleOutput("Copying and verifying resources...", for: .configuringEnvironment)
-        await env.copyResources()
-        appendConsoleOutput("✓ Resources prepared", for: .configuringEnvironment)
-    }
-
-    private func setupPythonEnvironment(at appSupportDir: URL) async {
-        appendConsoleOutput("Installing Python and dependencies...", for: .configuringEnvironment)
-        let success = await env.syncEnvironment()
-        
-        if success {
-            appendConsoleOutput("✓ Python environment ready", for: .configuringEnvironment)
-        } else {
-            appendConsoleOutput("✗ Environment setup failed. Check logs.", for: .configuringEnvironment)
-        }
-        setupProgress = 0.2
-    }
-
     private func downloadSAMModel(at appSupportDir: URL) async {
-        guard let uvPath = Bundle.main.path(forResource: "uv", ofType: nil) ??
-                          Bundle.main.path(forResource: "uv", ofType: nil, inDirectory: "Resources") else {
+        guard let uvPath = env.findUVPath() else {
             appendConsoleOutput("Error: uv not found", for: .downloadingSegmentation)
             return
         }
@@ -327,8 +311,10 @@ extension SimpleEditorViewModel {
         appendConsoleOutput("Downloading SAM model (~3.2 GB)...", for: .downloadingSegmentation)
         downloadTotalBytes = 3_200_000_000  // Approximate
 
-        let samWrapper = appSupportDir.appendingPathComponent("sam_wrapper.py")
-        let venvDir = appSupportDir.appendingPathComponent(".venv")
+        // Use SAM/ subdirectory for clean separation
+        let samDir = appSupportDir.appendingPathComponent("SAM")
+        let samWrapper = samDir.appendingPathComponent("sam_wrapper.py")
+        let samVenv = samDir.appendingPathComponent(".venv")
         let samCacheDir = appSupportDir.appendingPathComponent("sam_cache")
 
         try? FileManager.default.createDirectory(at: samCacheDir, withIntermediateDirectories: true)
@@ -339,12 +325,13 @@ extension SimpleEditorViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: uvPath)
         process.arguments = ["run", samWrapper.path, "--test"]
-        process.currentDirectoryURL = appSupportDir
+        process.currentDirectoryURL = samDir
         process.environment = [
-            "UV_PROJECT_ENVIRONMENT": venvDir.path,
+            "UV_PROJECT_ENVIRONMENT": samVenv.path,
             "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
             "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
             "UV_PYTHON_PREFERENCE": "only-managed",
+            "UV_LINK_MODE": "copy",
             "PYTHONUNBUFFERED": "1",
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
             "HF_HOME": samCacheDir.path
@@ -361,8 +348,7 @@ extension SimpleEditorViewModel {
     }
 
     private func setupHunyuanEnvironment(at appSupportDir: URL) async {
-        guard let uvPath = Bundle.main.path(forResource: "uv", ofType: nil) ??
-                          Bundle.main.path(forResource: "uv", ofType: nil, inDirectory: "Resources") else {
+        guard let uvPath = env.findUVPath() else {
             return
         }
 
@@ -404,7 +390,9 @@ extension SimpleEditorViewModel {
             "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
             "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
             "UV_PYTHON_PREFERENCE": "only-managed",
+            "UV_LINK_MODE": "copy",
             "PYTHONUNBUFFERED": "1",
+            "PYTHONPATH": appSupportDir.path,
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"
         ]
 
@@ -413,8 +401,7 @@ extension SimpleEditorViewModel {
     }
 
     private func downloadHunyuanModel(at appSupportDir: URL) async {
-        guard let uvPath = Bundle.main.path(forResource: "uv", ofType: nil) ??
-                          Bundle.main.path(forResource: "uv", ofType: nil, inDirectory: "Resources") else {
+        guard let uvPath = env.findUVPath() else {
             return
         }
 
@@ -446,6 +433,7 @@ extension SimpleEditorViewModel {
             "UV_PYTHON_INSTALL_DIR": appSupportDir.appendingPathComponent("python_runtimes").path,
             "UV_CACHE_DIR": appSupportDir.appendingPathComponent("uv_cache").path,
             "UV_PYTHON_PREFERENCE": "only-managed",
+            "UV_LINK_MODE": "copy",
             "PYTHONUNBUFFERED": "1",
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
             "HF_HOME": hfCacheDir.path

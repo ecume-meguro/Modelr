@@ -22,13 +22,25 @@ os.environ["HUGGINGFACE_HUB_CACHE"] = str(HUNYUAN_CACHE_DIR / "hf_cache")
 os.environ["TORCH_HOME"] = str(HUNYUAN_CACHE_DIR / "torch_home")
 
 
+import json
+
+# Load project config
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+CONFIG_PATH = PROJECT_ROOT / "Resources" / "project_config.json"
+
+try:
+    with open(CONFIG_PATH, "r") as f:
+        _proj_config = json.load(f)
+except Exception:
+    _proj_config = {}
+
 class ModelConfig:
-    MODEL_TYPE: str = "base_plus"
+    MODEL_TYPE: str = _proj_config.get("models", {}).get("sam2", {}).get("default_type", "base_plus")
     DEVICE: str = "auto"
-    MAX_IMAGE_SIZE: int = 16384
-    MASK_COLOR: Tuple[int, int, int, int] = (50, 100, 200, 255)
-    DEFAULT_STEPS: int = 50
-    DEFAULT_RESOLUTION: int = 512
+    MAX_IMAGE_SIZE: int = _proj_config.get("limits", {}).get("max_image_size", 16384)
+    MASK_COLOR: Tuple[int, int, int, int] = tuple(_proj_config.get("models", {}).get("sam2", {}).get("mask_color", [50, 100, 200, 255]))
+    DEFAULT_STEPS: int = _proj_config.get("models", {}).get("hunyuan3d", {}).get("default_steps", 50)
+    DEFAULT_RESOLUTION: int = _proj_config.get("models", {}).get("hunyuan3d", {}).get("default_resolution", 512)
     MAX_RETRIES: int = 3
     RETRY_MIN_WAIT: float = 1.0
     RETRY_MAX_WAIT: float = 10.0

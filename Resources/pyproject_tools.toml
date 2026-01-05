@@ -1,0 +1,26 @@
+[project]
+name = "modelrv3-tools"
+version = "0.1.0"
+description = "Lightweight tools environment for ModelrV3 (mesh processing)"
+requires-python = ">=3.13,<4.0.0"
+dependencies = [
+    # Mesh processing
+    "trimesh>=4.0.0",
+    "numpy>=2.0.0",
+    # Graph operations for mesh component analysis
+    "networkx>=3.0",
+    # Shared core module
+    "modelrv3-core",
+]
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Disable auto-discovery
+packages = []
+py-modules = []
+
+[tool.uv.sources]
+modelrv3-core = { path = "../modelrv3_core" }
