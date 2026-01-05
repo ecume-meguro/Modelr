@@ -86,10 +86,6 @@ class ImageService {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let totalPixels = width * height
 
-        // Debug: log mask info
-        print("[Composite] Source: \(width)x\(height), alphaInfo: \(sourceCG.alphaInfo.rawValue)")
-        print("[Composite] Mask: \(maskCG.width)x\(maskCG.height), alphaInfo: \(maskCG.alphaInfo.rawValue)")
-
         guard let sourceContext = CGContext(
             data: nil, width: width, height: height,
             bitsPerComponent: 8, bytesPerRow: width * 4,
@@ -117,21 +113,6 @@ class ImageService {
         let maskPixels = maskData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
         let outputPixels = outputData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
 
-        // Debug: sample mask values to understand format
-        var maskAlphaSum: Int = 0
-        var maskRedSum: Int = 0
-        var maskGreenSum: Int = 0
-        for i in stride(from: 0, to: min(1000, totalPixels), by: 1) {
-            maskRedSum += Int(maskPixels[i * 4])
-            maskGreenSum += Int(maskPixels[i * 4 + 1])
-            maskAlphaSum += Int(maskPixels[i * 4 + 3])
-        }
-        print("[Composite] Mask sample (first 1000px): R_avg=\(maskRedSum/1000), G_avg=\(maskGreenSum/1000), A_avg=\(maskAlphaSum/1000)")
-
-        // Count foreground/background pixels
-        var foregroundCount = 0
-        var backgroundCount = 0
-
         // Check if mask has a useful alpha channel or is just a grayscale image
         var hasAlphaInfo = false
         for i in 0..<min(totalPixels, 1000) {
@@ -154,32 +135,139 @@ class ImageService {
             if hasAlphaInfo {
                 isForeground = a > 128
             } else {
-                // For grayscale masks, if alpha is not useful, 
-                // we rely strictly on luminance.
                 let luminance = (UInt32(r) + UInt32(g) + UInt32(b)) / 3
                 isForeground = luminance > 128
             }
 
             if isForeground {
-                foregroundCount += 1
-                // Keep source RGB, set alpha = 255 (opaque)
-                outputPixels[offset] = sourcePixels[offset]         // R
-                outputPixels[offset + 1] = sourcePixels[offset + 1] // G
-                outputPixels[offset + 2] = sourcePixels[offset + 2] // B
-                outputPixels[offset + 3] = 255                      // A = opaque
+                outputPixels[offset] = sourcePixels[offset]
+                outputPixels[offset + 1] = sourcePixels[offset + 1]
+                outputPixels[offset + 2] = sourcePixels[offset + 2]
+                outputPixels[offset + 3] = 255
             } else {
-                backgroundCount += 1
-                // Clear background (0, 0, 0, 0)
-                outputPixels[offset] = 0     // R
-                outputPixels[offset + 1] = 0 // G
-                outputPixels[offset + 2] = 0 // B
-                outputPixels[offset + 3] = 0 // A = transparent
+                outputPixels[offset] = 0
+                outputPixels[offset + 1] = 0
+                outputPixels[offset + 2] = 0
+                outputPixels[offset + 3] = 0
             }
         }
 
-        print("[Composite] Result: \(foregroundCount) foreground, \(backgroundCount) background pixels")
-
         guard let finalCG = outputContext.makeImage() else { return nil }
         return NSImage(cgImage: finalCG, size: NSSize(width: width, height: height))
+    }
+
+    /// Merge multiple masks using OR operation (luminance or alpha > 128)
+    func mergeMasks(_ masks: [NSImage]) -> NSImage? {
+        guard !masks.isEmpty else { return nil }
+        guard let firstCG = masks.first?.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+
+        let width = firstCG.width
+        let height = firstCG.height
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let totalPixels = width * height
+
+        guard let outputContext = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let outputData = outputContext.data else { return nil }
+
+        let outputPixels = outputData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
+        memset(outputPixels, 0, totalPixels * 4)
+
+        for mask in masks {
+            guard let cgMask = mask.cgImage(forProposedRect: nil, context: nil, hints: nil) else { continue }
+
+            guard let maskContext = CGContext(
+                data: nil, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ), let maskData = maskContext.data else { continue }
+
+            maskContext.draw(cgMask, in: CGRect(x: 0, y: 0, width: width, height: height))
+            let maskPixels = maskData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
+
+            for i in 0..<totalPixels {
+                let offset = i * 4
+                let r = maskPixels[offset]
+                let g = maskPixels[offset + 1]
+                let b = maskPixels[offset + 2]
+                let a = maskPixels[offset + 3]
+
+                let luminance = (UInt16(r) + UInt16(g) + UInt16(b)) / 3
+                let isMaskPixel = a > 128 || luminance > 128
+
+                if isMaskPixel {
+                    outputPixels[offset + 0] = 255
+                    outputPixels[offset + 1] = 255
+                    outputPixels[offset + 2] = 255
+                    outputPixels[offset + 3] = 255
+                }
+            }
+        }
+
+        guard let mergedCG = outputContext.makeImage() else { return nil }
+        return NSImage(cgImage: mergedCG, size: NSSize(width: width, height: height))
+    }
+
+    /// Apply a brush stroke to a mask image
+    func applyBrush(to maskImage: NSImage, at normalized: CGPoint, size: CGFloat, isErasing: Bool) -> NSImage? {
+        return applyStroke(to: maskImage, points: [normalized], size: size, isErasing: isErasing)
+    }
+
+    /// Apply a brush stroke (multiple points) to a mask image
+    func applyStroke(to maskImage: NSImage, points: [CGPoint], size: CGFloat, isErasing: Bool) -> NSImage? {
+        guard !points.isEmpty else { return maskImage }
+        guard let cgImage = maskImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+
+        let width = cgImage.width
+        let height = cgImage.height
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        
+        guard let context = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let data = context.data else { return maskImage }
+
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let pixels = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
+
+        let brushRadius = max(1, Int(size * CGFloat(width)))
+        let radiusSquared = brushRadius * brushRadius
+        let value: UInt8 = isErasing ? 0 : 255
+        let pixelValue = UInt32(value) | (UInt32(value) << 8) | (UInt32(value) << 16) | (UInt32(value) << 24)
+
+        for point in points {
+            let pixelX = Int(point.x * CGFloat(width))
+            let pixelY = Int(point.y * CGFloat(height))
+
+            guard pixelX >= 0, pixelX < width, pixelY >= 0, pixelY < height else { continue }
+
+            let minY = max(0, pixelY - brushRadius)
+            let maxY = min(height - 1, pixelY + brushRadius)
+            let minX = max(0, pixelX - brushRadius)
+            let maxX = min(width - 1, pixelX + brushRadius)
+
+            for py in minY...maxY {
+                let dySquared = (py - pixelY) * (py - pixelY)
+                let rowOffset = py * width
+                for px in minX...maxX {
+                    let dxSquared = (px - pixelX) * (px - pixelX)
+                    if dxSquared + dySquared <= radiusSquared {
+                        let offset = (rowOffset + px) * 4
+                        pixels.advanced(by: offset).withMemoryRebound(to: UInt32.self, capacity: 1) { ptr in
+                            ptr.pointee = pixelValue
+                        }
+                    }
+                }
+            }
+        }
+
+        guard let newCGImage = context.makeImage() else { return maskImage }
+        return NSImage(cgImage: newCGImage, size: NSSize(width: width, height: height))
     }
 }

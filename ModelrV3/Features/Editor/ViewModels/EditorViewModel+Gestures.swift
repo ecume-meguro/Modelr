@@ -231,49 +231,18 @@ extension EditorViewModel {
     }
     
     private func applyStrokesToMask(_ mask: NSImage, strokes: [PaintStroke]) -> NSImage {
-        guard let tiffData = mask.tiffRepresentation else { return mask }
-        guard let newBitmap = NSBitmapImageRep(data: tiffData) else { return mask }
-        
-        let imageSize = mask.size
-        
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: newBitmap)
-        let context = NSGraphicsContext.current?.cgContext
-        
+        var resultImage = mask
         for stroke in strokes {
-            if stroke.isErasing {
-                context?.setBlendMode(.clear)
-            } else {
-                context?.setBlendMode(.normal)
-                context?.setFillColor(red: 50/255.0, green: 100/255.0, blue: 200/255.0, alpha: 1.0)
-            }
-            
-            for point in stroke.points {
-                let x = point.x * imageSize.width
-                let y = point.y * imageSize.height
-                let radius = stroke.brushSize * imageSize.width
-                
-                let rect = CGRect(
-                    x: x - radius,
-                    y: y - radius,
-                    width: radius * 2,
-                    height: radius * 2
-                )
-                
-                context?.fillEllipse(in: rect)
-            }
-            
-            if stroke.isErasing {
-                context?.setBlendMode(.normal)
+            if let newImage = ImageService.shared.applyStroke(
+                to: resultImage,
+                points: stroke.points,
+                size: stroke.brushSize,
+                isErasing: stroke.isErasing
+            ) {
+                resultImage = newImage
             }
         }
-        
-        NSGraphicsContext.restoreGraphicsState()
-        
-        let newImage = NSImage(size: imageSize)
-        newImage.addRepresentation(newBitmap)
-        
-        return newImage
+        return resultImage
     }
     
     // MARK: - Polygon Handlers

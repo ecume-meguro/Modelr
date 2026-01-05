@@ -12,8 +12,12 @@ class ImageFileService {
         "png", "jpg", "jpeg", "tif", "tiff", "bmp", "gif", "webp"
     ]
 
-    private let maxImageSize: Int64 = 100 * 1024 * 1024
-    private let maxImageDimension = 16384
+    private var maxImageSize: Int64 {
+        Int64(ConfigurationService.shared.config?.limits.maxImageFileSizeMb ?? 100) * 1024 * 1024
+    }
+    private var maxImageDimension: Int {
+        ConfigurationService.shared.maxImageDimension
+    }
 
     private init() {}
 

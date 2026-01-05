@@ -59,28 +59,20 @@ class SetupManager: ObservableObject {
         Task {
             let success = await env.setup(
                 modelChoice: modelChoice,
-                statusUpdate: { [weak self] status in
+                onProgress: { [weak self] update in
                     Task { @MainActor in
-                        self?.currentStage = status
-                        self?.updateProgress(status: status)
-                    }
-                },
-                logUpdate: { [weak self] log in
-                    Task { @MainActor in
-                        self?.detailedStatus = log
+                        self?.currentStage = update.stage.rawValue
+                        self?.detailedStatus = update.status
+                        self?.updateProgress(status: update.status)
                     }
                 }
             )
             
-            if success {
-                overallProgress = 1.0
-                currentStage = "Setup Complete"
-                detailedStatus = "All models downloaded and ready"
-                isComplete = true
-                UserDefaults.standard.set(true, forKey: "SetupComplete")
-            } else {
-                currentStage = "Setup Failed"
-                detailedStatus = "Please check logs and try again"
+            await MainActor.run {
+                self.isComplete = success
+                if success {
+                    UserDefaults.standard.set(true, forKey: "SetupComplete")
+                }
             }
         }
     }

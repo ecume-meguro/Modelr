@@ -70,20 +70,28 @@ class PythonEnvironment: ObservableObject {
     
     // MARK: - Setup
     
-    func setup(modelChoice: SetupModelChoice = .fast, statusUpdate: ((String) -> Void)? = nil, logUpdate: ((String) -> Void)? = nil) async -> Bool {
-        let success = await dependencyService.setup(modelChoice: modelChoice, statusUpdate: { [weak self] statusText in
-            statusUpdate?(statusText)
-            Task { @MainActor in
-                self?.status = statusText
+    func setup(
+        modelChoice: SetupModelChoice = .fast, 
+        onProgress: @escaping (SetupProgressUpdate) -> Void
+    ) async -> Bool {
+        let success = await dependencyService.setup(
+            modelChoice: modelChoice, 
+            onProgress: { [weak self] update in
+                if update.stage == .completed {
+                    Task { @MainActor in
+                        self?.isSetup = true
+                        self?.status = "Ready"
+                    }
+                } else if update.stage == .failed {
+                    Task { @MainActor in
+                        self?.isSetup = false
+                        self?.status = "Setup failed"
+                    }
+                }
+                onProgress(update)
             }
-        }, logUpdate: { logText in
-            logUpdate?(logText)
-        })
+        )
 
-        await MainActor.run {
-            isSetup = success
-            status = success ? "Ready" : "Setup failed"
-        }
         return success
     }
 
@@ -97,7 +105,7 @@ class PythonEnvironment: ObservableObject {
     /// Copy resources to Application Support
     func copyResources() async {
         // Use the internal dependency service which has our improved recursive copy logic
-        _ = await dependencyService.setup(statusUpdate: { _ in }, logUpdate: { _ in }) // This calls copyResourceFiles internally
+        _ = await dependencyService.setup(onProgress: { _ in }) // This calls copyResourceFiles internally
     }
 
     /// Sync the Python environment using uv
@@ -105,7 +113,7 @@ class PythonEnvironment: ObservableObject {
         guard dependencyService.cachedUvPath != nil else { return false }
         
         // Use the dependency service setup
-        let success = await dependencyService.setup(statusUpdate: { _ in }, logUpdate: { _ in })
+        let success = await dependencyService.setup(onProgress: { _ in })
         return success
     }
     
@@ -119,7 +127,7 @@ class PythonEnvironment: ObservableObject {
         // Ensure resources are present before starting
         if !dependencyService.checkResources() {
             print("[Python] Resources missing in Application Support, copying...")
-            _ = await setup()
+            _ = await setup(onProgress: { _ in })
         }
         
         try processManager.startPersistentWorker(uvPath: uvPath)

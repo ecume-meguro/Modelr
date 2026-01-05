@@ -49,40 +49,36 @@ extension SimpleEditorViewModel {
         generationStages = [:]
 
         Task {
-            await env.generate3DModel(
+            await GenerationService.shared.generate(
                 imagePath: tempImagePath,
                 maskPath: tempMaskPath,
                 steps: Int(customSteps),
                 resolution: Int(customResolution),
-                modelVariant: selectedPreset.modelVariant,
-                progress: { [weak self] status in
-                    Task { @MainActor in
-                        self?.generationStatus = status
-                        self?.updateGenerationStages(status: status)
-                    }
-                },
-                completion: { [weak self] result in
-                    Task { @MainActor in
-                        self?.isGenerating = false
-                        switch result {
-                        case .success(let modelURL):
-                            self?.generated3DModelURL = modelURL
-                            if let startTime = self?.generationStartTime {
-                                self?.generationDuration = Date().timeIntervalSince(startTime)
-                            }
-                            self?.markAllStagesCompleted()
-                            self?.checkLargeModelDownloaded()
-                        case .failure(let error):
-                            print("[Gen] Error: \(error)")
-                        }
-                    }
-                }
+                modelVariant: selectedPreset.modelVariant
             )
+            
+            // Sync status from service
+            if case .completed(let url) = GenerationService.shared.status {
+                self.isGenerating = false
+                self.generated3DModelURL = url
+                if let startTime = self.generationStartTime {
+                    self.generationDuration = Date().timeIntervalSince(startTime)
+                }
+                self.markAllStagesCompleted()
+                self.checkLargeModelDownloaded()
+            } else if case .inProgress(let stage, _) = GenerationService.shared.status {
+                self.generationStatus = stage
+                // Map the simple status to the complex stages for SimpleEditorView
+                self.updateGenerationStages(status: stage)
+            } else if case .failed(let error) = GenerationService.shared.status {
+                self.isGenerating = false
+                print("[Gen] Error: \(error)")
+            }
         }
     }
 
     func stopGeneration() {
-        env.cancelGeneration()
+        GenerationService.shared.cancel()
         isGenerating = false
         markRemainingStagesCancelled()
     }

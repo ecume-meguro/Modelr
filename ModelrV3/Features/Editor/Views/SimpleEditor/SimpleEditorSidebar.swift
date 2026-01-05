@@ -121,34 +121,8 @@ struct SimpleEditorSidebar: View {
     @ViewBuilder
     private func setupSubStepRow(_ subStep: SimpleEditorViewModel.SetupSubStep) -> some View {
         let isCompleted = viewModel.setupSubStepCompleted.contains(subStep)
-        // Show as active/spinning if it's running in background or is current active step
-        let isActive: Bool = {
-            if isCompleted { return false }
-            
-            // Special cases for background tasks
-            if subStep == .configuringEnvironment && viewModel.isConfiguringEnvironment {
-                return true
-            }
-            if subStep == .downloadingSegmentation {
-                // If environment is done, and it's not completed yet, it means it's running in background
-                // because configureEnvironmentInBackground starts it immediately after.
-                if viewModel.setupSubStepCompleted.contains(.configuringEnvironment) {
-                    return true
-                }
-            }
-            
-            return viewModel.currentSetupSubStep == subStep
-        }()
-        let showContent: Bool = {
-            if isCompleted { return false }
-            if viewModel.currentSetupSubStep == subStep { return true }
-            
-            // Also show content for background tasks that are active
-            if subStep == .configuringEnvironment && viewModel.isConfiguringEnvironment { return true }
-            if subStep == .downloadingSegmentation && viewModel.setupSubStepCompleted.contains(.configuringEnvironment) { return true }
-            
-            return false
-        }()
+        let isActive = !isCompleted && viewModel.currentSetupSubStep == subStep
+        let showContent = isActive || (subStep == .downloadingSegmentation && isActive) || (subStep == .downloadingGeneration && isActive)
 
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p4) {
             // Subitem header
@@ -178,30 +152,24 @@ struct SimpleEditorSidebar: View {
             // Console output and progress (only for active substep)
             if showContent {
                 VStack(alignment: .leading, spacing: AppDesign.Spacing.p4) {
-                    // Download progress for download steps
+                    // Download progress for download steps (Two-line format)
                     if (subStep == .downloadingSegmentation || subStep == .downloadingGeneration) && viewModel.downloadTotalBytes > 0 {
-                        VStack(alignment: .leading, spacing: AppDesign.Spacing.p4) {
+                        VStack(alignment: .leading, spacing: 2) {
                             ProgressView(value: Double(viewModel.downloadedBytes), total: Double(viewModel.downloadTotalBytes))
                                 .progressViewStyle(.linear)
                                 .tint(AppDesign.accent)
+                                .padding(.bottom, 2)
 
-                            HStack {
-                                Text(viewModel.formattedDownloadProgress)
-                                    .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
-                                    .foregroundStyle(.secondary)
+                            // Line 1: Downloaded / Total • Speed
+                            Text(viewModel.formattedDownloadProgress)
+                                .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
+                                .foregroundStyle(.secondary)
 
-                                Spacer()
-
-                                Text(viewModel.formattedDownloadSpeed)
-                                    .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-
-                                Text("•")
-                                    .foregroundStyle(.tertiary)
-
+                            // Line 2: Time remaining
+                            if !viewModel.formattedTimeRemaining.isEmpty {
                                 Text(viewModel.formattedTimeRemaining)
                                     .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(.tertiary)
                             }
                         }
                         .padding(.leading, 24)
@@ -210,7 +178,7 @@ struct SimpleEditorSidebar: View {
                     // Console output
                     if let consoleLines = viewModel.setupConsoleOutput[subStep], !consoleLines.isEmpty {
                         VStack(alignment: .leading, spacing: 2) {
-                            ForEach(consoleLines.suffix(5), id: \.self) { line in
+                            ForEach(consoleLines.suffix(3), id: \.self) { line in
                                 Text(line)
                                     .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
                                     .foregroundStyle(.tertiary)
@@ -219,7 +187,7 @@ struct SimpleEditorSidebar: View {
                             }
                         }
                         .padding(.leading, 24)
-                        .padding(.top, AppDesign.Spacing.p4)
+                        .padding(.top, AppDesign.Spacing.p2)
                     }
                 }
             }

@@ -11,11 +11,14 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     // MARK: - Setup State
     enum SetupSubStep: String, CaseIterable {
         case chooseModel = "Choose Model"
-        case configuringEnvironment = "Configuring Environment"
+        case configuringSegmentation = "Configuring Segmentation Environment"
         case downloadingSegmentation = "Downloading Segmentation Model"
+        case configuringGeneration = "Configuring 3D Generation Environment"
         case downloadingGeneration = "Downloading 3D Generation Model"
+        case configuringPostProcess = "Configuring Post-Process Environment"
     }
     @Published var currentSetupSubStep: SetupSubStep = .chooseModel
+    @Published var currentSetupStage: SetupStage = .preparing
     @Published var setupProgress: Double = 0
     @Published var setupStatus: String = ""
     @Published var setupConsoleOutput: [SetupSubStep: [String]] = [:]
@@ -266,27 +269,6 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     }
 
     // MARK: - Navigation
-    func handleBackAction() {
-        switch currentStep {
-        case .setup:
-            break  // Can't go back from setup
-        case .input:
-            break
-        case .segment:
-            showDiscardImageWarning = true
-        case .touchup:
-            showBackWarning = true
-        case .generate:
-            if generated3DModelURL != nil {
-                showDiscardModelWarning = true
-            } else {
-                goBack()
-            }
-        case .postProcess:
-            goBack()
-        }
-    }
-
     func goBack() {
         withAnimation(.easeOut(duration: 0.2)) {
             switch currentStep {

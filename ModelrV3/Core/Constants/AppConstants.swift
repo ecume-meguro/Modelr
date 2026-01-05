@@ -41,10 +41,14 @@ struct AppConstants {
     // MARK: - Performance Limits
     
     /// Maximum dimension for image processing
-    static let maxImageDimension = 16384
+    static var maxImageDimension: Int {
+        ConfigurationService.shared.maxImageDimension
+    }
     
     /// Maximum file size for images (100 MB)
-    static let maxImageFileSize: UInt64 = 100 * 1024 * 1024
+    static var maxImageFileSize: UInt64 {
+        UInt64(ConfigurationService.shared.config?.limits.maxImageFileSizeMb ?? 100) * 1024 * 1024
+    }
     
     /// Maximum file size for 3D models (2 GB)
     static let maxModelFileSize: UInt64 = 2 * 1024 * 1024 * 1024
@@ -108,7 +112,9 @@ struct AppConstants {
     static let maxDiffusionSteps: Double = 256
     
     /// Default diffusion steps
-    static let defaultDiffusionSteps: Double = 30
+    static var defaultDiffusionSteps: Double {
+        Double(ConfigurationService.shared.defaultSteps)
+    }
     
     /// Minimum mesh resolution
     static let minMeshResolution: Double = 128
@@ -117,7 +123,9 @@ struct AppConstants {
     static let maxMeshResolution: Double = 1024
     
     /// Default mesh resolution
-    static let defaultMeshResolution: Double = 256
+    static var defaultMeshResolution: Double {
+        Double(ConfigurationService.shared.defaultResolution)
+    }
     
     /// Step size for resolution slider
     static let resolutionStep: Double = 64

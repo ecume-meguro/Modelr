@@ -578,79 +578,30 @@ class EditorViewModel: BaseEditorViewModel {
         generationError = nil
         
         Task {
-            await env.generate3DModel(
+            await GenerationService.shared.generate(
                 imagePath: imagePath,
                 maskPath: maskPath,
                 steps: Int(generateSteps),
-                resolution: Int(generateResolution)
-            ) { progressInfo in
-                Task { @MainActor in
-                    self.updateGenerationProgress(progressInfo)
-                }
-            } completion: { result in
-                Task { @MainActor in
-                    self.handleGenerationResult(result)
-                }
+                resolution: Int(generateResolution),
+                modelVariant: selectedQualityPreset.modelVariant
+            )
+            
+            // Observe the service results (this is a bit clunky without a combine sync, 
+            // but we'll improve it by moving these properties to the service entirely)
+            if case .completed(let url) = GenerationService.shared.status {
+                self.generated3DModelURL = url
+                self.isGenerating = false
+            } else if case .failed(let error) = GenerationService.shared.status {
+                self.generationError = error
+                self.isGenerating = false
             }
         }
     }
     
     func cancelGeneration() {
-        env.cancelGeneration()
+        GenerationService.shared.cancel()
         isGenerating = false
         generationProgress.stage = "Cancelled"
-    }
-    
-    private func handleGenerationResult(_ result: Result<URL, Error>) {
-        isGenerating = false
-        generationStartTime = nil
-        switch result {
-        case .success(let url):
-            generated3DModelURL = url
-            generationProgress = GenerationProgress()
-        case .failure(let error):
-            generationProgress.stage = "Error: \(error.localizedDescription)"
-            generationError = error.localizedDescription
-        }
-    }
-    
-    private func updateGenerationProgress(_ progressString: String) {
-        // Set totalSteps to 100 for percentage-based tracking
-        generationProgress.totalSteps = 100
-        
-        if progressString.contains("Extracting foreground") {
-            generationProgress.stage = "Extracting Foreground"
-            generationProgress.currentStep = 5
-        } else if progressString.contains("Loading model") {
-            generationProgress.stage = "Loading Model"
-            generationProgress.currentStep = 10
-        } else if progressString.contains("Diffusion Sampling") {
-            generationProgress.stage = "Diffusion Sampling"
-            if let percentage = extractPercentage(from: progressString) {
-                generationProgress.currentStep = 10 + Int(percentage * 60)
-            }
-        } else if progressString.contains("Volume Decoding") {
-            generationProgress.stage = "Volume Decoding"
-            if let percentage = extractPercentage(from: progressString) {
-                generationProgress.currentStep = 70 + Int(percentage * 20)
-            }
-        } else if progressString.contains("Extracting mesh") {
-            generationProgress.stage = "Extracting Mesh"
-            generationProgress.currentStep = 95
-        } else {
-            generationProgress.stage = progressString
-        }
-    }
-    
-    private func extractPercentage(from string: String) -> Double? {
-        let pattern = #"(\d+)%"#
-        if let regex = try? NSRegularExpression(pattern: pattern),
-           let match = regex.firstMatch(in: string, range: NSRange(string.startIndex..., in: string)),
-           let percentRange = Range(match.range(at: 1), in: string),
-           let percent = Int(string[percentRange]) {
-            return Double(percent) / 100.0
-        }
-        return nil
     }
     
     private func getMaskPath() -> String? {
@@ -693,7 +644,7 @@ class EditorViewModel: BaseEditorViewModel {
                     self.imagePixelSize = pixelSize
                 }
                 
-                let (maskURLs, primaryMaskURL, scores, confidenceMapURL) = try await self.env.predict(
+                let (maskURLs, _, scores, confidenceMapURL) = try await self.env.predict(
                     points: self.selectedPoints,
                     box: effectiveBox,
                     imageSize: pixelSize
@@ -715,9 +666,9 @@ class EditorViewModel: BaseEditorViewModel {
                     return
                 }
                 
-                let alphaData = await MainActor.run { self.sourceAlphaData }
-                let alphaWidth = await MainActor.run { self.sourceAlphaWidth }
-                let alphaHeight = await MainActor.run { self.sourceAlphaHeight }
+                _ = await MainActor.run { self.sourceAlphaData }
+                _ = await MainActor.run { self.sourceAlphaWidth }
+                _ = await MainActor.run { self.sourceAlphaHeight }
                 
                 var processedCache: [Int: NSImage] = [:]
                 for (index, mask) in loadedMasks.enumerated() {
