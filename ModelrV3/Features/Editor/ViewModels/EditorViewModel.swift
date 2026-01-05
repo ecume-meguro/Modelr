@@ -2,19 +2,12 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 @MainActor
-class EditorViewModel: ObservableObject {
-    // Python environment
-    let env = PythonEnvironment()
-    
+class EditorViewModel: BaseEditorViewModel {
     // Debug mode
     let autoLoadLatest3DModel: Bool
     
     // Image state
-    @Published var inputImage: NSImage?
-    @Published var inputImagePath: String?
     @Published var maskImage: NSImage?
-    @Published var isDragging = false
-    @Published var imagePixelSize: CGSize = .zero
     @Published var cachedDisplaySize: CGSize = .zero
     
     // Multi-mask selection state
@@ -85,10 +78,7 @@ class EditorViewModel: ObservableObject {
     @Published var selectedQualityPreset: QualityPreset = .normal
     @Published var generateSteps: Double = 50
     @Published var generateResolution: Double = 256
-    @Published var isGenerating = false
     @Published var generationProgress = GenerationProgress()
-    @Published var generationStartTime: Date?
-    @Published var generated3DModelURL: URL?
     @Published var generationError: String?
     @Published var selectedGeneratorModel: GeneratorModel = .hunyuan
     
@@ -99,8 +89,9 @@ class EditorViewModel: ObservableObject {
     // Task management
     var currentTasks: Set<Task<Void, Never>> = []
     
-    init(autoLoadLatest3DModel: Bool = false) {
+    init(env: PythonEnvironment = PythonEnvironment(), autoLoadLatest3DModel: Bool = false) {
         self.autoLoadLatest3DModel = autoLoadLatest3DModel
+        super.init(env: env)
     }
     
     // MARK: - Computed Properties

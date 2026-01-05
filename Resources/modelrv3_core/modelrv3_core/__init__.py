@@ -53,6 +53,8 @@ from .image import (
     save_mask_rgba,
     extract_foreground,
 )
+from .server import BaseModelServer
+
 
 __all__ = [
     "ModelLoadError",

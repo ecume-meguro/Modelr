@@ -126,6 +126,24 @@ class SecureFileManager {
         return string
     }
 
+    func fileExists(at url: URL) -> Bool {
+        return fileManager.fileExists(atPath: url.path)
+    }
+
+    func removeIfExists(at url: URL) throws {
+        try pathValidator.validateURL(url)
+        try pathValidator.requirePathAllowed(url)
+        
+        if fileManager.fileExists(atPath: url.path) {
+            try fileManager.removeItem(at: url)
+            logger.debug("Removed file if existed: \(sanitizedPath(url.path))")
+        }
+    }
+
+    func ensureDirectoryExists(at url: URL) throws {
+        try createSecureDirectory(at: url)
+    }
+
     func deleteFile(at url: URL) throws {
         try pathValidator.validateURL(url)
         try pathValidator.requirePathAllowed(url)
@@ -160,20 +178,23 @@ class SecureFileManager {
         }
     }
 
-    func copyFile(from source: URL, to destination: URL) throws {
+    func copyFile(from source: URL, to destination: URL, overwrite: Bool = true) throws {
         try pathValidator.validateURL(source)
         try pathValidator.validateURL(destination)
+        try pathValidator.requirePathAllowed(source)
         try pathValidator.requirePathAllowed(destination)
 
         guard fileManager.fileExists(atPath: source.path) else {
             throw FileError.notFound(source.path)
         }
 
+        if overwrite && fileManager.fileExists(atPath: destination.path) {
+            try fileManager.removeItem(at: destination)
+        }
+
         do {
             try fileManager.copyItem(at: source, to: destination)
-
             try setPermissions(for: destination, permissions: privateFilePermissions)
-
             logger.debug("Copied file from \(sanitizedPath(source.path)) to \(sanitizedPath(destination.path))")
         } catch {
             throw FileError.writeError(destination.path, underlying: error)

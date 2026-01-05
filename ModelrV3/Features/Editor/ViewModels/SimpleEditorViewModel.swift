@@ -3,16 +3,7 @@ import Foundation
 
 /// ViewModel for ContentViewSimple - manages all state and business logic
 @MainActor
-class SimpleEditorViewModel: ObservableObject {
-    // MARK: - Dependencies
-    let env: PythonEnvironment
-
-    // MARK: - Core Image State
-    @Published var inputImage: NSImage?
-    @Published var inputImagePath: String?
-    @Published var imagePixelSize: CGSize = .zero
-    @Published var zoomScale: CGFloat = 1.0
-
+class SimpleEditorViewModel: BaseEditorViewModel {
     // MARK: - Workflow State
     enum Step { case setup, input, segment, touchup, generate, postProcess }
     @Published var currentStep: Step = .setup
@@ -75,11 +66,8 @@ class SimpleEditorViewModel: ObservableObject {
     @Published var isStrokeInProgress: Bool = false
 
     // MARK: - Generation State
-    @Published var isGenerating = false
     @Published var generationStatus = ""
-    @Published var generated3DModelURL: URL?
     @Published var compositeImage: NSImage?
-    @Published var generationStartTime: Date?
     @Published var generationDuration: TimeInterval?
     @Published var selectedPreset: QualityPreset = .normal
     @Published var showAdvancedSettings = false
@@ -115,7 +103,7 @@ class SimpleEditorViewModel: ObservableObject {
     @Published var isConfiguringEnvironment: Bool = false
 
     // MARK: - UI State
-    @Published var isDragging = false
+    @Published var zoomScale: CGFloat = 1.0
     @Published var showingOriginal: Bool = false
 
     // MARK: - 3D View Mode
@@ -160,8 +148,8 @@ class SimpleEditorViewModel: ObservableObject {
     }
 
     // MARK: - Initialization
-    init(env: PythonEnvironment) {
-        self.env = env
+    override init(env: PythonEnvironment) {
+        super.init(env: env)
 
         // Check if setup was already completed
         let wasSetupComplete = UserDefaults.standard.bool(forKey: "SetupComplete")

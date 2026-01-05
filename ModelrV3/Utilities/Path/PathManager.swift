@@ -3,12 +3,9 @@ import Foundation
 /// Centralized path management for ModelrV3 application
 struct PathManager {
     
-    /// File manager instance
-    private static let fileManager = FileManager.default
-    
     /// Get the application support directory for ModelrV3
     static var appSupportDirectory: URL {
-        guard let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+        guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             fatalError("Unable to access Application Support directory")
         }
         return appSupport.appendingPathComponent(AppConstants.appSupportDirectoryName, isDirectory: true)
@@ -16,7 +13,7 @@ struct PathManager {
     
     /// Ensure application support directory exists
     static func ensureAppSupportDirectoryExists() throws {
-        try fileManager.createDirectory(at: appSupportDirectory, withIntermediateDirectories: true)
+        try SecureFileManager.shared.ensureDirectoryExists(at: appSupportDirectory)
     }
     
     /// Get path for virtual environment directory
@@ -102,25 +99,22 @@ struct PathManager {
     
     /// Check if a file exists at the given path
     static func fileExists(at url: URL) -> Bool {
-        return fileManager.fileExists(atPath: url.path)
+        return SecureFileManager.shared.fileExists(at: url)
     }
     
     /// Ensure a directory exists at the given path
     static func ensureDirectoryExists(at url: URL) throws {
-        try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+        try SecureFileManager.shared.ensureDirectoryExists(at: url)
     }
     
     /// Remove a file or directory if it exists
     static func removeIfExists(at url: URL) throws {
-        if fileManager.fileExists(atPath: url.path) {
-            try fileManager.removeItem(at: url)
-        }
+        try SecureFileManager.shared.removeIfExists(at: url)
     }
     
     /// Copy a file from source to destination, removing destination first if it exists
     static func copyFile(from source: URL, to destination: URL) throws {
-        try removeIfExists(at: destination)
-        try fileManager.copyItem(at: source, to: destination)
+        try SecureFileManager.shared.copyFile(from: source, to: destination)
     }
     
     /// Get UV binary path from bundle

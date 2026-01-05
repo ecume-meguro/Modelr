@@ -1,8 +1,8 @@
 import Foundation
 import AppKit
 
-class SafeFileService {
-    static let shared = SafeFileService()
+class ImageFileService {
+    static let shared = ImageFileService()
 
     private let pathValidator = PathValidator.shared
     private let secureFileManager = SecureFileManager.shared

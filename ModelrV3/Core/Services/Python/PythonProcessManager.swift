@@ -43,7 +43,7 @@ class PythonProcessManager {
 
         process.executableURL = URL(fileURLWithPath: uvPath)
         process.arguments = [
-            "run", scriptPath,
+            "run", "--project", samDir.path, scriptPath,
             "--server",
             "--model", selectedModel,
             "--output-dir", samDir.path
@@ -130,10 +130,9 @@ class PythonProcessManager {
         process.executableURL = URL(fileURLWithPath: uvPath)
 
         var args = [
-            "run", hunyuanScript,
+            "run", "--project", hunyuanDir.path, hunyuanScript,
             "--image", imagePath,
             "--output", outputPath.path,
-            "--output-dir", hunyuanDir.path,
             "--model", modelVariant,
             "--steps", "\(steps)",
             "--resolution", "\(resolution)"

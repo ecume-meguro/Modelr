@@ -147,6 +147,62 @@ enum SecurityError: Error, LocalizedError {
     }
 }
 
+// MARK: - Python Communication Errors
+
+enum PythonCommunicationError: Error, LocalizedError {
+    case invalidCommand(String)
+    case missingRequiredField(String)
+    case invalidPointValue
+    case invalidBoxValue
+    case versionMismatch(String)
+    case unexpectedResponse(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidCommand(let cmd):
+            return "Invalid command: \(cmd)"
+        case .missingRequiredField(let field):
+            return "Missing required field: \(field)"
+        case .invalidPointValue:
+            return "Invalid point value"
+        case .invalidBoxValue:
+            return "Invalid box value"
+        case .versionMismatch(let expected):
+            return "Version mismatch: \(expected)"
+        case .unexpectedResponse(let msg):
+            return "Unexpected response: \(msg)"
+        }
+    }
+}
+
+// MARK: - General App Errors
+
+enum AppError: Error, LocalizedError {
+    case validation(field: String, message: String)
+    case setup(message: String)
+    case python(PythonError)
+    case pythonComm(PythonCommunicationError)
+    case system(Error)
+    case unknown
+
+    var errorDescription: String? {
+        switch self {
+        case .validation(let field, let message):
+            return "Validation error in '\(field)': \(message)"
+        case .setup(let message):
+            return "Setup error: \(message)"
+        case .python(let error):
+            return error.localizedDescription
+        case .pythonComm(let error):
+            return error.localizedDescription
+        case .system(let error):
+            return error.localizedDescription
+        case .unknown:
+            return "An unknown error occurred"
+        }
+    }
+}
+
 // MARK: - PythonError Extension
 
 extension PythonError {

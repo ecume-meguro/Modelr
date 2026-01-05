@@ -1,82 +1,42 @@
 import Foundation
 import SwiftUI
 
-// MARK: - Safe Array Subscript
+enum WorkflowStep: Int, CaseIterable, Comparable, Codable {
+    case input = 0
+    case refine = 1
+    case segment = 2
+    case generate = 3
 
-extension Array {
-    subscript(safe index: Index) -> Element? {
-        return indices.contains(index) ? self[index] : nil
-    }
-}
-
-enum ModelError: Error, LocalizedError {
-    case invalidCommand(String)
-    case missingRequiredField(String)
-    case invalidPointValue
-    case invalidBoxValue
-    case versionMismatch(String)
-    case unexpectedResponse(String)
-
-    var errorDescription: String? {
+    var title: String {
         switch self {
-        case .invalidCommand(let cmd):
-            return "Invalid command: \(cmd)"
-        case .missingRequiredField(let field):
-            return "Missing required field: \(field)"
-        case .invalidPointValue:
-            return "Invalid point value"
-        case .invalidBoxValue:
-            return "Invalid box value"
-        case .versionMismatch(let expected):
-            return "Version mismatch: \(expected)"
-        case .unexpectedResponse(let msg):
-            return "Unexpected response: \(msg)"
+        case .input: return "Input"
+        case .refine: return "Refine"
+        case .segment: return "Segment"
+        case .generate: return "Generate"
         }
     }
+
+    var icon: String {
+        switch self {
+        case .input: return "photo"
+        case .refine: return "slider.horizontal.3"
+        case .segment: return "square.dashed.inset.filled"
+        case .generate: return "cube.transparent"
+        }
+    }
+
+    static func < (lhs: WorkflowStep, rhs: WorkflowStep) -> Bool {
+        return lhs.rawValue < rhs.rawValue
+    }
 }
 
-// MARK: - Generic Python Communication
-
-struct PythonRequest: Codable {
-    let command: String
-    let params: [String: AnyCodable]
-    let messageId: String
-    
-    init(command: String, params: [String: AnyCodable] = [:]) {
-        self.command = command
-        self.params = params
-        self.messageId = UUID().uuidString
-    }
-}
-
-/// A type-safe wrapper for heterogeneous dictionary values in JSON
-struct AnyCodable: Codable {
-    let value: Any
-    
-    init(_ value: Any) {
-        self.value = value
-    }
-    
-    init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if let x = try? container.decode(Bool.self) { value = x }
-        else if let x = try? container.decode(Int.self) { value = x }
-        else if let x = try? container.decode(Double.self) { value = x }
-        else if let x = try? container.decode(String.self) { value = x }
-        else if let x = try? container.decode([String: AnyCodable].self) { value = x.mapValues { $0.value } }
-        else if let x = try? container.decode([AnyCodable].self) { value = x.map { $0.value } }
-        else { throw DecodingError.dataCorruptedError(in: container, debugDescription: "AnyCodable value cannot be decoded") }
-    }
-    
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        if let x = value as? Bool { try container.encode(x) }
-        else if let x = value as? Int { try container.encode(x) }
-        else if let x = value as? Double { try container.encode(x) }
-        else if let x = value as? String { try container.encode(x) }
-        else if let x = value as? [String: Any] { try container.encode(x.mapValues { AnyCodable($0) }) }
-        else if let x = value as? [Any] { try container.encode(x.map { AnyCodable($0) }) }
-    }
+enum UndoAction: Equatable {
+    case addPoint(SAMPoint)
+    case addBox(SAMBox)
+    case addLasso(LassoSelection)
+    case addPaintStroke(PaintStroke)
+    case crop(originalImage: NSImage, originalPath: String?)
+    case movePoint(from: SAMPoint, to: SAMPoint)
 }
 
 // MARK: - Point Model (Supports positive and negative points)
@@ -356,13 +316,15 @@ enum PreprocessTool: String, CaseIterable, Identifiable {
 }
 
 // MARK: - Lasso Selection Model
-struct LassoSelection: Equatable, Identifiable {
-    let id = UUID()
+struct LassoSelection: Equatable, Identifiable, Codable {
+    let id: UUID
     var points: [CGPoint]  // Normalized 0-1 coordinates
-    let dateAdded = Date()
+    let dateAdded: Date
 
     init(startPoint: CGPoint) {
+        self.id = UUID()
         self.points = [startPoint]
+        self.dateAdded = Date()
     }
 
     mutating func addPoint(_ point: CGPoint) {
@@ -402,19 +364,48 @@ struct LassoSelection: Equatable, Identifiable {
     var isValid: Bool {
         points.count >= 3
     }
+    
+    // Custom Codable for [CGPoint] array
+    enum CodingKeys: String, CodingKey {
+        case id, dateAdded, points
+    }
+
+    struct CodablePoint: Codable {
+        let x: CGFloat
+        let y: CGFloat
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        dateAdded = try container.decode(Date.self, forKey: .dateAdded)
+        let codablePoints = try container.decode([CodablePoint].self, forKey: .points)
+        points = codablePoints.map { CGPoint(x: $0.x, y: $0.y) }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(dateAdded, forKey: .dateAdded)
+        let codablePoints = points.map { CodablePoint(x: $0.x, y: $0.y) }
+        try container.encode(codablePoints, forKey: .points)
+    }
 }
 
 // MARK: - Paint Stroke Model
-struct PaintStroke: Equatable, Identifiable {
-    let id = UUID()
+struct PaintStroke: Equatable, Identifiable, Codable {
+    let id: UUID
     var points: [CGPoint]  // Normalized 0-1 coordinates
     let brushSize: CGFloat  // Normalized brush size (relative to image width)
     let isErasing: Bool     // true = erase, false = add to mask
+    let dateAdded: Date
 
     init(startPoint: CGPoint, brushSize: CGFloat, isErasing: Bool = false) {
+        self.id = UUID()
         self.points = [startPoint]
         self.brushSize = brushSize
         self.isErasing = isErasing
+        self.dateAdded = Date()
     }
 
     mutating func addPoint(_ point: CGPoint) {
@@ -431,141 +422,34 @@ struct PaintStroke: Equatable, Identifiable {
             points.append(point)
         }
     }
-}
-
-// MARK: - Python Communication Protocol
-
-struct SAMRequest: Codable {
-    static let version = "1.0"
-    static let maxPoints = 100
-
-    let messageId: String
-    let version: String
-    let command: String  // "set_image", "predict", "reset"
-    let imagePath: String?
-    let points: [[Int]]?  // [[x, y], [x, y], ...]
-    let labels: [Int]?    // [1, 1, 0, ...] - 1=foreground, 0=background
-    let box: [Int]?       // [x1, y1, x2, y2]
-    let text: String?     // Text prompt for SAM3 (e.g., "dog", "person")
-    let model: String?
-
-    init(command: String, imagePath: String? = nil, points: [[Int]]? = nil, labels: [Int]? = nil, box: [Int]? = nil, text: String? = nil, model: String? = nil) {
-        self.messageId = UUID().uuidString
-        self.version = Self.version
-        self.command = command
-        self.imagePath = imagePath
-        self.points = points
-        self.labels = labels
-        self.box = box
-        self.text = text
-        self.model = model
+    
+    // Custom Codable for [CGPoint] array
+    enum CodingKeys: String, CodingKey {
+        case id, brushSize, isErasing, dateAdded, points
     }
 
-    func validate() throws {
-        let validCommands = ["set_image", "predict", "reset"]
-        guard validCommands.contains(command) else {
-            throw ModelError.invalidCommand(command)
-        }
-
-        switch command {
-        case "set_image":
-            guard imagePath != nil && !imagePath!.isEmpty else {
-                throw ModelError.missingRequiredField("imagePath")
-            }
-
-        case "predict":
-            guard points != nil || box != nil else {
-                throw ModelError.missingRequiredField("points or box")
-            }
-
-            if let points = points {
-                guard points.count <= Self.maxPoints else {
-                    throw ModelError.invalidPointValue
-                }
-
-                for point in points {
-                    guard point.count == 2 else {
-                        throw ModelError.invalidPointValue
-                    }
-                    guard point[0] >= 0 && point[1] >= 0 else {
-                        throw ModelError.invalidPointValue
-                    }
-                }
-            }
-
-            if let box = box {
-                guard box.count == 4 else {
-                    throw ModelError.invalidBoxValue
-                }
-                guard box[0] >= 0 && box[1] >= 0 && box[2] > box[0] && box[3] > box[1] else {
-                    throw ModelError.invalidBoxValue
-                }
-            }
-
-        case "reset":
-            break
-        default:
-            break
-        }
-    }
-}
-
-struct SAMResponse: Codable {
-    let messageId: String?
-    let version: String?
-    let success: Bool
-    let masks: [String]?      // Multiple mask paths
-    let scores: [Double]?     // Confidence scores for each mask
-    let selectedIndex: Int?   // Currently selected mask index
-    let maskPath: String?     // Legacy single mask path
-    let imagePath: String?    // Path to processed image (e.g. background removed)
-    let error: String?
-    let inferenceTimeMs: Int?
-    let ready: Bool?
-    let score: Double?        // Legacy field, use scores instead
-    let confidenceMapPath: String?  // Per-pixel confidence heatmap
-    let width: Int?           // Image width from set_image
-    let height: Int?          // Image height from set_image
-
-    var primaryMaskPath: String? {
-        return masks?.first ?? maskPath
+    struct CodablePoint: Codable {
+        let x: CGFloat
+        let y: CGFloat
     }
 
-    var primaryScore: Double? {
-        return scores?.first ?? score
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        brushSize = try container.decode(CGFloat.self, forKey: .brushSize)
+        isErasing = try container.decode(Bool.self, forKey: .isErasing)
+        dateAdded = try container.decode(Date.self, forKey: .dateAdded)
+        let codablePoints = try container.decode([CodablePoint].self, forKey: .points)
+        points = codablePoints.map { CGPoint(x: $0.x, y: $0.y) }
     }
 
-    func validate() throws {
-        if version != nil && version != SAMRequest.version {
-            throw ModelError.versionMismatch(SAMRequest.version)
-        }
-
-        if !success {
-            guard error != nil && !error!.isEmpty else {
-                throw ModelError.unexpectedResponse("Error message required on failure")
-            }
-        }
-    }
-}
-
-// MARK: - Coordinate Extensions
-
-extension CGPoint {
-    /// Convert normalized (0-1) coords to view coords
-    func toViewCoords(_ viewSize: CGSize) -> CGPoint {
-        CGPoint(x: x * viewSize.width, y: y * viewSize.height)
-    }
-
-    /// Convert view coords to normalized (0-1) coords
-    func toNormalized(_ viewSize: CGSize) -> CGPoint {
-        CGPoint(x: x / viewSize.width, y: y / viewSize.height)
-    }
-
-    /// Clamp to 0-1 range
-    var clamped: CGPoint {
-        CGPoint(
-            x: max(0, min(1, x)),
-            y: max(0, min(1, y))
-        )
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(brushSize, forKey: .brushSize)
+        try container.encode(isErasing, forKey: .isErasing)
+        try container.encode(dateAdded, forKey: .dateAdded)
+        let codablePoints = points.map { CodablePoint(x: $0.x, y: $0.y) }
+        try container.encode(codablePoints, forKey: .points)
     }
 }

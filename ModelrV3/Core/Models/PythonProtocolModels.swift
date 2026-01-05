@@ -1,0 +1,128 @@
+import Foundation
+
+// MARK: - Generic Python Communication
+
+struct PythonRequest: Codable {
+    let command: String
+    let params: [String: AnyCodable]
+    let messageId: String
+    
+    init(command: String, params: [String: AnyCodable] = [:]) {
+        self.command = command
+        self.params = params
+        self.messageId = UUID().uuidString
+    }
+}
+
+/// A type-safe wrapper for heterogeneous dictionary values in JSON
+struct AnyCodable: Codable {
+    let value: Any
+    
+    init(_ value: Any) {
+        self.value = value
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let x = try? container.decode(Bool.self) { value = x }
+        else if let x = try? container.decode(Int.self) { value = x }
+        else if let x = try? container.decode(Double.self) { value = x }
+        else if let x = try? container.decode(String.self) { value = x }
+        else if let x = try? container.decode([String: AnyCodable].self) { value = x.mapValues { $0.value } }
+        else if let x = try? container.decode([AnyCodable].self) { value = x.map { $0.value } }
+        else { throw DecodingError.dataCorruptedError(in: container, debugDescription: "AnyCodable value cannot be decoded") }
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        if let x = value as? Bool { try container.encode(x) }
+        else if let x = value as? Int { try container.encode(x) }
+        else if let x = value as? Double { try container.encode(x) }
+        else if let x = value as? String { try container.encode(x) }
+        else if let x = value as? [String: Any] { try container.encode(x.mapValues { AnyCodable($0) }) }
+        else if let x = value as? [Any] { try container.encode(x.map { AnyCodable($0) }) }
+    }
+}
+
+// MARK: - SAM Python Communication Protocol
+
+struct SAMRequest: Codable {
+    static let version = "1.0"
+    static let maxPoints = 100
+
+    let messageId: String
+    let version: String
+    let command: String  // "set_image", "predict", "reset"
+    let imagePath: String?
+    let points: [[Int]]?  // [[x, y], [x, y], ...]
+    let labels: [Int]?    // [1, 1, 0, ...] - 1=foreground, 0=background
+    let box: [Int]?       // [x1, y1, x2, y2]
+    let text: String?     // Text prompt for SAM3 (e.g., "dog", "person")
+    let model: String?
+
+    init(command: String, imagePath: String? = nil, points: [[Int]]? = nil, labels: [Int]? = nil, box: [Int]? = nil, text: String? = nil, model: String? = nil) {
+        self.messageId = UUID().uuidString
+        self.version = Self.version
+        self.command = command
+        self.imagePath = imagePath
+        self.points = points
+        self.labels = labels
+        self.box = box
+        self.text = text
+        self.model = model
+    }
+
+    func validate() throws {
+        let validCommands = ["set_image", "predict", "reset"]
+        guard validCommands.contains(command) else {
+            throw AppError.validation(field: "command", message: "Invalid command: \(command)")
+        }
+
+        switch command {
+        case "set_image":
+            guard imagePath != nil && !imagePath!.isEmpty else {
+                throw AppError.validation(field: "imagePath", message: "Required")
+            }
+
+        case "predict":
+            guard points != nil || box != nil || text != nil else {
+                throw AppError.validation(field: "prompts", message: "points, box, or text required")
+            }
+
+            if let points = points {
+                guard points.count <= Self.maxPoints else {
+                    throw AppError.validation(field: "points", message: "Too many points")
+                }
+            }
+
+        default:
+            break
+        }
+    }
+}
+
+struct SAMResponse: Codable {
+    let messageId: String?
+    let version: String?
+    let success: Bool
+    let masks: [String]?      // Multiple mask paths
+    let scores: [Double]?     // Confidence scores for each mask
+    let selectedIndex: Int?   // Currently selected mask index
+    let maskPath: String?     // Legacy single mask path
+    let imagePath: String?    // Path to processed image (e.g. background removed)
+    let error: String?
+    let inferenceTimeMs: Int?
+    let ready: Bool?
+    let score: Double?        // Legacy field, use scores instead
+    let confidenceMapPath: String?  // Per-pixel confidence heatmap
+    let width: Int?           // Image width from set_image
+    let height: Int?          // Image height from set_image
+
+    var primaryMaskPath: String? {
+        return masks?.first ?? maskPath
+    }
+
+    var primaryScore: Double? {
+        return scores?.first ?? score
+    }
+}

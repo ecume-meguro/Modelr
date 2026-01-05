@@ -70,13 +70,15 @@ class PythonEnvironment: ObservableObject {
     
     // MARK: - Setup
     
-    func setup(statusUpdate: ((String) -> Void)? = nil) async -> Bool {
-        let success = await dependencyService.setup { [weak self] statusText in
+    func setup(modelChoice: SetupModelChoice = .fast, statusUpdate: ((String) -> Void)? = nil, logUpdate: ((String) -> Void)? = nil) async -> Bool {
+        let success = await dependencyService.setup(modelChoice: modelChoice, statusUpdate: { [weak self] statusText in
             statusUpdate?(statusText)
             Task { @MainActor in
                 self?.status = statusText
             }
-        }
+        }, logUpdate: { logText in
+            logUpdate?(logText)
+        })
 
         await MainActor.run {
             isSetup = success
@@ -95,7 +97,7 @@ class PythonEnvironment: ObservableObject {
     /// Copy resources to Application Support
     func copyResources() async {
         // Use the internal dependency service which has our improved recursive copy logic
-        _ = await dependencyService.setup { _ in } // This calls copyResourceFiles internally
+        _ = await dependencyService.setup(statusUpdate: { _ in }, logUpdate: { _ in }) // This calls copyResourceFiles internally
     }
 
     /// Sync the Python environment using uv
@@ -103,7 +105,7 @@ class PythonEnvironment: ObservableObject {
         guard dependencyService.cachedUvPath != nil else { return false }
         
         // Use the dependency service setup
-        let success = await dependencyService.setup { _ in }
+        let success = await dependencyService.setup(statusUpdate: { _ in }, logUpdate: { _ in })
         return success
     }
     
@@ -136,7 +138,7 @@ class PythonEnvironment: ObservableObject {
     }
     
     func preloadSAMModel() async {
-        guard !samModelReady else { return }
+        guard isSetup && !samModelReady else { return }
         await MainActor.run { status = "Loading SAM model..." }
         do {
             try await startPersistentWorker()
