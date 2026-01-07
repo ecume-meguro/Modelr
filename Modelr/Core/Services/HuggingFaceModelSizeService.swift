@@ -124,8 +124,12 @@ class HuggingFaceModelSizeService: ObservableObject {
 
     /// Query all model sizes from HuggingFace (runs once, caches results)
     func queryAllSizes() async {
-        guard !isQuerying && !hasQueried else { return }
+        guard !isQuerying && !hasQueried else {
+            print("[HFSizeService] Skipping query (isQuerying=\(isQuerying), hasQueried=\(hasQueried))")
+            return
+        }
 
+        print("[HFSizeService] Starting HuggingFace size queries...")
         isQuerying = true
         defer {
             isQuerying = false
@@ -142,6 +146,8 @@ class HuggingFaceModelSizeService: ObservableObject {
         hunyuanMiniBytes = mini
         hunyuanStdBytes = std
         sam3Bytes = sam
+
+        print("[HFSizeService] Query complete - mini: \(mini.map { "\($0)" } ?? "nil"), std: \(std.map { "\($0)" } ?? "nil"), sam: \(sam.map { "\($0)" } ?? "nil")")
     }
 
     /// Force refresh sizes (clears cache)
@@ -191,10 +197,14 @@ class HuggingFaceModelSizeService: ObservableObject {
         var total: Int64 = 0
         do {
             for file in files {
-                total += try await fetchContentLengthBytes(for: file)
+                let bytes = try await fetchContentLengthBytes(for: file)
+                print("[HFSizeService] \(file.repoId)/\(file.path): \(bytes) bytes")
+                total += bytes
             }
+            print("[HFSizeService] Total for \(files.first?.repoId ?? "unknown"): \(total) bytes (\(String(format: "%.2f", Double(total) / 1_000_000_000)) GB)")
             return total
         } catch {
+            print("[HFSizeService] Failed to fetch size for \(files.first?.repoId ?? "unknown"): \(error)")
             return nil
         }
     }

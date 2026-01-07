@@ -234,7 +234,7 @@ deinit {
     }
     
     // MARK: - 3D Model Generation
-    
+
     func generate3DModel(
         imagePath: String,
         maskPath: String,
@@ -244,33 +244,72 @@ deinit {
         progress: @escaping (String) -> Void,
         completion: @escaping (Result<URL, Error>) -> Void
     ) async {
-        guard let uvPath = dependencyService.cachedUvPath else {
-            completion(.failure(PythonError.uvNotFound))
-            return
-        }
-
         guard dependencyService.hunyuanVenvReady else {
             completion(.failure(PythonError.predictionFailed("Hunyuan3D environment not ready")))
             return
         }
 
-        let outputPath = PathManager.generatedModelPath()
+        let outputURL = PathManager.generatedModelPath()
+        let outputPath = outputURL.path
 
         await MainActor.run {
             isGenerationCancelled = false
         }
 
-        processManager.start3DGeneration(
-            uvPath: uvPath,
-            imagePath: imagePath,
-            maskPath: maskPath,
-            outputPath: outputPath,
-            steps: steps,
-            resolution: resolution,
-            modelVariant: modelVariant,
-            progressCallback: progress,
-            completion: completion
-        )
+        // Use the persistent Hunyuan server via ModelLoadingCoordinator
+        let coordinator = await MainActor.run { ModelLoadingCoordinator.shared }
+
+        // Check if persistent server is available
+        let isReady = await MainActor.run { coordinator.isHunyuanReady }
+
+        if isReady {
+            // Use persistent server
+            do {
+                let resultURL = try await coordinator.generate(
+                    imagePath: imagePath,
+                    maskPath: maskPath,
+                    outputPath: outputPath,
+                    steps: steps,
+                    resolution: resolution,
+                    onProgress: { stage, detail, value in
+                        // Format progress string with stage info for the UI parser
+                        // stage is "loading", "diffusion", "exporting"
+                        // detail is step count like "1/25" or status message
+                        let percent = Int(value * 100)
+                        if stage == "diffusion" {
+                            progress("Diffusion Sampling \(detail) - PROGRESS:\(percent)%")
+                        } else if stage == "exporting" {
+                            progress("Exporting - PROGRESS:\(percent)%")
+                        } else if stage == "loading" {
+                            progress("Loading Model - PROGRESS:\(percent)%")
+                        } else {
+                            progress("PROGRESS:\(percent)% - \(detail)")
+                        }
+                    }
+                )
+                completion(.success(resultURL))
+            } catch {
+                completion(.failure(error))
+            }
+        } else {
+            // Fall back to one-shot generation (for cases where persistent server isn't running)
+            guard let uvPath = dependencyService.cachedUvPath else {
+                completion(.failure(PythonError.uvNotFound))
+                return
+            }
+
+            processManager.start3DGeneration(
+                uvPath: uvPath,
+                imagePath: imagePath,
+                maskPath: maskPath,
+                outputPath: outputURL,
+                steps: steps,
+                resolution: resolution,
+                modelVariant: modelVariant,
+                progressCallback: progress,
+                completion: completion
+            )
+        }
     }
     
     func cancelGeneration() {

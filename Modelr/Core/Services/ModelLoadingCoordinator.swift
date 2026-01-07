@@ -29,7 +29,7 @@ enum ModelLoadingStrategy: String {
 ///
 /// For systems with >= 16GB RAM (aggressive):
 /// - Load SAM model with priority during setup
-/// - Start loading Hunyuan model asynchronously after SAM is ready (if downloaded)
+/// - Start persistent Hunyuan server asynchronously after SAM is ready (if model downloaded)
 /// - Both models remain loaded throughout the session
 @MainActor
 class ModelLoadingCoordinator: ObservableObject {
@@ -38,11 +38,14 @@ class ModelLoadingCoordinator: ObservableObject {
     /// Current loading strategy based on system RAM
     @Published private(set) var strategy: ModelLoadingStrategy
 
-    /// Whether Hunyuan model is currently being preloaded in the background
-    @Published private(set) var isPreloadingHunyuan: Bool = false
+    /// Whether Hunyuan server is currently starting
+    @Published private(set) var isStartingHunyuan: Bool = false
 
-    /// Whether Hunyuan model has been preloaded and is ready
-    @Published private(set) var isHunyuanPreloaded: Bool = false
+    /// Whether Hunyuan server is running and ready
+    @Published private(set) var isHunyuanReady: Bool = false
+
+    /// Current Hunyuan model variant loaded
+    @Published private(set) var hunyuanVariant: String?
 
     /// System RAM in bytes
     let systemRAM: UInt64
@@ -52,7 +55,10 @@ class ModelLoadingCoordinator: ObservableObject {
         ByteCountFormatter.string(fromByteCount: Int64(systemRAM), countStyle: .memory)
     }
 
-    private var preloadTask: Task<Void, Never>?
+    /// The persistent Hunyuan process manager
+    private(set) var hunyuanProcessManager: HunyuanProcessManager?
+
+    private var startupTask: Task<Void, Never>?
 
     private init() {
         self.systemRAM = ProcessInfo.processInfo.physicalMemory
@@ -82,7 +88,7 @@ class ModelLoadingCoordinator: ObservableObject {
         return nil
     }
 
-    /// Check which Hunyuan models are available for preloading
+    /// Check which Hunyuan models are available for loading
     private func getAvailableHunyuanVariant() -> String? {
         // First, check what was selected during setup
         if let setupVariant = getSetupModelVariant() {
@@ -112,112 +118,138 @@ class ModelLoadingCoordinator: ObservableObject {
         return nil
     }
 
-    /// Called when SAM model is ready - triggers async Hunyuan preload if using aggressive strategy
+    /// Called when SAM model is ready - triggers async Hunyuan server start if using aggressive strategy
     func onSAMModelReady(env: PythonEnvironment) {
-        guard strategy == .aggressive && !isHunyuanPreloaded && !isPreloadingHunyuan else {
+        guard strategy == .aggressive && !isHunyuanReady && !isStartingHunyuan else {
             if strategy == .conservative {
-                print("[ModelLoadingCoordinator] Conservative strategy - skipping Hunyuan preload")
+                print("[ModelLoadingCoordinator] Conservative strategy - Hunyuan will start on-demand")
             }
             return
         }
 
-        // Check if we have a model to preload
+        // Check if we have a model to load
         guard let variant = getAvailableHunyuanVariant() else {
             print("[ModelLoadingCoordinator] No Hunyuan model available to preload")
             return
         }
 
-        print("[ModelLoadingCoordinator] SAM ready, starting async Hunyuan preload (variant: \(variant))...")
-        isPreloadingHunyuan = true
+        print("[ModelLoadingCoordinator] SAM ready, starting persistent Hunyuan server (variant: \(variant))...")
+        isStartingHunyuan = true
 
-        preloadTask = Task {
-            await preloadHunyuanModel(env: env, variant: variant)
+        startupTask = Task {
+            await startHunyuanServer(env: env, variant: variant)
         }
     }
 
-    /// Preload Hunyuan model in the background (aggressive strategy only)
-    private func preloadHunyuanModel(env: PythonEnvironment, variant: String) async {
+    /// Start the persistent Hunyuan server
+    private func startHunyuanServer(env: PythonEnvironment, variant: String) async {
         guard let uvPath = env.findUVPath() else {
-            print("[ModelLoadingCoordinator] UV path not found, cannot preload Hunyuan")
-            isPreloadingHunyuan = false
+            print("[ModelLoadingCoordinator] UV path not found, cannot start Hunyuan server")
+            isStartingHunyuan = false
             return
         }
 
-        let hunyuanDir = PathManager.hunyuanProjectDirectory
-        let hunyuanVenv = PathManager.hunyuanVenvDirectory
-        let hunyuanScript = PathManager.hunyuanWrapperPath.path
+        let manager = HunyuanProcessManager()
+        hunyuanProcessManager = manager
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: uvPath)
-        process.arguments = [
-            "run", "--project", hunyuanDir.path, hunyuanScript,
-            "--warmup",
-            "--model", variant
-        ]
-        process.currentDirectoryURL = hunyuanDir
-
-        var processEnv = ProcessInfo.processInfo.environment
-        processEnv["UV_PROJECT_ENVIRONMENT"] = hunyuanVenv.path
-        processEnv["UV_PYTHON_INSTALL_DIR"] = PathManager.pythonRuntimesDirectory.path
-        processEnv["UV_CACHE_DIR"] = PathManager.uvCacheDirectory.path
-        processEnv["UV_PYTHON_PREFERENCE"] = "only-managed"
-        processEnv["UV_LINK_MODE"] = "copy"
-        processEnv["PYTHONUNBUFFERED"] = "1"
-        processEnv["HF_HOME"] = PathManager.modelsDirectory.path
-        processEnv["HUGGINGFACE_HUB_CACHE"] = PathManager.modelsHubDirectory.path
-        processEnv["TRANSFORMERS_CACHE"] = PathManager.modelsHubDirectory.path
-        processEnv["MODELR_CONFIG_PATH"] = PathManager.projectConfigPath.path
-        processEnv["MODELR_OUTPUTS_DIR"] = PathManager.outputsDirectory.path
-        processEnv["MODELR_WORKING_DIR"] = PathManager.workingDirectory.path
-        processEnv["MODELR_LOGS_DIR"] = PathManager.logsDirectory.path
-        processEnv["MODELR_CHECKPOINTS_DIR"] = PathManager.checkpointsDirectory.path
-        processEnv["PYTHONPATH"] = [
-            PathManager.libPythonDirectory.path,
-            PathManager.libPythonDirectory.appendingPathComponent("modelr_core", isDirectory: true).path
-        ].joined(separator: ":")
-        process.environment = processEnv
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        pipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            if let output = String(data: data, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-               !output.isEmpty {
-                print("[HunyuanPreload] \(output)")
-            }
+        // Setup stderr logging
+        manager.onStderrLine = { line in
+            print("[HunyuanServer] \(line)")
         }
 
         do {
-            try process.run()
+            try manager.startServer(uvPath: uvPath, modelVariant: variant)
 
-            // Wait for completion on a background thread
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                Task.detached {
-                    process.waitUntilExit()
-                    continuation.resume()
-                }
-            }
+            // Wait for ready signal
+            let response = try await manager.waitForReady(timeout: 120)  // Model loading can take time
 
-            pipe.fileHandleForReading.readabilityHandler = nil
-
-            if process.terminationStatus == 0 {
-                print("[ModelLoadingCoordinator] Hunyuan preload completed successfully (variant: \(variant))")
-                isHunyuanPreloaded = true
+            if response.ready == true {
+                print("[ModelLoadingCoordinator] Hunyuan server ready (variant: \(response.variant ?? variant), device: \(response.device ?? "unknown"))")
+                hunyuanVariant = response.variant ?? variant
+                isHunyuanReady = true
             } else {
-                print("[ModelLoadingCoordinator] Hunyuan preload failed with status \(process.terminationStatus) - this is OK, model will load on-demand")
+                print("[ModelLoadingCoordinator] Hunyuan server failed to initialize: \(response.error ?? "unknown")")
+                manager.stopServer()
+                hunyuanProcessManager = nil
             }
         } catch {
-            print("[ModelLoadingCoordinator] Hunyuan preload error: \(error) - this is OK, model will load on-demand")
+            print("[ModelLoadingCoordinator] Hunyuan server startup error: \(error)")
+            manager.stopServer()
+            hunyuanProcessManager = nil
         }
 
-        isPreloadingHunyuan = false
+        isStartingHunyuan = false
+    }
+
+    /// Ensure Hunyuan server is running (starts if needed)
+    /// For conservative strategy, this should be called before generation
+    func ensureHunyuanReady(env: PythonEnvironment) async -> Bool {
+        // Already running
+        if isHunyuanReady && hunyuanProcessManager?.isRunning == true {
+            return true
+        }
+
+        // Already starting, wait for it
+        if isStartingHunyuan {
+            // Wait for startup to complete
+            while isStartingHunyuan {
+                try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+            }
+            return isHunyuanReady
+        }
+
+        // Need to start
+        guard let variant = getAvailableHunyuanVariant() else {
+            print("[ModelLoadingCoordinator] No Hunyuan model available")
+            return false
+        }
+
+        isStartingHunyuan = true
+        await startHunyuanServer(env: env, variant: variant)
+        return isHunyuanReady
+    }
+
+    /// Generate 3D model using the persistent Hunyuan server
+    /// - Parameters:
+    ///   - onProgress: Callback with (stage, detail, progress) where stage is "loading"/"diffusion"/"exporting"
+    func generate(
+        imagePath: String,
+        maskPath: String?,
+        outputPath: String,
+        steps: Int,
+        resolution: Int,
+        onProgress: ((String, String, Double) -> Void)?
+    ) async throws -> URL {
+        guard let manager = hunyuanProcessManager, manager.isRunning else {
+            throw PythonError.workerNotRunning
+        }
+
+        let request = HunyuanRequest(
+            command: "generate",
+            imagePath: imagePath,
+            maskPath: maskPath,
+            outputPath: outputPath,
+            steps: steps,
+            resolution: resolution
+        )
+
+        let response = try await manager.sendRequest(request) { progress in
+            if let stage = progress.stage, let value = progress.progress {
+                let detail = progress.detail ?? ""
+                DispatchQueue.main.async {
+                    onProgress?(stage, detail, value)
+                }
+            }
+        }
+
+        guard response.success, let outputURL = response.outputPath else {
+            throw PythonError.predictionFailed(response.error ?? "Generation failed")
+        }
+
+        return URL(fileURLWithPath: outputURL)
     }
 
     /// Called before generation step - handles model offloading for conservative strategy
-    /// Returns true if ready to proceed, false if caller should wait
     func prepareForGeneration(env: PythonEnvironment) async -> Bool {
         if strategy == .conservative {
             print("[ModelLoadingCoordinator] Conservative strategy: Offloading SAM model before generation...")
@@ -226,24 +258,43 @@ class ModelLoadingCoordinator: ObservableObject {
             // Small delay to ensure resources are released
             try? await Task.sleep(nanoseconds: 500_000_000)  // 0.5 seconds
 
-            print("[ModelLoadingCoordinator] SAM model offloaded, ready for Hunyuan generation")
+            print("[ModelLoadingCoordinator] SAM model offloaded, starting Hunyuan server...")
+
+            // Start Hunyuan server for generation
+            return await ensureHunyuanReady(env: env)
         }
 
-        return true
+        // For aggressive strategy, Hunyuan should already be running
+        return await ensureHunyuanReady(env: env)
     }
 
-    /// Called after generation completes - restarts SAM if needed
+    /// Called after generation completes
     func onGenerationComplete(env: PythonEnvironment) async {
         if strategy == .conservative {
-            print("[ModelLoadingCoordinator] Generation complete, SAM will be reloaded when needed")
-            // SAM will be loaded on-demand when user goes back to segmentation
+            print("[ModelLoadingCoordinator] Generation complete")
+            // For conservative strategy, we keep Hunyuan running until user goes back to segmentation
+            // This avoids reloading if they want to generate again
         }
     }
 
-    /// Cancel any ongoing preload operation
-    func cancelPreload() {
-        preloadTask?.cancel()
-        preloadTask = nil
-        isPreloadingHunyuan = false
+    /// Stop the Hunyuan server (for conservative strategy when returning to segmentation)
+    func stopHunyuanServer() {
+        hunyuanProcessManager?.stopServer()
+        hunyuanProcessManager = nil
+        isHunyuanReady = false
+        hunyuanVariant = nil
+        print("[ModelLoadingCoordinator] Hunyuan server stopped")
+    }
+
+    /// Cancel any ongoing startup operation
+    func cancelStartup() {
+        startupTask?.cancel()
+        startupTask = nil
+        isStartingHunyuan = false
+        stopHunyuanServer()
+    }
+
+    deinit {
+        hunyuanProcessManager?.stopServer()
     }
 }

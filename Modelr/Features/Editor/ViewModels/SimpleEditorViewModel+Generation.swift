@@ -156,6 +156,34 @@ extension SimpleEditorViewModel {
             let info = ProgressParser.parseDetailedProgress(status)
             let detail = info.totalSteps > 0 ? "\(info.currentStep)/\(info.totalSteps)" : ""
             generationStages[.volumeDecoding] = StageProgress(status: .inProgress, progress: info.percentComplete / 100.0, detail: detail)
+        } else if status.contains("Exporting") {
+            // Transition from diffusion to saving when exporting starts
+            markPreviousStagesCompleted(before: .saving)
+            generationStages[.diffusion] = StageProgress(status: .completed, progress: 1.0, detail: "")
+            generationStages[.volumeDecoding] = StageProgress(status: .completed, progress: 1.0, detail: "")
+            generationStages[.saving] = StageProgress(status: .inProgress, progress: 0, detail: "")
+        } else if status.contains("PROGRESS:") {
+            // Handle progress from persistent server (format: "PROGRESS:X% - detail")
+            let info = ProgressParser.parseDetailedProgress(status)
+            let progress = info.percentComplete / 100.0
+
+            // Parse step count from detail (e.g., "1/25")
+            var stepDetail = ""
+            if let steps = ProgressParser.extractSteps(status) {
+                stepDetail = "\(steps.current)/\(steps.total)"
+            }
+
+            // Determine stage based on progress value
+            if progress < 0.85 {
+                // Still in diffusion phase
+                markPreviousStagesCompleted(before: .diffusion)
+                generationStages[.diffusion] = StageProgress(status: .inProgress, progress: progress, detail: stepDetail)
+            } else if progress < 0.95 {
+                // Volume decoding / exporting phase
+                markPreviousStagesCompleted(before: .volumeDecoding)
+                generationStages[.diffusion] = StageProgress(status: .completed, progress: 1.0, detail: "")
+                generationStages[.volumeDecoding] = StageProgress(status: .inProgress, progress: (progress - 0.85) / 0.1, detail: "")
+            }
         } else if status.contains("Saving") {
             markPreviousStagesCompleted(before: .saving)
             generationStages[.volumeDecoding] = StageProgress(status: .completed, progress: 1.0, detail: "")

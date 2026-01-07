@@ -77,6 +77,16 @@ struct GenerationPanel: View {
                         .font(.system(size: AppDesign.FontSize.subheadline, weight: stageData.status == .inProgress ? .semibold : .regular))
                         .foregroundColor(viewModel.stageTextColor(stageData.status))
 
+                    // Show "Preloaded!" badge for loading stage if model was preloaded
+                    if stage == .loading && ModelLoadingCoordinator.shared.isHunyuanReady {
+                        Text("Preloaded!")
+                            .font(.system(size: AppDesign.FontSize.xs, weight: .semibold))
+                            .foregroundColor(AppDesign.success)
+                            .padding(.horizontal, AppDesign.Spacing.p6)
+                            .padding(.vertical, 2)
+                            .background(AppDesign.success.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
+                    }
+
                     Spacer()
 
                     // Show step count badge for diffusion/volumeDecoding stages

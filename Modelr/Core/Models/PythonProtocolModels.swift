@@ -126,3 +126,41 @@ struct SAMResponse: Codable {
         return scores?.first ?? score
     }
 }
+
+// MARK: - Hunyuan Python Communication Protocol
+
+struct HunyuanRequest: Codable {
+    let messageId: String
+    let command: String  // "generate", "ping", "exit"
+    let imagePath: String?
+    let maskPath: String?
+    let outputPath: String?
+    let steps: Int?
+    let resolution: Int?
+
+    init(command: String, imagePath: String? = nil, maskPath: String? = nil, outputPath: String? = nil, steps: Int? = nil, resolution: Int? = nil) {
+        self.messageId = UUID().uuidString
+        self.command = command
+        self.imagePath = imagePath
+        self.maskPath = maskPath
+        self.outputPath = outputPath
+        self.steps = steps
+        self.resolution = resolution
+    }
+}
+
+struct HunyuanResponse: Codable {
+    let success: Bool
+    let messageId: String?
+    let type: String?         // "progress", "complete", "error"
+    let stage: String?        // "loading", "diffusion", "exporting"
+    let progress: Double?     // 0.0 - 1.0
+    let detail: String?       // Progress detail message
+    let outputPath: String?   // Path to generated model
+    let error: String?
+    let ready: Bool?          // true when server is initialized
+    let device: String?       // e.g. "mps", "cuda", "cpu"
+    let server: String?       // e.g. "hunyuan"
+    let variant: String?      // e.g. "mini", "std"
+    let status: String?       // e.g. "pong", "exiting"
+}
