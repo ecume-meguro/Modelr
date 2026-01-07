@@ -60,13 +60,16 @@ class GenerationService: ObservableObject {
     }
     
     private func handleProgressUpdate(_ progressString: String) {
+        print("[GenerationService] Received: \(progressString)")
         if let parsed = ProgressParser.parseProgress(progressString) {
             // Include step numbers in the stage display (e.g., "Diffusion Sampling (5/25)")
             var displayStage = parsed.stage
             if parsed.currentStep > 0 && parsed.totalSteps > 0 {
                 displayStage = "\(parsed.stage) (\(parsed.currentStep)/\(parsed.totalSteps))"
             }
-            status = .inProgress(stage: displayStage, percent: parsed.percentComplete / 100.0)
+            let pct = parsed.percentComplete / 100.0
+            print("[GenerationService] Parsed: stage=\(displayStage) percent=\(pct) steps=\(parsed.currentStep)/\(parsed.totalSteps)")
+            status = .inProgress(stage: displayStage, percent: pct)
         } else if let stage = ProgressParser.extractStage(progressString) {
             // Try to extract steps even without full progress parse
             if let steps = ProgressParser.extractSteps(progressString) {

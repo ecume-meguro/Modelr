@@ -80,12 +80,15 @@ class HunyuanProcessManager {
         }
 
         // Handle stderr - logs
+        // Note: tqdm uses \r for in-place updates, so we split by both \n and \r
         stderrPipe?.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty,
                   let output = String(data: data, encoding: .utf8) else { return }
 
-            for line in output.components(separatedBy: .newlines) {
+            // Split by both newlines and carriage returns to catch tqdm updates
+            let separators = CharacterSet(charactersIn: "\n\r")
+            for line in output.components(separatedBy: separators) {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 guard !trimmed.isEmpty else { continue }
                 self?.onStderrLine?(trimmed)
@@ -142,6 +145,10 @@ class HunyuanProcessManager {
                 continue
             }
 
+            // Debug: Log received JSON (truncate if too long)
+            let debugStr = lineString.count > 200 ? String(lineString.prefix(200)) + "..." : lineString
+            print("[Hunyuan JSON] \(debugStr)")
+
             // Dispatch to all pending continuations (they'll filter by messageId)
             onStdoutData?(Data(lineString.utf8))
 
@@ -159,8 +166,14 @@ class HunyuanProcessManager {
     /// Wait for the ready signal from the server
     func waitForReady(timeout: TimeInterval) async throws -> HunyuanResponse {
         return try await withCheckedThrowingContinuation { continuation in
+            // Use a class to track whether continuation has been resumed
+            final class ResumeTracker { var resumed = false }
+            let tracker = ResumeTracker()
+
             continuationLock.lock()
-            pendingContinuations.append { data in
+            pendingContinuations.append { [tracker] data in
+                guard !tracker.resumed else { return }
+                tracker.resumed = true
                 do {
                     let response = try JSONDecoder().decode(HunyuanResponse.self, from: data)
                     continuation.resume(returning: response)
@@ -171,21 +184,24 @@ class HunyuanProcessManager {
             continuationLock.unlock()
 
             // Timeout handling
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self, tracker] in
                 self?.continuationLock.lock()
-                if !(self?.pendingContinuations.isEmpty ?? true) {
-                    _ = self?.pendingContinuations.removeFirst()
+                guard !tracker.resumed else {
                     self?.continuationLock.unlock()
-                    continuation.resume(throwing: PythonError.timeout)
-                } else {
-                    self?.continuationLock.unlock()
+                    return
                 }
+                tracker.resumed = true
+                // Remove our handler if still present
+                self?.pendingContinuations.removeAll { _ in false } // Just unlock, handler was already consumed or will be ignored
+                self?.continuationLock.unlock()
+                continuation.resume(throwing: PythonError.timeout)
             }
         }
     }
 
     /// Send a request and wait for the final response (ignoring progress updates)
-    func sendRequest(_ request: HunyuanRequest, onProgress: ((HunyuanResponse) -> Void)? = nil) async throws -> HunyuanResponse {
+    /// Timeout is 10 minutes for long generation tasks
+    func sendRequest(_ request: HunyuanRequest, onProgress: ((HunyuanResponse) -> Void)? = nil, timeout: TimeInterval = 600) async throws -> HunyuanResponse {
         requestSemaphore.wait()
         defer { requestSemaphore.signal() }
 
@@ -205,10 +221,29 @@ class HunyuanProcessManager {
         // For generate commands, we need to handle multiple progress responses
         // before getting the final complete/error response
         return try await withCheckedThrowingContinuation { continuation in
-            var completed = false
+            // Use a class to track completion state safely across closures
+            final class CompletionTracker {
+                var completed = false
+                let lock = NSLock()
+
+                func tryComplete() -> Bool {
+                    lock.lock()
+                    defer { lock.unlock() }
+                    if completed { return false }
+                    completed = true
+                    return true
+                }
+
+                var isCompleted: Bool {
+                    lock.lock()
+                    defer { lock.unlock() }
+                    return completed
+                }
+            }
+            let tracker = CompletionTracker()
 
             func handleResponse(_ data: Data) {
-                guard !completed else { return }
+                guard !tracker.isCompleted else { return }
 
                 do {
                     let response = try JSONDecoder().decode(HunyuanResponse.self, from: data)
@@ -221,6 +256,7 @@ class HunyuanProcessManager {
 
                     if response.type == "progress" {
                         // Progress update - notify callback but keep waiting
+                        print("[Hunyuan Progress] stage=\(response.stage ?? "nil") progress=\(response.progress ?? 0) detail=\(response.detail ?? "nil")")
                         onProgress?(response)
                         // Re-register for next response
                         self.continuationLock.lock()
@@ -228,18 +264,27 @@ class HunyuanProcessManager {
                         self.continuationLock.unlock()
                     } else {
                         // Complete or error - we're done
-                        completed = true
-                        continuation.resume(returning: response)
+                        if tracker.tryComplete() {
+                            continuation.resume(returning: response)
+                        }
                     }
                 } catch {
-                    completed = true
-                    continuation.resume(throwing: error)
+                    if tracker.tryComplete() {
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
 
             continuationLock.lock()
             pendingContinuations.append(handleResponse)
             continuationLock.unlock()
+
+            // Timeout handling
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [tracker] in
+                if tracker.tryComplete() {
+                    continuation.resume(throwing: PythonError.timeout)
+                }
+            }
         }
     }
 

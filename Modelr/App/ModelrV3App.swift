@@ -12,13 +12,24 @@ struct ModelrApp: App {
     // Check for force setup mode (for testing)
     // This clears the setup completion marker to force re-running setup
     init() {
+        let dependencyService = PythonDependencyService()
+
         if CommandLine.arguments.contains("--force-setup") ||
            ProcessInfo.processInfo.environment["FORCE_SETUP"] == "1" {
             PathManager.clearSetupMarker()
             print("[App] Force setup mode: cleared setup marker")
         }
-        // Note: HuggingFace model size queries are only made during setup
-        // or when user selects a preset requiring a model they don't have
+
+        // Force refresh resources (useful during development)
+        // Launch with: --refresh-resources or set REFRESH_RESOURCES=1
+        if CommandLine.arguments.contains("--refresh-resources") ||
+           ProcessInfo.processInfo.environment["REFRESH_RESOURCES"] == "1" {
+            print("[App] Force refreshing resources...")
+            dependencyService.refreshResources()
+        } else {
+            // Auto-refresh resources if app version changed (preserves models)
+            dependencyService.refreshResourcesIfNeeded()
+        }
     }
 
     var body: some Scene {

@@ -198,41 +198,64 @@ class HunyuanGenerator:
         try:
             log_info(f"Generating 3D shape (steps={num_steps}, resolution={octree_resolution})...")
 
+            # Track if we've sent any progress (to detect if callback isn't supported)
+            steps_reported = [0]
+
             # Create a step callback for diffusion progress
-            def step_callback(pipe, step_index, timestep, callback_kwargs):
+            # hy3dgen uses callback(step_idx, timestep, outputs) signature
+            def step_callback(step_idx, timestep, outputs):
                 if progress_callback:
-                    # Map step to progress (diffusion is ~20-85% of total)
-                    step_progress = 0.2 + (step_index / num_steps) * 0.65
-                    detail = f"{step_index + 1}/{num_steps}"
+                    current_step = step_idx + 1
+                    steps_reported[0] = current_step
+                    # Map step to progress (diffusion is ~15-80% of total)
+                    step_progress = 0.15 + (current_step / num_steps) * 0.65
+                    detail = f"{current_step}/{num_steps}"
+                    # Print explicit progress line for Swift to parse (to stderr)
+                    print(f"[DIFFUSION_PROGRESS] {current_step}/{num_steps} {int(step_progress*100)}%", file=sys.stderr, flush=True)
                     progress_callback("Diffusion Sampling", step_progress, detail)
-                return callback_kwargs
+
+                    # When diffusion completes, signal volume decoding is starting
+                    # (volume decoding happens inside pipeline() after diffusion loop)
+                    if current_step == num_steps:
+                        print("[STAGE] volume_decoding", file=sys.stderr, flush=True)
+                        progress_callback("Volume Decoding", 0.82, "Extracting mesh...")
 
             with torch.inference_mode():
-                # Try to use callback if pipeline supports it
+                # Try with callback first
+                # Note: tqdm writes to stderr by default, so enable_pbar=True is safe
                 try:
                     mesh = self.pipeline(
                         image=image,
                         octree_resolution=octree_resolution,
                         num_inference_steps=num_steps,
-                        callback_on_step_end=step_callback,
+                        callback=step_callback,
+                        callback_steps=1,
+                        enable_pbar=True,  # tqdm goes to stderr, won't interfere with JSON on stdout
                     )[0]
-                except TypeError:
-                    # Fallback if callback not supported
+                except TypeError as e:
+                    # Callback might not be supported - try without
+                    log_warning(f"Pipeline callback not supported: {e}, falling back to no-callback mode")
+                    print(f"[DIFFUSION_PROGRESS] 0/{num_steps} 15%", file=sys.stderr, flush=True)
                     if progress_callback:
-                        progress_callback("Diffusion Sampling", 0.2, f"0/{num_steps}")
+                        progress_callback("Diffusion Sampling", 0.2, "Processing...")
                     mesh = self.pipeline(
                         image=image,
                         octree_resolution=octree_resolution,
                         num_inference_steps=num_steps,
+                        enable_pbar=True,
                     )[0]
 
+            # If callback wasn't called, send a completion update
+            if steps_reported[0] == 0 and progress_callback:
+                log_warning("No step callbacks received - pipeline may not support callbacks")
+                print("[STAGE] volume_decoding", file=sys.stderr, flush=True)
+                progress_callback("Volume Decoding", 0.85, "Processing complete")
+
+            # Mesh extraction complete, now saving
             if progress_callback:
-                progress_callback("Exporting model", 0.9, None)
+                progress_callback("Saving", 0.95, "Writing file...")
 
             mesh.export(output_path)
-
-            if progress_callback:
-                progress_callback("Complete", 1.0, None)
 
             return output_path
         except Exception as e:
@@ -305,13 +328,16 @@ class HunyuanServer:
             def progress_callback(status: str, value: float, detail: Optional[str] = None):
                 if "Diffusion" in status:
                     stage = "diffusion"
-                    step_detail = detail if detail else status
-                elif "Exporting" in status or "export" in status.lower():
-                    stage = "exporting"
-                    step_detail = detail if detail else "Exporting..."
+                    step_detail = detail if detail else ""
+                elif "Volume" in status or "Decoding" in status:
+                    stage = "volume_decoding"
+                    step_detail = detail if detail else ""
+                elif "Saving" in status:
+                    stage = "saving"
+                    step_detail = detail if detail else ""
                 else:
                     stage = "diffusion"
-                    step_detail = detail if detail else status
+                    step_detail = detail if detail else ""
                 self.send_progress(message_id, stage, value, step_detail)
 
             self.send_progress(message_id, "diffusion", 0.15, "Starting generation...")

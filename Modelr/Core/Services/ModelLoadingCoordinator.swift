@@ -211,7 +211,7 @@ class ModelLoadingCoordinator: ObservableObject {
 
     /// Generate 3D model using the persistent Hunyuan server
     /// - Parameters:
-    ///   - onProgress: Callback with (stage, detail, progress) where stage is "loading"/"diffusion"/"exporting"
+    ///   - onProgress: Callback with (stage, detail, progress) where stage is "loading"/"diffusion"/"volume_decoding"/"saving"
     func generate(
         imagePath: String,
         maskPath: String?,
@@ -233,9 +233,109 @@ class ModelLoadingCoordinator: ObservableObject {
             resolution: resolution
         )
 
+        // Track progress from both JSON callbacks AND tqdm stderr parsing
+        // Use a class to allow mutation from closure
+        final class ProgressTracker {
+            var lastReportedStep = 0
+            var inVolumeDecoding = false
+        }
+        let tracker = ProgressTracker()
+
+        // Setup stderr handler to parse progress from Python
+        // We look for explicit markers like "[DIFFUSION_PROGRESS] X/Y Z%" and "[STAGE] volume_decoding"
+        // Also fall back to tqdm parsing if those aren't present
+        let previousStderrHandler = manager.onStderrLine
+        manager.onStderrLine = { [onProgress, tracker, steps] line in
+            // Pass through to previous handler for logging
+            previousStderrHandler?(line)
+
+            // Parse explicit diffusion progress: "[DIFFUSION_PROGRESS] X/Y Z%"
+            if line.contains("[DIFFUSION_PROGRESS]") {
+                // Format: "[DIFFUSION_PROGRESS] 5/25 41%"
+                let parts = line.replacingOccurrences(of: "[DIFFUSION_PROGRESS]", with: "").trimmingCharacters(in: .whitespaces).split(separator: " ")
+                if parts.count >= 2 {
+                    let stepParts = parts[0].split(separator: "/")
+                    if stepParts.count == 2,
+                       let currentStep = Int(stepParts[0]),
+                       let totalSteps = Int(stepParts[1]) {
+                        let percentStr = parts[1].replacingOccurrences(of: "%", with: "")
+                        let percent = Int(percentStr) ?? 0
+                        let progress = Double(percent) / 100.0
+                        let detail = "\(currentStep)/\(totalSteps)"
+                        print("[Progress] Diffusion step \(detail) at \(percent)%")
+                        tracker.lastReportedStep = currentStep
+                        DispatchQueue.main.async {
+                            onProgress?("diffusion", detail, progress)
+                        }
+                    }
+                }
+                return
+            }
+
+            // Parse explicit stage change: "[STAGE] volume_decoding"
+            if line.contains("[STAGE] volume_decoding") {
+                if !tracker.inVolumeDecoding {
+                    tracker.inVolumeDecoding = true
+                    print("[Progress] Switching to volume decoding stage")
+                    DispatchQueue.main.async {
+                        onProgress?("volume_decoding", "Extracting mesh...", 0.82)
+                    }
+                }
+                return
+            }
+
+            // Fallback: Parse tqdm progress: "X%|" pattern
+            // tqdm format: " 45%|████▌     | 11/25 [00:05<00:06,  2.19it/s]"
+            if let match = line.range(of: #"(\d+)%\|"#, options: .regularExpression) {
+                let percentStr = line[match].dropLast(2) // Remove "%|"
+                if let percent = Int(percentStr) {
+                    // Also try to extract step counts
+                    var currentStep = 0
+                    var totalSteps = steps
+                    if let stepMatch = line.range(of: #"\|\s*(\d+)/(\d+)"#, options: .regularExpression) {
+                        let stepPart = String(line[stepMatch]).replacingOccurrences(of: "|", with: "").trimmingCharacters(in: .whitespaces)
+                        let parts = stepPart.split(separator: "/")
+                        if parts.count == 2, let cur = Int(parts[0]), let tot = Int(parts[1]) {
+                            currentStep = cur
+                            totalSteps = tot
+                        }
+                    }
+
+                    // Only report if step changed to avoid flooding
+                    if currentStep > tracker.lastReportedStep {
+                        tracker.lastReportedStep = currentStep
+                        let progress = Double(percent) / 100.0
+                        let detail = currentStep > 0 ? "\(currentStep)/\(totalSteps)" : ""
+                        print("[tqdm] Diffusion step \(detail) at \(percent)%")
+                        DispatchQueue.main.async {
+                            onProgress?("diffusion", detail, 0.15 + progress * 0.65)
+                        }
+                    }
+                }
+                return
+            }
+
+            // Fallback: Detect volume decoding / mesh extraction from log messages
+            let lower = line.lowercased()
+            if !tracker.inVolumeDecoding && (lower.contains("decoding") || lower.contains("marching cube") || lower.contains("extracting mesh")) {
+                tracker.inVolumeDecoding = true
+                print("[Progress] Detected volume decoding from log")
+                DispatchQueue.main.async {
+                    onProgress?("volume_decoding", "Extracting mesh...", 0.82)
+                }
+            }
+        }
+
+        defer {
+            // Restore previous handler
+            manager.onStderrLine = previousStderrHandler
+        }
+
         let response = try await manager.sendRequest(request) { progress in
+            // JSON progress from Python callback (if it works)
             if let stage = progress.stage, let value = progress.progress {
                 let detail = progress.detail ?? ""
+                print("[JSON Progress] stage=\(stage) detail=\(detail) value=\(value)")
                 DispatchQueue.main.async {
                     onProgress?(stage, detail, value)
                 }

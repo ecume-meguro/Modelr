@@ -1,14 +1,27 @@
-"""Device detection utilities for Modelr."""
+"""Device detection utilities for Modelr.
 
-import torch
+Note: torch is imported lazily to support environments that don't need it (e.g., MLX-based SAM).
+"""
+
 from typing import Optional
 from .logging import get_logger
 
 logger = get_logger("device_utils")
 
+# Lazy torch import - only loaded when device functions are actually called
+_torch = None
+
+def _get_torch():
+    global _torch
+    if _torch is None:
+        import torch
+        _torch = torch
+    return _torch
+
 
 def get_device(device_override: Optional[str] = None) -> str:
     from .config import ModelConfig
+    torch = _get_torch()
 
     device = device_override or ModelConfig.DEVICE
 
@@ -29,6 +42,7 @@ def get_device(device_override: Optional[str] = None) -> str:
 
 
 def check_gpu_available() -> bool:
+    torch = _get_torch()
     if torch.backends.mps.is_available():
         logger.debug("MPS (Apple Silicon) available")
         return True
@@ -40,6 +54,7 @@ def check_gpu_available() -> bool:
 
 
 def get_gpu_memory_info() -> dict:
+    torch = _get_torch()
     info = {"device": "cpu", "total_gb": 0, "allocated_gb": 0, "reserved_gb": 0}
 
     device = get_device()
@@ -59,6 +74,7 @@ def get_gpu_memory_info() -> dict:
 
 
 def health_check() -> dict:
+    torch = _get_torch()
     health = {
         "status": "healthy",
         "torch_version": torch.__version__,

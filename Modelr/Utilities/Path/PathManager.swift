@@ -102,10 +102,56 @@ struct PathManager {
         let marker: [String: Any] = [
             "setup_complete": true,
             "completed_at": ISO8601DateFormatter().string(from: Date()),
-            "model_variant": modelVariant
+            "model_variant": modelVariant,
+            "app_version": currentAppVersion,
+            "build_number": currentBuildNumber
         ]
         let data = try JSONSerialization.data(withJSONObject: marker, options: .prettyPrinted)
         try data.write(to: setupCompletionMarkerPath)
+    }
+
+    /// Current app version from bundle
+    static var currentAppVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+    }
+
+    /// Current build number from bundle
+    static var currentBuildNumber: String {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"
+    }
+
+    /// Check if resources need refreshing (app version changed since setup)
+    static var needsResourceRefresh: Bool {
+        guard FileManager.default.fileExists(atPath: setupCompletionMarkerPath.path) else {
+            return false // No setup done yet
+        }
+        do {
+            let data = try Data(contentsOf: setupCompletionMarkerPath)
+            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let storedVersion = json["app_version"] as? String ?? "0.0.0"
+                let storedBuild = json["build_number"] as? String ?? "0"
+                // Refresh if version or build changed
+                return storedVersion != currentAppVersion || storedBuild != currentBuildNumber
+            }
+        } catch {
+            return true // Can't read marker, refresh to be safe
+        }
+        return false
+    }
+
+    /// Update the version in setup marker without requiring full re-setup
+    static func updateSetupMarkerVersion() throws {
+        guard FileManager.default.fileExists(atPath: setupCompletionMarkerPath.path) else { return }
+        do {
+            let data = try Data(contentsOf: setupCompletionMarkerPath)
+            if var json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                json["app_version"] = currentAppVersion
+                json["build_number"] = currentBuildNumber
+                json["resources_updated_at"] = ISO8601DateFormatter().string(from: Date())
+                let updatedData = try JSONSerialization.data(withJSONObject: json, options: .prettyPrinted)
+                try updatedData.write(to: setupCompletionMarkerPath)
+            }
+        }
     }
 
     /// Clear setup completion marker (for re-running setup)

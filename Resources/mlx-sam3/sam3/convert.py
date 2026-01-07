@@ -1,4 +1,3 @@
-import torch
 import argparse
 import json
 from pathlib import Path
@@ -90,6 +89,8 @@ def update_attn_keys(key, mlx_weights):
         mlx_weights.update(new_dict)
         
 def convert(model_path):
+    # Lazy import torch only when converting (not needed for inference with pre-converted weights)
+    import torch
     weight_file = str(model_path / "sam3.pt")
     weights = torch.load(weight_file, map_location="cpu", weights_only=True)
 

@@ -53,24 +53,36 @@ class SAM3Server(BaseModelServer):
         labels = request.get("labels", [])
         box = request.get("box")
         text_prompt = request.get("text")
-        
+
         # Reset prompts for new prediction
         self.processor.reset_all_prompts(self.inference_state)
-        
+
         h, w = self.current_image_np.shape[:2]
-        
-        # Apply text prompt
+
+        # Apply text prompt (required for SAM3 to work well)
         if text_prompt:
             self.inference_state = self.processor.set_text_prompt(
                 text_prompt, self.inference_state
             )
-        
-        # Apply point prompts (normalized to [0,1])
-        for pt, label in zip(points, labels):
-            self.inference_state = self.processor.add_point_prompt(
-                [pt[0] / w, pt[1] / h], int(label), self.inference_state
+        elif points or box:
+            # SAM3 needs a text prompt to anchor the segmentation
+            # Use "visual" as a dummy prompt for geometric-only queries
+            self.inference_state = self.processor.set_text_prompt(
+                "object", self.inference_state
             )
-        
+
+        # Convert point prompts to small box prompts (MLX SAM3 doesn't support points directly)
+        # Each point becomes a small box centered at that location
+        point_box_size = 0.02  # 2% of image dimension
+        for pt, label in zip(points, labels):
+            cx, cy = pt[0] / w, pt[1] / h
+            # Create a small box around the point
+            self.inference_state = self.processor.add_geometric_prompt(
+                [cx, cy, point_box_size, point_box_size],
+                bool(label),  # True for positive, False for negative
+                self.inference_state
+            )
+
         # Apply box prompt (convert to center format, normalized)
         if box and len(box) >= 4:
             x1, y1, x2, y2 = box[:4]

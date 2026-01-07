@@ -103,7 +103,7 @@ class ConfigurationService: ObservableObject {
     }
 
     var hunyuanMiniModelSizeGb: Double {
-        config?.models.hunyuan3d.miniModelSizeGb ?? 3.8
+        config?.models.hunyuan3d.miniModelSizeGb ?? 3.84
     }
 
     var hunyuanLargeModelSizeGb: Double {

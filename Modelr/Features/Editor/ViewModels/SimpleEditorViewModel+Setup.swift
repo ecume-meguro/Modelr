@@ -66,11 +66,11 @@ extension SimpleEditorViewModel {
                 // 4. Trigger directory monitoring when reaching download stages
                 if update.stage == .downloadingSAM {
                     self.ensurePinnedTotalBytesForDownloadStage(stage: .downloadingSAM)
-                    self.startMonitoringDownload(directory: samModelDir, totalBytes: self.downloadTotalBytes > 0 ? self.downloadTotalBytes : DownloadConstants.samModelBytes)
+                    self.startMonitoringDownload(directory: samModelDir, totalBytes: self.downloadTotalBytes > 0 ? self.downloadTotalBytes : AppConstants.samModelBytes)
                 } else if update.stage == .downloadingHunyuan {
                     self.ensurePinnedTotalBytesForDownloadStage(stage: .downloadingHunyuan)
                     // Mini variants (fast, turbo) use mini size; quality uses std size
-                    let fallback = self.selectedModelChoice.usesMiniRepo ? DownloadConstants.hunyuanMiniModelBytes : DownloadConstants.hunyuanStandardModelBytes
+                    let fallback = self.selectedModelChoice.usesMiniRepo ? AppConstants.hunyuanMiniModelBytes : AppConstants.hunyuanStandardModelBytes
                     let total = self.downloadTotalBytes > 0 ? self.downloadTotalBytes : fallback
                     self.startMonitoringDownload(directory: hunyuanModelDir, totalBytes: total)
                 }

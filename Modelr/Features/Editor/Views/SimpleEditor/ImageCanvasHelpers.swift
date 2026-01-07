@@ -17,8 +17,6 @@ extension View {
                         }
                     }
                 }
-                .frame(width: displaySize.width, height: displaySize.height)
-                .position(x: geo.size.width / 2, y: geo.size.height / 2)
             )
             .onTapGesture { location in
                 let imageX = (geo.size.width - displaySize.width) / 2

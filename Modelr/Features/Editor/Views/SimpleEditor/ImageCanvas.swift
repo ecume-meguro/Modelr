@@ -177,7 +177,7 @@ struct ImageCanvas: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(isCompact ? AppDesign.Spacing.p12 : AppDesign.Spacing.p16)
-            .frame(width: isCompact ? nil : 150, height: isCompact ? nil : (isRecommended ? 115 : 100))
+            .frame(width: isCompact ? nil : 150, height: isCompact ? nil : 115)
             .frame(maxWidth: isCompact ? .infinity : nil)
             .background(
                 RoundedRectangle(cornerRadius: 12)
@@ -307,37 +307,14 @@ struct ImageCanvas: View {
                 let color = viewModel.colorForSegmentation(segIndex)
 
                 // Strong fill with 90% opacity
-                Rectangle()
-                    .fill(color)
-                    .frame(width: size.width, height: size.height)
-                    .mask(
-                        Image(nsImage: selectedMask)
-                            .resizable()
-                            .frame(width: size.width, height: size.height)
-                    )
-                    .opacity(0.9)
-                    .allowsHitTesting(false)
-
-                // 100% border
-                Rectangle()
-                    .fill(color)
-                    .frame(width: size.width, height: size.height)
-                    .mask(
-                        ZStack {
-                            Image(nsImage: selectedMask)
-                                .resizable()
-                                .frame(width: size.width, height: size.height)
-                            Image(nsImage: selectedMask)
-                                .resizable()
-                                .frame(width: size.width, height: size.height)
-                                .padding(4)
-                                .blur(radius: 1)
-                                .blendMode(.destinationOut)
-                        }
-                        .compositingGroup()
-                    )
-                    .opacity(1.0)
-                    .allowsHitTesting(false)
+                MaskOverlayView(
+                    mask: selectedMask,
+                    color: color,
+                    size: size,
+                    opacity: 0.9,
+                    showBorder: true
+                )
+                .transition(.opacity.combined(with: .scale(scale: 0.98)))
             }
         }
 
@@ -349,16 +326,14 @@ struct ImageCanvas: View {
             // Non-selected masks in active segmentation (dimmer, for region selection)
             ForEach(Array(activeEntry.allMasks.enumerated()).filter { !activeEntry.selectedMaskIndices.contains($0.offset) }, id: \.offset) { index, maskData in
                 let color = viewModel.colorForMask(index)
-                Rectangle()
-                    .fill(color)
-                    .frame(width: size.width, height: size.height)
-                    .mask(
-                        Image(nsImage: maskData.image)
-                            .resizable()
-                            .frame(width: size.width, height: size.height)
-                    )
-                    .opacity(0.4)
-                    .allowsHitTesting(false)
+                MaskOverlayView(
+                    mask: maskData.image,
+                    color: color,
+                    size: size,
+                    opacity: 0.4,
+                    showBorder: false
+                )
+                .transition(.opacity.animation(.easeOut(duration: 0.25)))
             }
 
             // All selected masks in active segmentation - use segmentation's neon color with 90% opacity
@@ -366,37 +341,17 @@ struct ImageCanvas: View {
                 if maskIndex < activeEntry.allMasks.count {
                     let maskData = activeEntry.allMasks[maskIndex]
 
-                    Rectangle()
-                        .fill(activeColor)
-                        .frame(width: size.width, height: size.height)
-                        .mask(
-                            Image(nsImage: maskData.image)
-                                .resizable()
-                                .frame(width: size.width, height: size.height)
-                        )
-                        .opacity(0.9)
-                        .allowsHitTesting(false)
-
-                    // 100% border
-                    Rectangle()
-                        .fill(activeColor)
-                        .frame(width: size.width, height: size.height)
-                        .mask(
-                            ZStack {
-                                Image(nsImage: maskData.image)
-                                    .resizable()
-                                    .frame(width: size.width, height: size.height)
-                                Image(nsImage: maskData.image)
-                                    .resizable()
-                                    .frame(width: size.width, height: size.height)
-                                    .padding(4)
-                                    .blur(radius: 1)
-                                    .blendMode(.destinationOut)
-                            }
-                            .compositingGroup()
-                        )
-                        .opacity(1.0)
-                        .allowsHitTesting(false)
+                    MaskOverlayView(
+                        mask: maskData.image,
+                        color: activeColor,
+                        size: size,
+                        opacity: 0.9,
+                        showBorder: true
+                    )
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.95)).animation(.spring(response: 0.35, dampingFraction: 0.8)),
+                        removal: .opacity.animation(.easeOut(duration: 0.2))
+                    ))
                 }
             }
 
@@ -411,47 +366,83 @@ struct ImageCanvas: View {
                         x: point.normalizedCoords.x * size.width,
                         y: point.normalizedCoords.y * size.height
                     )
+                    .transition(.scale.combined(with: .opacity))
             }
         }
     }
-    
+}
+
+// MARK: - Mask Overlay View (animated)
+
+private struct MaskOverlayView: View {
+    let mask: NSImage
+    let color: Color
+    let size: CGSize
+    let opacity: Double
+    let showBorder: Bool
+
+    @State private var isVisible = false
+
+    var body: some View {
+        ZStack {
+            // Fill
+            Rectangle()
+                .fill(color)
+                .frame(width: size.width, height: size.height)
+                .mask(
+                    Image(nsImage: mask)
+                        .resizable()
+                        .frame(width: size.width, height: size.height)
+                )
+                .opacity(isVisible ? opacity : 0)
+
+            // Border
+            if showBorder {
+                Rectangle()
+                    .fill(color)
+                    .frame(width: size.width, height: size.height)
+                    .mask(
+                        ZStack {
+                            Image(nsImage: mask)
+                                .resizable()
+                                .frame(width: size.width, height: size.height)
+                            Image(nsImage: mask)
+                                .resizable()
+                                .frame(width: size.width, height: size.height)
+                                .padding(4)
+                                .blur(radius: 1)
+                                .blendMode(.destinationOut)
+                        }
+                        .compositingGroup()
+                    )
+                    .opacity(isVisible ? 1.0 : 0)
+            }
+        }
+        .allowsHitTesting(false)
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.3)) {
+                isVisible = true
+            }
+        }
+    }
+}
+
+// MARK: - ImageCanvas Extensions
+
+extension ImageCanvas {
     @ViewBuilder
-    private func touchupOverlays(size: CGSize) -> some View {
+    func touchupOverlays(size: CGSize) -> some View {
         if let maskImage = viewModel.editableMaskImage, !viewModel.showingOriginal {
             // Use first neon color for merged mask with 90% opacity
             let maskColor = AppDesign.neonColors[0]
 
-            Rectangle()
-                .fill(maskColor)
-                .frame(width: size.width, height: size.height)
-                .mask(
-                    Image(nsImage: maskImage)
-                        .resizable()
-                        .frame(width: size.width, height: size.height)
-                )
-                .opacity(0.9)
-                .allowsHitTesting(false)
-
-            // 100% border for the mask
-            Rectangle()
-                .fill(maskColor)
-                .frame(width: size.width, height: size.height)
-                .mask(
-                    ZStack {
-                        Image(nsImage: maskImage)
-                            .resizable()
-                            .frame(width: size.width, height: size.height)
-                        Image(nsImage: maskImage)
-                            .resizable()
-                            .frame(width: size.width, height: size.height)
-                            .padding(4)
-                            .blur(radius: 1)
-                            .blendMode(.destinationOut)
-                    }
-                    .compositingGroup()
-                )
-                .opacity(1.0)
-                .allowsHitTesting(false)
+            MaskOverlayView(
+                mask: maskImage,
+                color: maskColor,
+                size: size,
+                opacity: 0.9,
+                showBorder: true
+            )
 
             // Brush preview
             if let pos = viewModel.brushPreviewPosition {
@@ -465,9 +456,9 @@ struct ImageCanvas: View {
             }
         }
     }
-    
+
     @ViewBuilder
-    private var zoomControls: some View {
+    var zoomControls: some View {
         if viewModel.zoomScale != 1.0 {
             Button(action: {
                 withAnimation(.easeOut(duration: 0.2)) {
@@ -493,7 +484,7 @@ struct ImageCanvas: View {
     }
 
     @ViewBuilder
-    private var toggleOriginalButton: some View {
+    var toggleOriginalButton: some View {
         if viewModel.currentStep == .touchup && viewModel.editableMaskImage != nil {
             Button(action: {}) {
                 HStack(spacing: AppDesign.Spacing.p6) {
@@ -527,9 +518,9 @@ struct ImageCanvas: View {
             .transition(.scale.combined(with: .opacity))
         }
     }
-    
+
     @ViewBuilder
-    private var dropZoneView: some View {
+    var dropZoneView: some View {
         GeometryReader { geo in
             let isCompact = geo.size.width < 400 || geo.size.height < 350
             let iconSize: CGFloat = isCompact ? 60 : 100
@@ -575,17 +566,17 @@ struct ImageCanvas: View {
     }
     
     // MARK: - Actions
-    private func selectImage() {
+    func selectImage() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image, .png, .jpeg, .tiff, .bmp, .gif, .webP]
         panel.allowsMultipleSelection = false
-        
+
         if panel.runModal() == .OK, let url = panel.url {
             viewModel.loadImage(from: url)
         }
     }
-    
-    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+
+    func handleDrop(providers: [NSItemProvider]) -> Bool {
         guard let provider = providers.first else { return false }
         
         if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {

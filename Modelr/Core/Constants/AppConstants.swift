@@ -316,4 +316,35 @@ struct AppConstants {
     static var formattedSystemRAM: String {
         ByteCountFormatter.string(fromByteCount: Int64(systemRAM), countStyle: .memory)
     }
+
+    // MARK: - Image Processing (pixel-level)
+
+    /// Sample step divider for alpha channel checking (controls sampling density)
+    static let alphaCheckSampleStepDivider: Int = 10000
+
+    /// Alpha threshold for considering a pixel "nearly opaque" (0-255)
+    static let imageAlphaThreshold: UInt8 = 250
+
+    /// Luminance threshold for foreground detection (0-255)
+    static let luminanceThreshold: UInt8 = 128
+
+    /// Fully opaque alpha value
+    static let opaqueAlpha: UInt8 = 255
+
+    // MARK: - Download Size Estimates
+
+    /// SAM model download size estimate (bytes)
+    static var samModelBytes: Int64 {
+        Int64(ConfigurationService.shared.samModelSizeGb * 1_000_000_000)
+    }
+
+    /// Hunyuan Mini model download size estimate (bytes)
+    static var hunyuanMiniModelBytes: Int64 {
+        Int64(ConfigurationService.shared.hunyuanMiniModelSizeGb * 1_000_000_000)
+    }
+
+    /// Hunyuan Standard model download size estimate (bytes)
+    static var hunyuanStandardModelBytes: Int64 {
+        Int64(ConfigurationService.shared.hunyuanLargeModelSizeGb * 1_000_000_000)
+    }
 }

@@ -2,90 +2,60 @@
 name = "modelr-hunyuan"
 version = "0.1.0"
 # Python dependencies for Hunyuan3D-2 3D generation
-# Note: Overrides are defined in [tool.uv] section to fix transitive dependencies
+# Optimized for Mac MPS - removed CUDA compilation tools
 dependencies = [
-    # Core ML framework (also in SAM2, but Hunyuan may need different version)
-    # Required for: Diffusion model inference, tensor operations
+    # Core ML framework
     "torch>=2.0.0,<3.0.0",
-    # Vision utilities for image preprocessing and transforms
-    # Required for: Image normalization, color space conversions
+    # Vision utilities for image preprocessing
     "torchvision>=0.15.0,<1.0.0",
-    # Numerical computing for array operations
-    # Required for: 3D mesh representation, volume data
+    # Numerical computing
     "numpy>=1.24.0,<2.0.0",
-    # Image processing library
-    # Required for: Image I/O, RGBA manipulation, compositing
+    # Image processing
     "pillow>=10.0.0,<11.0.0",
-    # Transformers library for diffusion model components
-    # Required for: VAE, UNet architecture implementation
+    # Transformers for VAE/UNet
     "transformers>=4.35.0,<5.0.0",
-    # Diffusers library for diffusion pipelines
-    # Required for: Hunyuan3D diffusion sampling loop
+    # Diffusers for diffusion pipelines
     "diffusers>=0.24.0,<1.0.0",
-    # Accelerator library for faster model loading
-    # Required for: PyTorch model offloading to CPU/GPU
+    # Accelerator for model loading
     "accelerate>=0.25.0,<1.0.0",
-    # 3D mesh processing library
-    # Required for: Mesh I/O, vertex manipulation, format conversion
+    # 3D mesh processing
     "trimesh>=4.0.0,<5.0.0",
-    # GLB/GLTF file format support
-    # Required for: 3D model export (though we use OBJ for SceneKit compatibility)
-    "pygltflib>=1.16.0,<2.0.0",
-    # Texture atlas generation for 3D meshes
-    # Required for: UV unwrapping, texture mapping (not used in shape-only mode)
-    "xatlas>=0.0.7,<1.0.0",
-    # ONNX Runtime for alternative inference backend
-    # Required for: Potential ONNX model support (future)
-    "onnxruntime>=1.16.0,<2.0.0",
-    # Hugging Face Hub integration for model downloads
-    # Required for: Downloading Hunyuan3D models from HuggingFace
+    # Hugging Face Hub for model downloads
     "huggingface_hub>=0.19.0,<1.0.0",
-    # Safetensors format support for model weights
-    # Required for: Loading .safetensors model files
+    # Safetensors for model weights
     "safetensors>=0.4.0,<1.0.0",
-    # Einstein summation notation operations
-    # Required for: Tensor manipulation in diffusion models
+    # Einstein summation notation
     "einops>=0.7.0,<1.0.0",
     # Configuration management
-    # Required for: Loading model configs (similar to hydra-core)
     "omegaconf>=2.3.0,<3.0.0",
-    # Computer vision library (also in SAM2)
-    # Required for: Image operations in Hunyuan pipeline
+    # Computer vision
     "opencv-python>=4.8.0,<5.0.0",
-    # Ninja build system for compiling custom CUDA kernels
-    # Required for: Compiling some PyTorch/CUDA operations
-    "ninja>=1.11.0,<2.0.0",
-    # Python/C++ bindings for custom extensions
-    # Required for: Building and using custom PyTorch extensions
-    "pybind11>=2.11.0,<3.0.0",
-    # YAML parsing for configuration files
-    # Required for: Reading model configs and settings
+    # YAML parsing
     "pyyaml>=6.0.0,<7.0.0",
-    # Retry library for handling transient network errors
-    # Required for: Robust model checkpoint downloads
-    "tenacity>=8.2.0,<9.0.0",
-    # Hunyuan3D-2 library (installed from git, defined in sources)
-    # Required for: Main 3D generation pipeline
+    # Hunyuan3D-2 library
     "hy3dgen",
-    # Shared core module (defined in sources below)
-    # Required for: Logging, validation, config utilities
+    # Shared core module
     "modelr-core",
 ]
 requires-python = ">=3.10,<4.0.0"
 
 [tool.uv]
-# Override problematic transitive dependencies that have compatibility issues
-# These are not direct dependencies but are required by packages above
+# Override problematic transitive dependencies
 override-dependencies = [
-    # Numba: JIT compiler for Python
-    # Override reason: Hunyuan may transitively depend on older numba versions
-    # Version requirement: >=0.58.0 fixes compatibility with newer numpy
     "numba>=0.58.0",
-    # LLVMLite: LLVM-based JIT compiler (numba dependency)
-    # Override reason: Must match numba version requirements
-    # Version requirement: >=0.41.0 required for numba 0.58+
     "llvmlite>=0.41.0",
+    # Exclude heavy UI/web dependencies from hy3dgen demo interface
+    # Using impossible platform marker makes these effectively "not required"
+    "gradio; sys_platform == 'never'",
+    "gradio-client; sys_platform == 'never'",
+    "fastapi; sys_platform == 'never'",
+    "uvicorn; sys_platform == 'never'",
+    "starlette; sys_platform == 'never'",
+    "python-multipart; sys_platform == 'never'",
 ]
+
+[tool.uv.pip]
+no-build-isolation-package = ["hy3dgen"]
 
 [tool.uv.sources]
 hy3dgen = { git = "https://github.com/tencent/Hunyuan3D-2.git" }

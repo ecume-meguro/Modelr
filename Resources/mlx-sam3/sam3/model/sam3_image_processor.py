@@ -10,10 +10,6 @@ import mlx.core as mx
 from sam3.model import box_ops
 from sam3.model.data_misc import FindStage, interpolate
 
-# TODO: remove this, using for testing
-import torch
-from torchvision.transforms import v2
-
 
 def transform(image_path_or_pil, resolution):
     if isinstance(image_path_or_pil, str):

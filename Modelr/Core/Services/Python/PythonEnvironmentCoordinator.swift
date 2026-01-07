@@ -273,13 +273,26 @@ deinit {
                     resolution: resolution,
                     onProgress: { stage, detail, value in
                         // Format progress string with stage info for the UI parser
-                        // stage is "loading", "diffusion", "exporting"
+                        // stage is "loading", "diffusion", "volume_decoding", "saving"
                         // detail is step count like "1/25" or status message
                         let percent = Int(value * 100)
+                        print("[Coordinator] onProgress: stage=\(stage) detail=\(detail) value=\(value)")
                         if stage == "diffusion" {
-                            progress("Diffusion Sampling \(detail) - PROGRESS:\(percent)%")
-                        } else if stage == "exporting" {
-                            progress("Exporting - PROGRESS:\(percent)%")
+                            // Include step count in parentheses for proper parsing
+                            let stepInfo = detail.isEmpty ? "" : " (\(detail))"
+                            let msg = "Diffusion Sampling\(stepInfo) - PROGRESS:\(percent)%"
+                            print("[Coordinator] Sending: \(msg)")
+                            progress(msg)
+                        } else if stage == "volume_decoding" {
+                            let stepInfo = detail.isEmpty ? "" : " (\(detail))"
+                            let msg = "Volume Decoding\(stepInfo) - PROGRESS:\(percent)%"
+                            print("[Coordinator] Sending: \(msg)")
+                            progress(msg)
+                        } else if stage == "saving" {
+                            let stepInfo = detail.isEmpty ? "" : " (\(detail))"
+                            let msg = "Saving\(stepInfo) - PROGRESS:\(percent)%"
+                            print("[Coordinator] Sending: \(msg)")
+                            progress(msg)
                         } else if stage == "loading" {
                             progress("Loading Model - PROGRESS:\(percent)%")
                         } else {

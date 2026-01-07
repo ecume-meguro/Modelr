@@ -44,10 +44,10 @@ class ImageService {
         let pixels = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
 
         // Sample pixels to see if any are actually transparent
-        let sampleStep = max(1, (width * height) / ImageConstants.alphaCheckSampleStepDivider)
+        let sampleStep = max(1, (width * height) / AppConstants.alphaCheckSampleStepDivider)
         for i in stride(from: 0, to: width * height, by: sampleStep) {
             let alpha = pixels[i * 4 + 3]
-            if alpha < ImageConstants.alphaThreshold {
+            if alpha < AppConstants.imageAlphaThreshold {
                 return true
             }
         }
@@ -121,10 +121,10 @@ class ImageService {
 
             let isForeground: Bool
             if hasAlphaInfo {
-                isForeground = a > ImageConstants.luminanceThreshold
+                isForeground = a > AppConstants.luminanceThreshold
             } else {
                 let luminance = (UInt32(r) + UInt32(g) + UInt32(b)) / 3
-                isForeground = luminance > ImageConstants.luminanceThreshold
+                isForeground = luminance > AppConstants.luminanceThreshold
             }
 
             if isForeground {
@@ -181,7 +181,7 @@ class ImageService {
                     outputPixels[offset + 0] = 255
                     outputPixels[offset + 1] = 255
                     outputPixels[offset + 2] = 255
-                    outputPixels[offset + 3] = ImageConstants.opaqueAlpha
+                    outputPixels[offset + 3] = AppConstants.opaqueAlpha
                 }
             }
         }

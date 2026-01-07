@@ -3,7 +3,7 @@ import SwiftUI
 /// Generation panel for ContentViewSimple
 struct GenerationPanel: View {
     @ObservedObject var viewModel: SimpleEditorViewModel
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p16) {
             if viewModel.isGenerating {
@@ -15,14 +15,34 @@ struct GenerationPanel: View {
             }
         }
     }
-    
+
     @ViewBuilder
     private var generationProgressView: some View {
-        VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-            ForEach(visibleStages, id: \.self) { stage in
-                stageProgressRow(stage: stage)
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(visibleStages.enumerated()), id: \.element) { index, stage in
+                StageProgressRowView(
+                    stage: stage,
+                    stageData: viewModel.generationStages[stage] ?? StageProgress(),
+                    isPreloaded: stage == .loading && ModelLoadingCoordinator.shared.isHunyuanReady,
+                    downloadInfo: stage == .downloading ? (
+                        progress: viewModel.formattedDownloadProgress,
+                        speed: viewModel.formattedDownloadSpeed,
+                        remaining: viewModel.formattedTimeRemaining,
+                        hasData: viewModel.downloadTotalBytes > 0
+                    ) : nil,
+                    stageTextColor: viewModel.stageTextColor
+                )
+
+                if index < visibleStages.count - 1 {
+                    Rectangle()
+                        .fill(Color.secondary.opacity(0.1))
+                        .frame(height: 1)
+                        .padding(.leading, 28)
+                        .padding(.vertical, AppDesign.Spacing.p4)
+                }
             }
         }
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.generationStages.map { "\($0.key):\($0.value.status)" })
     }
 
     /// Returns stages to display, filtering out downloading if not applicable
@@ -37,111 +57,12 @@ struct GenerationPanel: View {
             return true
         }
     }
-    
-    @ViewBuilder
-    private func stageProgressRow(stage: GenerationStage) -> some View {
-        let stageData = viewModel.generationStages[stage] ?? StageProgress()
 
-        HStack(spacing: AppDesign.Spacing.p12) {
-            // Status indicator
-            Group {
-                switch stageData.status {
-                case .completed:
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: AppDesign.FontSize.body))
-                        .foregroundColor(AppDesign.success)
-                case .inProgress:
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.6)
-                case .pending:
-                    Circle()
-                        .fill(Color.secondary.opacity(0.2))
-                        .frame(width: 12, height: 12)
-                case .cancelled:
-                    Image(systemName: "minus.circle.fill")
-                        .font(.system(size: AppDesign.FontSize.body))
-                        .foregroundColor(AppDesign.warning)
-                case .failed:
-                    Image(systemName: "exclamationmark.circle.fill")
-                        .font(.system(size: AppDesign.FontSize.body))
-                        .foregroundColor(AppDesign.destructive)
-                }
-            }
-            .frame(width: 16, height: 16)
-
-            // Stage info
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: AppDesign.Spacing.p4) {
-                    Text(stage.rawValue)
-                        .font(.system(size: AppDesign.FontSize.subheadline, weight: stageData.status == .inProgress ? .semibold : .regular))
-                        .foregroundColor(viewModel.stageTextColor(stageData.status))
-
-                    // Show "Preloaded!" badge for loading stage if model was preloaded
-                    if stage == .loading && ModelLoadingCoordinator.shared.isHunyuanReady {
-                        Text("Preloaded!")
-                            .font(.system(size: AppDesign.FontSize.xs, weight: .semibold))
-                            .foregroundColor(AppDesign.success)
-                            .padding(.horizontal, AppDesign.Spacing.p6)
-                            .padding(.vertical, 2)
-                            .background(AppDesign.success.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
-                    }
-
-                    Spacer()
-
-                    // Show step count badge for diffusion/volumeDecoding stages
-                    if !stageData.detail.isEmpty && stageData.status == .inProgress {
-                        Text(stageData.detail)
-                            .font(.system(size: AppDesign.FontSize.caption, weight: .medium, design: .monospaced))
-                            .foregroundColor(.secondary)
-                            .padding(.horizontal, AppDesign.Spacing.p6)
-                            .padding(.vertical, AppDesign.Spacing.p2)
-                            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 4))
-                    }
-
-                    if stageData.status == .cancelled {
-                        Text("Stopped")
-                            .font(.system(size: AppDesign.FontSize.caption, weight: .bold))
-                            .foregroundColor(AppDesign.warning)
-                    }
-                }
-
-                if stageData.status == .inProgress && stageData.progress > 0 {
-                    ProgressView(value: stageData.progress)
-                        .progressViewStyle(.linear)
-                        .tint(AppDesign.accent)
-                }
-
-                // Show download statistics for downloading stage
-                if stage == .downloading && stageData.status == .inProgress && viewModel.downloadTotalBytes > 0 {
-                    HStack {
-                        Text(viewModel.formattedDownloadProgress)
-                            .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
-                            .foregroundStyle(.secondary)
-
-                        Spacer()
-
-                        Text(viewModel.formattedDownloadSpeed)
-                            .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
-                            .foregroundStyle(.secondary)
-
-                        Text("•")
-                            .foregroundStyle(.tertiary)
-
-                        Text(viewModel.formattedTimeRemaining)
-                            .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-    }
-    
     @ViewBuilder
     private func generationCompletedView(url: URL) -> some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
             AppDesign.CompletedRow("Generation Complete")
-            
+
             if let duration = viewModel.generationDuration {
                 HStack(spacing: AppDesign.Spacing.p4) {
                     Image(systemName: "clock")
@@ -152,13 +73,13 @@ struct GenerationPanel: View {
                         .foregroundColor(.secondary)
                 }
             }
-            
+
             AppDesign.GlassButtonSecondary("Show in Finder", icon: "folder") {
                 NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
             }
         }
     }
-    
+
     @ViewBuilder
     private var generationSettingsView: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
@@ -318,5 +239,174 @@ struct GenerationPanel: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Stage Progress Row View
+
+private struct StageProgressRowView: View {
+    let stage: GenerationStage
+    let stageData: StageProgress
+    let isPreloaded: Bool
+    let downloadInfo: (progress: String, speed: String, remaining: String, hasData: Bool)?
+    let stageTextColor: (StageStatus) -> Color
+
+    @State private var progressAnimated: Double = 0
+
+    private var isActive: Bool { stageData.status == .inProgress }
+    private var hasSubContent: Bool {
+        (isActive && stageData.progress > 0) ||
+        (stage == .downloading && isActive && (downloadInfo?.hasData ?? false))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Main row
+            HStack(spacing: AppDesign.Spacing.p12) {
+                statusIndicator
+                    .frame(width: 16, height: 16)
+
+                stageInfoRow
+            }
+            .padding(.vertical, AppDesign.Spacing.p6)
+
+            // Expandable sub-content (progress bar, download stats)
+            if hasSubContent {
+                VStack(alignment: .leading, spacing: AppDesign.Spacing.p4) {
+                    if stageData.progress > 0 {
+                        ProgressView(value: progressAnimated)
+                            .progressViewStyle(.linear)
+                            .tint(AppDesign.accent)
+                    }
+
+                    if stage == .downloading, let info = downloadInfo, info.hasData {
+                        downloadStatsRow(info: info)
+                    }
+                }
+                .padding(.leading, 28) // Align with text after icon
+                .padding(.bottom, AppDesign.Spacing.p4)
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .scale(scale: 0.95, anchor: .top)).combined(with: .move(edge: .top)),
+                    removal: .opacity.combined(with: .scale(scale: 0.95, anchor: .top))
+                ))
+                .clipped()
+            }
+        }
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: hasSubContent)
+        .onChange(of: stageData.progress) { _, newValue in
+            withAnimation(.easeOut(duration: 0.3)) {
+                progressAnimated = newValue
+            }
+        }
+        .onAppear {
+            progressAnimated = stageData.progress
+        }
+    }
+
+    @ViewBuilder
+    private var statusIndicator: some View {
+        Group {
+            switch stageData.status {
+            case .completed:
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: AppDesign.FontSize.body))
+                    .foregroundColor(AppDesign.success)
+                    .transition(.scale.combined(with: .opacity))
+            case .inProgress:
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.6)
+            case .pending:
+                Circle()
+                    .fill(Color.secondary.opacity(0.2))
+                    .frame(width: 12, height: 12)
+            case .cancelled:
+                Image(systemName: "minus.circle.fill")
+                    .font(.system(size: AppDesign.FontSize.body))
+                    .foregroundColor(AppDesign.warning)
+            case .failed:
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(.system(size: AppDesign.FontSize.body))
+                    .foregroundColor(AppDesign.destructive)
+            }
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: stageData.status)
+    }
+
+    @ViewBuilder
+    private var stageInfoRow: some View {
+        HStack(spacing: AppDesign.Spacing.p4) {
+            Text(stage.rawValue)
+                .font(.system(size: AppDesign.FontSize.subheadline, weight: isActive ? .semibold : .regular))
+                .foregroundColor(stageTextColor(stageData.status))
+                .animation(.easeInOut(duration: 0.2), value: isActive)
+
+            // Show "Preloaded!" badge for loading stage if model was preloaded
+            if isPreloaded {
+                preloadedBadge
+            }
+
+            Spacer()
+
+            // Step count badge (e.g., "5/25") - always show for diffusion/volumeDecoding when active
+            if isActive && !stageData.detail.isEmpty {
+                stepCountBadge
+            }
+
+            if stageData.status == .cancelled {
+                Text("Stopped")
+                    .font(.system(size: AppDesign.FontSize.caption, weight: .bold))
+                    .foregroundColor(AppDesign.warning)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var preloadedBadge: some View {
+        Text("Preloaded!")
+            .font(.system(size: AppDesign.FontSize.xs, weight: .semibold))
+            .foregroundColor(AppDesign.success)
+            .padding(.horizontal, AppDesign.Spacing.p6)
+            .padding(.vertical, 2)
+            .background(AppDesign.success.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
+            .transition(.scale.combined(with: .opacity))
+    }
+
+    @ViewBuilder
+    private var stepCountBadge: some View {
+        Text(stageData.detail)
+            .font(.system(size: AppDesign.FontSize.caption, weight: .medium, design: .monospaced))
+            .foregroundColor(.secondary)
+            .padding(.horizontal, AppDesign.Spacing.p6)
+            .padding(.vertical, AppDesign.Spacing.p2)
+            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 4))
+            .contentTransition(.numericText(countsDown: false))
+            .animation(.spring(response: 0.25, dampingFraction: 0.8), value: stageData.detail)
+    }
+
+    @ViewBuilder
+    private func downloadStatsRow(info: (progress: String, speed: String, remaining: String, hasData: Bool)) -> some View {
+        HStack {
+            Text(info.progress)
+                .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .contentTransition(.numericText())
+
+            Spacer()
+
+            Text(info.speed)
+                .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .contentTransition(.numericText())
+
+            Text("•")
+                .foregroundStyle(.tertiary)
+
+            Text(info.remaining)
+                .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .contentTransition(.numericText())
+        }
+        .animation(.easeInOut(duration: 0.2), value: info.progress)
     }
 }

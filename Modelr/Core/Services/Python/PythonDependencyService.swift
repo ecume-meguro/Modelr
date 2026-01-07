@@ -274,6 +274,23 @@ class PythonDependencyService {
 
     // MARK: - Resource Utilities
 
+    /// Refresh resources (scripts, configs) without re-running full setup
+    /// This preserves models and environments, only updating code files
+    func refreshResources() {
+        print("[Resources] Refreshing resources (version: \(PathManager.currentAppVersion) build: \(PathManager.currentBuildNumber))...")
+        copyResourceFiles()
+        try? PathManager.updateSetupMarkerVersion()
+        print("[Resources] Resources refreshed successfully")
+    }
+
+    /// Check if resources need refreshing and do it automatically
+    func refreshResourcesIfNeeded() {
+        if PathManager.needsResourceRefresh {
+            print("[Resources] App version changed, refreshing resources...")
+            refreshResources()
+        }
+    }
+
     func checkResources() -> Bool {
         // These must exist after copyResourceFiles() runs.
         let requiredPaths: [URL] = [

@@ -15,9 +15,9 @@ extension SimpleEditorViewModel {
                     break
                 case .preparing:
                     self.generationStatus = "Preparing..."
-                case .inProgress(let stage, _):
+                case .inProgress(let stage, let percent):
                     self.generationStatus = stage
-                    self.updateGenerationStages(status: stage)
+                    self.updateGenerationStages(status: stage, percent: percent)
                 case .completed(let url):
                     self.isGenerating = false
                     self.generated3DModelURL = url
@@ -104,7 +104,10 @@ extension SimpleEditorViewModel {
         markRemainingStagesCancelled()
     }
 
-    func updateGenerationStages(status: String) {
+    func updateGenerationStages(status: String, percent: Double = 0) {
+        // Extract step info from status string (handles formats like "Stage (5/25)" or "Stage: 5/25")
+        let stepDetail = extractStepDetail(from: status)
+
         if status.contains("Downloading") || status.contains("Fetching") {
             let needsDownload = (selectedPreset.usesLargeModel && !isLargeModelDownloaded) ||
                                (!selectedPreset.usesLargeModel && !isSmallModelDownloaded)
@@ -113,7 +116,9 @@ extension SimpleEditorViewModel {
                 let progress = info.percentComplete / 100.0
                 let detail = info.currentStep > 0 ? "\(info.currentStep)/\(info.totalSteps)" : "Downloading..."
 
-                generationStages[.downloading] = StageProgress(status: .inProgress, progress: progress, detail: detail)
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    generationStages[.downloading] = StageProgress(status: .inProgress, progress: progress, detail: detail)
+                }
 
                 // Start download monitoring if not already started
                 if downloadTotalBytes == 0 {
@@ -122,7 +127,7 @@ extension SimpleEditorViewModel {
                     let hfCacheDir = modelrDir.appendingPathComponent("Cache/hf_cache/hub")
                     let modelCacheName = selectedPreset.usesLargeModel ? "models--tencent--Hunyuan3D-2.1" : "models--tencent--Hunyuan3D-2mini"
                     let modelCacheDir = hfCacheDir.appendingPathComponent(modelCacheName)
-                    let total = selectedPreset.usesLargeModel ? DownloadConstants.hunyuanStandardModelBytes : DownloadConstants.hunyuanMiniModelBytes
+                    let total = selectedPreset.usesLargeModel ? AppConstants.hunyuanStandardModelBytes : AppConstants.hunyuanMiniModelBytes
 
                     downloadMonitor.startMonitoring(directory: modelCacheDir, totalBytes: Int64(total)) { [weak self] (monitor: DownloadMonitor) in
                         guard let self = self else { return }
@@ -136,59 +141,107 @@ extension SimpleEditorViewModel {
                 }
             }
         } else if status.contains("Extracting") {
-            if generationStages[.downloading] != nil {
-                generationStages[.downloading] = StageProgress(status: .completed, progress: 1.0, detail: "")
-                // Stop download monitoring (handled by monitor task completion or reset)
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                if generationStages[.downloading] != nil {
+                    generationStages[.downloading] = StageProgress(status: .completed, progress: 1.0, detail: "")
+                }
+                generationStages[.extracting] = StageProgress(status: .inProgress, progress: 0, detail: "")
             }
-            generationStages[.extracting] = StageProgress(status: .inProgress, progress: 0, detail: "")
-        } else if status.contains("Loading") {
-            markPreviousStagesCompleted(before: .loading)
-            generationStages[.extracting] = StageProgress(status: .completed, progress: 1.0, detail: "")
-            generationStages[.loading] = StageProgress(status: .inProgress, progress: 0, detail: "")
-        } else if status.contains("Diffusion Sampling") || status.contains("Generating 3D shape") {
-            markPreviousStagesCompleted(before: .diffusion)
+        } else if status.contains("Loading") && !status.contains("Volume") {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                markPreviousStagesCompleted(before: .loading)
+                generationStages[.extracting] = StageProgress(status: .completed, progress: 1.0, detail: "")
+                generationStages[.loading] = StageProgress(status: .inProgress, progress: 0, detail: "")
+            }
+        } else if status.contains("Volume Decoding") || status.contains("volume_decoding") || status.contains("Decoding volume") {
+            // Check for volume decoding BEFORE diffusion to handle transitions properly
             let info = ProgressParser.parseDetailedProgress(status)
-            let detail = info.totalSteps > 0 ? "\(info.currentStep)/\(info.totalSteps)" : ""
-            generationStages[.diffusion] = StageProgress(status: .inProgress, progress: info.percentComplete / 100.0, detail: detail)
-        } else if status.contains("Volume Decoding") {
-            markPreviousStagesCompleted(before: .volumeDecoding)
-            generationStages[.diffusion] = StageProgress(status: .completed, progress: 1.0, detail: "")
+            // For volume decoding, use step detail if available, otherwise extract any detail text from status
+            var detail = stepDetail
+            if detail.isEmpty && info.totalSteps > 0 {
+                detail = "\(info.currentStep)/\(info.totalSteps)"
+            } else if detail.isEmpty {
+                // Try to extract detail like "Extracting mesh..." from the status
+                detail = extractDetailText(from: status)
+            }
+            // Use passed percent (from GenerationService) - it's already 0-1 scale
+            let progressValue = percent > 0 ? percent : info.percentComplete / 100.0
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                markPreviousStagesCompleted(before: .volumeDecoding)
+                generationStages[.diffusion] = StageProgress(status: .completed, progress: 1.0, detail: "")
+                generationStages[.volumeDecoding] = StageProgress(status: .inProgress, progress: progressValue, detail: detail)
+            }
+        } else if status.contains("Diffusion Sampling") || status.contains("Generating 3D shape") || status.contains("diffusion") {
             let info = ProgressParser.parseDetailedProgress(status)
-            let detail = info.totalSteps > 0 ? "\(info.currentStep)/\(info.totalSteps)" : ""
-            generationStages[.volumeDecoding] = StageProgress(status: .inProgress, progress: info.percentComplete / 100.0, detail: detail)
-        } else if status.contains("Exporting") {
+            let detail = stepDetail.isEmpty ? (info.totalSteps > 0 ? "\(info.currentStep)/\(info.totalSteps)" : "") : stepDetail
+            // Use passed percent (from GenerationService) - it's already 0-1 scale
+            let progressValue = percent > 0 ? percent : info.percentComplete / 100.0
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                markPreviousStagesCompleted(before: .diffusion)
+                generationStages[.diffusion] = StageProgress(status: .inProgress, progress: progressValue, detail: detail)
+            }
+        } else if status.contains("Exporting") || status.contains("export") {
             // Transition from diffusion to saving when exporting starts
-            markPreviousStagesCompleted(before: .saving)
-            generationStages[.diffusion] = StageProgress(status: .completed, progress: 1.0, detail: "")
-            generationStages[.volumeDecoding] = StageProgress(status: .completed, progress: 1.0, detail: "")
-            generationStages[.saving] = StageProgress(status: .inProgress, progress: 0, detail: "")
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                markPreviousStagesCompleted(before: .saving)
+                generationStages[.diffusion] = StageProgress(status: .completed, progress: 1.0, detail: "")
+                generationStages[.volumeDecoding] = StageProgress(status: .completed, progress: 1.0, detail: "")
+                generationStages[.saving] = StageProgress(status: .inProgress, progress: 0, detail: "")
+            }
         } else if status.contains("PROGRESS:") {
             // Handle progress from persistent server (format: "PROGRESS:X% - detail")
             let info = ProgressParser.parseDetailedProgress(status)
             let progress = info.percentComplete / 100.0
+            let detail = stepDetail
 
-            // Parse step count from detail (e.g., "1/25")
-            var stepDetail = ""
-            if let steps = ProgressParser.extractSteps(status) {
-                stepDetail = "\(steps.current)/\(steps.total)"
-            }
-
-            // Determine stage based on progress value
-            if progress < 0.85 {
-                // Still in diffusion phase
-                markPreviousStagesCompleted(before: .diffusion)
-                generationStages[.diffusion] = StageProgress(status: .inProgress, progress: progress, detail: stepDetail)
-            } else if progress < 0.95 {
-                // Volume decoding / exporting phase
-                markPreviousStagesCompleted(before: .volumeDecoding)
-                generationStages[.diffusion] = StageProgress(status: .completed, progress: 1.0, detail: "")
-                generationStages[.volumeDecoding] = StageProgress(status: .inProgress, progress: (progress - 0.85) / 0.1, detail: "")
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                // Determine stage based on progress value
+                if progress < 0.85 {
+                    // Still in diffusion phase
+                    markPreviousStagesCompleted(before: .diffusion)
+                    generationStages[.diffusion] = StageProgress(status: .inProgress, progress: progress, detail: detail)
+                } else if progress < 0.95 {
+                    // Volume decoding / exporting phase
+                    markPreviousStagesCompleted(before: .volumeDecoding)
+                    generationStages[.diffusion] = StageProgress(status: .completed, progress: 1.0, detail: "")
+                    generationStages[.volumeDecoding] = StageProgress(status: .inProgress, progress: (progress - 0.85) / 0.1, detail: "")
+                }
             }
         } else if status.contains("Saving") {
-            markPreviousStagesCompleted(before: .saving)
-            generationStages[.volumeDecoding] = StageProgress(status: .completed, progress: 1.0, detail: "")
-            generationStages[.saving] = StageProgress(status: .inProgress, progress: 0, detail: "")
+            let detail = extractDetailText(from: status)
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                markPreviousStagesCompleted(before: .saving)
+                generationStages[.volumeDecoding] = StageProgress(status: .completed, progress: 1.0, detail: "")
+                generationStages[.saving] = StageProgress(status: .inProgress, progress: 0, detail: detail)
+            }
         }
+    }
+
+    /// Extract step detail from status string (handles formats like "Stage (5/25)" or "5/25")
+    private func extractStepDetail(from status: String) -> String {
+        // Try to find step counts in parentheses first (e.g., "Diffusion Sampling (5/25)")
+        if let parenMatch = status.range(of: #"\((\d+)/(\d+)\)"#, options: .regularExpression) {
+            let stepStr = String(status[parenMatch])
+            return stepStr.trimmingCharacters(in: CharacterSet(charactersIn: "()"))
+        }
+        // Fall back to ProgressParser
+        if let steps = ProgressParser.extractSteps(status) {
+            return "\(steps.current)/\(steps.total)"
+        }
+        return ""
+    }
+
+    /// Extract non-numeric detail text from status (e.g., "Extracting mesh..." from "Volume Decoding (Extracting mesh...)")
+    private func extractDetailText(from status: String) -> String {
+        // Try to find text in parentheses that isn't a step count
+        if let parenMatch = status.range(of: #"\(([^)]+)\)"#, options: .regularExpression) {
+            let content = String(status[parenMatch]).trimmingCharacters(in: CharacterSet(charactersIn: "()"))
+            // Skip if it looks like a step count
+            if content.range(of: #"^\d+/\d+$"#, options: .regularExpression) == nil {
+                return content
+            }
+        }
+        return ""
     }
 
     func markPreviousStagesCompleted(before stage: GenerationStage) {

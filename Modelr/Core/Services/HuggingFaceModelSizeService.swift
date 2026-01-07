@@ -29,7 +29,7 @@ class HuggingFaceModelSizeService: ObservableObject {
     ]
 
     // MARK: - Fallback sizes (used when HF query fails)
-    private static let miniFallbackGb: Double = 3.8
+    private static let miniFallbackGb: Double = 3.84
     private static let stdFallbackGb: Double = 7.4
     private static let samFallbackGb: Double = 3.4
 

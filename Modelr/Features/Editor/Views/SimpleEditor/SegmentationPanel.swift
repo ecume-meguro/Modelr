@@ -21,19 +21,27 @@ struct SegmentationPanel: View {
                         isActive: index == viewModel.activeSegmentationIndex,
                         viewModel: viewModel
                     )
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.95, anchor: .top)),
+                        removal: .opacity
+                    ))
                 }
 
                 // Add another object button
                 if viewModel.totalValidMasks > 0 {
                     addAnotherButton
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
 
                 // Summary
                 if viewModel.totalValidMasks > 1 {
                     summarySection
+                        .transition(.opacity)
                 }
             }
         }
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: viewModel.segmentations.count)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: viewModel.totalValidMasks)
     }
 
     @ViewBuilder
@@ -97,6 +105,7 @@ struct SegmentationEntryView: View {
     let index: Int
     let isActive: Bool
     @ObservedObject var viewModel: SimpleEditorViewModel
+    @FocusState private var isTextFieldFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -107,6 +116,10 @@ struct SegmentationEntryView: View {
             if entry.isExpanded {
                 entryContent
                     .padding(.top, AppDesign.Spacing.p8)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.98, anchor: .top)).combined(with: .move(edge: .top)),
+                        removal: .opacity.combined(with: .scale(scale: 0.98, anchor: .top))
+                    ))
             }
         }
         .padding(AppDesign.Spacing.p10)
@@ -121,7 +134,25 @@ struct SegmentationEntryView: View {
                     lineWidth: 1
                 )
         )
-        .animation(.easeOut(duration: 0.2), value: entry.isExpanded)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: entry.isExpanded)
+        .animation(.spring(response: 0.25, dampingFraction: 0.85), value: isActive)
+        .onChange(of: isActive) { _, newValue in
+            // Focus text field when this entry becomes active
+            if newValue && entry.isExpanded {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    isTextFieldFocused = true
+                }
+            }
+        }
+        .onChange(of: entry.isExpanded) { _, newValue in
+            // Focus text field when expanded while active
+            if newValue && isActive {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    isTextFieldFocused = true
+                }
+            }
+        }
     }
 
     private var segmentationColor: Color {
@@ -209,6 +240,7 @@ struct SegmentationEntryView: View {
             HStack(spacing: AppDesign.Spacing.p8) {
                 TextField("e.g. dog, tree, person", text: textPromptBinding)
                     .textFieldStyle(.roundedBorder)
+                    .focused($isTextFieldFocused)
                     .onSubmit {
                         viewModel.runTextPrediction()
                     }
@@ -218,6 +250,14 @@ struct SegmentationEntryView: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(entry.textPrompt.isEmpty || entry.isProcessing)
+            }
+            .onAppear {
+                // Auto-focus when this entry appears expanded and active
+                if isActive && entry.isExpanded {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        isTextFieldFocused = true
+                    }
+                }
             }
 
             AppDesign.HintText("Or right-click on the object in view")

@@ -34,8 +34,7 @@ struct SimpleEditorSidebar: View {
                     }
                 }
                 .padding(AppDesign.Spacing.p16)
-                .animation(.easeInOut(duration: 0.3), value: viewModel.currentStep)
-                .animation(.easeInOut(duration: 0.3), value: viewModel.currentSetupSubStep)
+                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: viewModel.currentSetupSubStep)
             }
 
             Spacer()
@@ -222,6 +221,7 @@ struct SimpleEditorSidebar: View {
                 Text(title)
                     .font(.system(size: AppDesign.FontSize.body, weight: isActive ? .semibold : .regular))
                     .foregroundStyle(locked ? .tertiary : (isActive ? .primary : .secondary))
+                    .animation(.easeInOut(duration: 0.2), value: isActive)
 
                 if locked {
                     Image(systemName: "lock.fill")
@@ -241,6 +241,7 @@ struct SimpleEditorSidebar: View {
                             .fill(isStepCompleted(stepNumber) ? AppDesign.success : Color.secondary.opacity(0.2))
                             .frame(width: 2)
                             .padding(.leading, 11)
+                            .animation(.easeInOut(duration: 0.25), value: isStepCompleted(stepNumber))
                     } else {
                         Color.clear
                             .frame(width: 24)
@@ -254,6 +255,10 @@ struct SimpleEditorSidebar: View {
                     .padding(.bottom, AppDesign.Spacing.p4)
                 }
                 .fixedSize(horizontal: false, vertical: true)
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .scale(scale: 0.98, anchor: .top)).animation(.easeOut(duration: 0.25).delay(0.05)),
+                    removal: .opacity.animation(.easeIn(duration: 0.15))
+                ))
             } else if !isLast {
                 // Collapsed connector
                 Rectangle()
@@ -263,6 +268,8 @@ struct SimpleEditorSidebar: View {
             }
         }
         .opacity(locked ? 0.6 : 1.0)
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: showContent)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isDone)
     }
 
     @ViewBuilder
@@ -276,12 +283,15 @@ struct SimpleEditorSidebar: View {
                 Image(systemName: "checkmark")
                     .font(.system(size: AppDesign.FontSize.caption, weight: .bold))
                     .foregroundStyle(.white)
+                    .transition(.scale.combined(with: .opacity))
             } else {
                 Text("\(stepNumber)")
                     .font(.system(size: AppDesign.FontSize.caption, weight: .bold, design: .monospaced))
                     .foregroundStyle(locked ? Color.secondary.opacity(0.5) : (isActive ? Color.white : Color.secondary))
             }
         }
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isDone)
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isActive)
     }
 
     // MARK: - Step State
@@ -333,18 +343,22 @@ struct SimpleEditorSidebar: View {
     private var segmentContent: some View {
         Group {
             if viewModel.currentStep == .segment {
-                SegmentationPanel(viewModel: viewModel)
+                VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+                    SegmentationPanel(viewModel: viewModel)
 
-                sectionFooter {
-                    AppDesign.GlassButton("Next: Touchup", icon: "wand.and.stars", disabled: viewModel.totalValidMasks == 0) {
-                        viewModel.startTouchup()
-                    }
-                    AppDesign.InlineButton("Back to Input", icon: "arrow.left") {
-                        viewModel.handleBackAction()
+                    sectionFooter {
+                        AppDesign.GlassButton("Next: Touchup", icon: "wand.and.stars", disabled: viewModel.totalValidMasks == 0) {
+                            viewModel.startTouchup()
+                        }
+                        AppDesign.InlineButton("Back to Input", icon: "arrow.left") {
+                            viewModel.handleBackAction()
+                        }
                     }
                 }
+                .transition(.opacity.animation(.easeInOut(duration: 0.2)))
             } else {
                 AppDesign.CompletedRow("\(viewModel.totalValidMasks) \(viewModel.totalValidMasks == 1 ? "object" : "objects") selected")
+                    .transition(.opacity.animation(.easeInOut(duration: 0.2)))
             }
         }
         .alert("Discard Image?", isPresented: $viewModel.showDiscardImageWarning) {
@@ -359,18 +373,22 @@ struct SimpleEditorSidebar: View {
     private var touchupContent: some View {
         Group {
             if viewModel.currentStep == .touchup {
-                TouchupPanel(viewModel: viewModel)
+                VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+                    TouchupPanel(viewModel: viewModel)
 
-                sectionFooter {
-                    AppDesign.GlassButton("Next: Generate 3D", icon: "cube.fill") {
-                        viewModel.transitionToGenerate()
-                    }
-                    AppDesign.InlineButton("Back to Segment", icon: "arrow.left") {
-                        viewModel.handleBackAction()
+                    sectionFooter {
+                        AppDesign.GlassButton("Next: Generate 3D", icon: "cube.fill") {
+                            viewModel.transitionToGenerate()
+                        }
+                        AppDesign.InlineButton("Back to Segment", icon: "arrow.left") {
+                            viewModel.handleBackAction()
+                        }
                     }
                 }
+                .transition(.opacity.animation(.easeInOut(duration: 0.2)))
             } else {
                 AppDesign.CompletedRow("Mask refined")
+                    .transition(.opacity.animation(.easeInOut(duration: 0.2)))
             }
         }
         .alert("Lose Touchup Changes?", isPresented: $viewModel.showBackWarning) {
