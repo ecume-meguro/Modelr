@@ -1,6 +1,6 @@
 # Architecture Documentation
 
-ModelrV3 follows a clean architecture pattern with clear separation of concerns, organized in layers from UI to infrastructure. This document describes the overall architecture, component organization, and data flow.
+Modelr follows a clean architecture pattern with clear separation of concerns, organized in layers from UI to infrastructure. This document describes the overall architecture, component organization, and data flow.
 
 ## Architecture Overview
 
@@ -66,35 +66,37 @@ ModelrV3 follows a clean architecture pattern with clear separation of concerns,
 
 ### Presentation Layer
 
-**Location:** `ModelrV3/Features/`
+**Location:** `Modelr/Features/`
 
 **Responsibilities:**
+
 - User interface rendering
 - User input handling
 - State display
 
 **Key Components:**
 
-| Component | Purpose | Key Features |
-|-----------|---------|--------------|
-| `SplashScreenView` | Setup wizard and self-test | Progress tracking, interactive testing |
-| `MainEditorView` | Primary editing interface | Tool selection, tab navigation |
-| `ContentView` | Image editor workspace | Zoomable image, overlay rendering |
-| `GenerateTabView` | 3D generation controls | Parameter tuning, progress display |
-| `PreprocessTabView` | Image preprocessing | Crop, lasso-delete tools |
-| `SegmentTabView` | Segmentation controls | Tool selection, mask display |
-| `ModelViewer` | 3D model viewer | SceneKit integration |
-| `ZoomableScrollView` | Pan/zoom container | Coordinate transformation |
+| Component            | Purpose                    | Key Features                           |
+| -------------------- | -------------------------- | -------------------------------------- |
+| `SplashScreenView`   | Setup wizard and self-test | Progress tracking, interactive testing |
+| `MainEditorView`     | Primary editing interface  | Tool selection, tab navigation         |
+| `ContentView`        | Image editor workspace     | Zoomable image, overlay rendering      |
+| `GenerateTabView`    | 3D generation controls     | Parameter tuning, progress display     |
+| `PreprocessTabView`  | Image preprocessing        | Crop, lasso-delete tools               |
+| `SegmentTabView`     | Segmentation controls      | Tool selection, mask display           |
+| `ModelViewer`        | 3D model viewer            | SceneKit integration                   |
+| `ZoomableScrollView` | Pan/zoom container         | Coordinate transformation              |
 
 ### State Management
 
 **Pattern:** TCA (The Composable Architecture) - Simplified
 
-**Location:** `ModelrV3/Core/Store/`
+**Location:** `Modelr/Core/Store/`
 
 **Key Components:**
 
 **AppState:**
+
 ```swift
 struct AppState {
     var image: ImageState        // Image data and dimensions
@@ -106,6 +108,7 @@ struct AppState {
 ```
 
 **AppAction:**
+
 ```swift
 enum AppAction {
     case image(ImageAction)
@@ -117,6 +120,7 @@ enum AppAction {
 ```
 
 **AppReducer:**
+
 ```swift
 func appReducer(state: inout AppState, action: AppAction) -> Void {
     switch action {
@@ -130,6 +134,7 @@ func appReducer(state: inout AppState, action: AppAction) -> Void {
 ```
 
 **Benefits:**
+
 - Unidirectional data flow
 - Predictable state changes
 - Easy to test
@@ -139,7 +144,7 @@ func appReducer(state: inout AppState, action: AppAction) -> Void {
 
 **Pattern:** Protocol-Oriented Dependency Injection
 
-**Location:** `ModelrV3/Core/Services/`
+**Location:** `Modelr/Core/Services/`
 
 **Protocols:**
 
@@ -181,6 +186,7 @@ class ServiceContainer {
 ```
 
 **Benefits:**
+
 - Testable (mock implementations)
 - Swappable implementations
 - Clear contracts
@@ -188,7 +194,7 @@ class ServiceContainer {
 
 ### Python Integration Layer
 
-**Location:** `ModelrV3/Core/Services/Implementations/PythonEnvironment.swift`
+**Location:** `Modelr/Core/Services/Implementations/PythonEnvironment.swift`
 
 **Architecture:**
 
@@ -370,6 +376,7 @@ Swift App                    Python Worker
 **Purpose:** Abstract data access
 
 **Example:**
+
 ```swift
 protocol FileServiceProtocol {
     func saveImage(_ image: NSImage, to url: URL) throws
@@ -388,6 +395,7 @@ class FileService: FileServiceProtocol {
 **Purpose:** Create objects with proper initialization
 
 **Example:**
+
 ```swift
 struct SAMPoint {
     let normalizedCoords: CGPoint
@@ -410,6 +418,7 @@ struct SAMPoint {
 **Purpose:** Swap algorithms based on selection
 
 **Example:**
+
 ```swift
 enum SAMTool: String {
     case point, boundingBox, lasso, paint
@@ -430,6 +439,7 @@ enum SAMTool: String {
 **Purpose:** React to state changes
 
 **Example:**
+
 ```swift
 @MainActor
 class PythonEnvironment: ObservableObject {
@@ -445,6 +455,7 @@ class PythonEnvironment: ObservableObject {
 **Purpose:** Encapsulate actions
 
 **Example:**
+
 ```swift
 enum AppAction {
     case image(ImageAction)
@@ -462,10 +473,10 @@ enum ImageAction {
 ## Directory Structure
 
 ```
-ModelrV3/
-├── ModelrV3/
+Modelr/
+├── Modelr/
 │   ├── App/
-│   │   └── ModelrV3App.swift              # App entry point
+│   │   └── ModelrV3App.swift              # App entry point (ModelrApp)
 │   │
 │   ├── Core/
 │   │   ├── Constants/
@@ -585,18 +596,20 @@ ModelrV3/
 
 ### Path Validation
 
-**Location:** `ModelrV3/Core/Security/PathValidator.swift`
+**Location:** `Modelr/Core/Security/PathValidator.swift`
 
 **Protection:**
+
 - Path traversal prevention
 - File extension validation
 - Sandbox compliance
 
 ### File Access
 
-**Location:** `ModelrV3/Core/Security/SecureFileManager.swift`
+**Location:** `Modelr/Core/Security/SecureFileManager.swift`
 
 **Protection:**
+
 - Scoped file access
 - Secure temporary file handling
 - Automatic cleanup
@@ -604,6 +617,7 @@ ModelrV3/
 ### Python Isolation
 
 **Approach:**
+
 - Python runs in separate process
 - Communication via stdin/stdout only
 - No direct memory sharing
@@ -614,6 +628,7 @@ ModelrV3/
 ### Lazy Loading
 
 **Pattern:**
+
 - Python models loaded on-demand
 - UI components created lazily
 - Resources loaded incrementally
@@ -621,6 +636,7 @@ ModelrV3/
 ### Caching
 
 **Strategy:**
+
 - Python worker cached (persistent mode)
 - Model checkpoints cached locally
 - Generated models cached
@@ -628,6 +644,7 @@ ModelrV3/
 ### Async/Await
 
 **Usage:**
+
 - All Python operations async
 - Non-blocking UI
 - Proper error handling
@@ -637,6 +654,7 @@ ModelrV3/
 ### Unit Tests
 
 **Coverage:**
+
 - Coordinate transformations
 - State reducers
 - Service implementations
@@ -645,6 +663,7 @@ ModelrV3/
 ### Integration Tests
 
 **Coverage:**
+
 - Python-Swift communication
 - End-to-end workflows
 - Self-test validation
@@ -654,6 +673,7 @@ ModelrV3/
 **Location:** `ModelrV3Tests/Helpers/`
 
 **Components:**
+
 - `MockFileSystem` - File system mocking
 - `MockPythonService` - Python service mocking
 - `TestDataGenerator` - Test data creation
@@ -671,7 +691,7 @@ ModelrV3/
 
 ## Related Files
 
-- `ModelrV3/Core/Store/AppStore.swift` - State management
-- `ModelrV3/Core/Services/Implementations/PythonEnvironment.swift` - Python integration
+- `Modelr/Core/Store/AppStore.swift` - State management
+- `Modelr/Core/Services/Implementations/PythonEnvironment.swift` - Python integration
 - `docs/CoordinateSystems.md` - Coordinate system details
 - `docs/PythonProtocol.md` - Communication protocol

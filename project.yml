@@ -1,31 +1,38 @@
-name: ModelrV3
+name: Modelr
 options:
   bundleIdPrefix: com.antigravity
 targets:
-  ModelrV3:
+  Modelr:
     type: application
     platform: macOS
     deploymentTarget: "14.0"
     sources:
-      - path: ModelrV3
+      - path: Modelr
       - path: Resources
         type: folder
     settings:
       base:
-        PRODUCT_NAME: ModelrV3
+        PRODUCT_NAME: Modelr
+        PRODUCT_MODULE_NAME: Modelr
+        SWIFT_MODULE_NAME: Modelr
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_HARDENED_RUNTIME: YES
         MACOSX_DEPLOYMENT_TARGET: "14.0"
         SWIFT_VERSION: 5.9
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        INFOPLIST_KEY_CFBundleDisplayName: Modelr
+        INFOPLIST_KEY_CFBundleName: Modelr
         ENABLE_APP_SANDBOX: NO
-  ModelrV3Tests:
+  ModelrTests:
     type: bundle.unit-test
     platform: macOS
     sources:
-      - path: ModelrV3Tests
+      - path: ModelrTests
     settings:
-      GENERATE_INFOPLIST_FILE: YES
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Modelr.app/Contents/MacOS/Modelr"
+        BUNDLE_LOADER: "$(TEST_HOST)"
     dependencies:
-      - target: ModelrV3
+      - target: Modelr

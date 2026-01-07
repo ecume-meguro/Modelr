@@ -1,0 +1,384 @@
+import SwiftUI
+import Foundation
+import Combine
+
+/// ViewModel for ContentViewSimple - manages all state and business logic
+@MainActor
+class SimpleEditorViewModel: BaseEditorViewModel {
+    // MARK: - Subscriptions
+    var cancellables = Set<AnyCancellable>()
+
+    // MARK: - Workflow State
+    enum Step { case setup, input, segment, touchup, generate, postProcess }
+    @Published var currentStep: Step = .setup
+
+    // MARK: - Setup State
+    enum SetupSubStep: String, CaseIterable {
+        case chooseModel = "Choose Model"
+        case configuringSegmentation = "Configuring Segmentation Environment"
+        case downloadingSegmentation = "Downloading Segmentation Model"
+        case configuringGeneration = "Configuring 3D Generation Environment"
+        case downloadingGeneration = "Downloading 3D Generation Model"
+        case configuringPostProcess = "Configuring Post-Process Environment"
+    }
+    @Published var currentSetupSubStep: SetupSubStep = .chooseModel
+    @Published var currentSetupStage: SetupStage = .preparing
+    @Published var setupProgress: Double = 0
+    @Published var setupStatus: String = ""
+    @Published var setupConsoleOutput: [SetupSubStep: [String]] = [:]
+    @Published var setupSubStepCompleted: Set<SetupSubStep> = []
+    @Published var selectedModelChoice: SetupModelChoice = .fast
+    @Published var isSetupComplete: Bool = false
+
+    // Download progress tracking
+    @Published var downloadedBytes: Int64 = 0
+    @Published var downloadTotalBytes: Int64 = 0
+    @Published var downloadSpeed: Double = 0  // bytes per second (smoothed)
+    @Published var downloadTimeRemaining: TimeInterval = 0
+    /// If set, we prefer this total over any parsed tqdm totals.
+    var pinnedDownloadTotalBytes: Int64? = nil
+    /// Avoid re-querying HF repeatedly while a stage is active.
+    var didQueryCurrentDownloadTotal: Bool = false
+    var downloadStartTime: Date?
+    var lastDownloadBytes: Int64 = 0
+    var lastSpeedUpdateTime: Date?
+    var speedHistory: [Double] = []  // For moving average
+    var lastValidSpeed: Double = 0   // Keep last valid speed when no change
+
+    // Prefer HF/tqdm-reported byte totals when available.
+    var isUsingHuggingFaceDownloadProgress: Bool = false
+
+    let downloadMonitor = DownloadMonitor()
+
+    var formattedDownloadProgress: String {
+        let downloaded = ByteCountFormatter.string(fromByteCount: downloadedBytes, countStyle: .file)
+        let total = ByteCountFormatter.string(fromByteCount: downloadTotalBytes, countStyle: .file)
+        return "\(downloaded) / \(total)"
+    }
+
+    var formattedDownloadSpeed: String {
+        guard downloadSpeed > 1024 else { return "—" }
+        return ByteCountFormatter.string(fromByteCount: Int64(downloadSpeed), countStyle: .file) + "/s"
+    }
+
+    var formattedTimeRemaining: String {
+        guard downloadTimeRemaining > 0 && downloadTimeRemaining < 86400 else { return "" }
+        let minutes = Int(downloadTimeRemaining) / 60
+        let seconds = Int(downloadTimeRemaining) % 60
+        let timeStr = minutes > 0 ? "\(minutes)m \(seconds)s" : "\(seconds)s"
+        return "\(timeStr) remaining"
+    }
+
+    // MARK: - Multi-Segmentation State
+    @Published var segmentations: [SegmentationEntry] = []
+    @Published var activeSegmentationIndex: Int = 0
+    @Published var useExistingAlpha: Bool = false
+    @Published var imageHasAlpha: Bool = false
+
+    /// Currently active segmentation entry
+    var activeSegmentation: SegmentationEntry? {
+        guard activeSegmentationIndex < segmentations.count else { return nil }
+        return segmentations[activeSegmentationIndex]
+    }
+
+    /// Check if any segmentation is currently processing
+    var isAnySegmenting: Bool {
+        segmentations.contains { $0.isProcessing }
+    }
+
+    /// Total number of valid masks across all segmentations
+    var totalValidMasks: Int {
+        segmentations.filter { $0.hasValidMask }.count
+    }
+
+    // MARK: - Touchup State
+    enum BrushMode { case add, remove }
+    @Published var brushMode: BrushMode = .add
+    @Published var brushSize: CGFloat = 30
+    @Published var editableMaskImage: NSImage?
+    @Published var brushPreviewPosition: CGPoint? = nil
+    @Published var maskHistory: [NSImage] = []
+    @Published var isStrokeInProgress: Bool = false
+
+    // MARK: - Generation State
+    @Published var generationStatus = ""
+    @Published var compositeImage: NSImage?
+    @Published var generationDuration: TimeInterval?
+    @Published var selectedPreset: QualityPreset = .normal
+    @Published var showAdvancedSettings = false
+    @Published var customSteps: CGFloat = 10   // matches turboNormal preset
+    @Published var customResolution: CGFloat = 256
+    @Published var generationStages: [GenerationStage: StageProgress] = [:]
+    @Published var isLargeModelDownloaded: Bool = false
+    @Published var isSmallModelDownloaded: Bool = false
+
+    // MARK: - Warning Dialogs
+    @Published var showBackWarning: Bool = false
+    @Published var showDiscardModelWarning: Bool = false
+    @Published var showDiscardImageWarning: Bool = false
+    @Published var showStartOverWarning: Bool = false
+
+    // MARK: - Post-Process State
+    @Published var meshComponents: [MeshComponent] = []
+    @Published var selectedComponentIndices: Set<Int> = []
+    @Published var isAnalyzingMesh: Bool = false
+    @Published var isProcessingMesh: Bool = false
+    @Published var processedModelURL: URL?
+    @Published var selectedExportFormat: ExportFormat = .obj
+    @Published var componentFiles: [ComponentFile] = []
+
+    // Post-process confirmations and editing state
+    @Published var showDeleteSelectedConfirmation: Bool = false
+    @Published var showKeepSelectedConfirmation: Bool = false
+    @Published var showKeepLargestConfirmation: Bool = false
+    @Published var isEditingKeepLargest: Bool = false
+    @Published var keepLargestCount: Int = 1
+
+    // Background environment setup tracking
+    @Published var isConfiguringEnvironment: Bool = false
+
+    // MARK: - UI State
+    @Published var zoomScale: CGFloat = 1.0
+    @Published var showingOriginal: Bool = false
+
+    // MARK: - 3D View Mode
+    enum ViewMode: String, CaseIterable {
+        case shaded = "Shaded"
+        case wireframe = "Wireframe"
+        case textured = "Textured"
+    }
+    @Published var viewMode: ViewMode = .shaded
+
+    /// Overall generation progress (0.0 to 1.0) based on weighted stages
+    var overallGenerationProgress: Double {
+        guard isGenerating || generated3DModelURL != nil else { return 0 }
+
+        // Define stage weights (total = 1.0)
+        let weights: [GenerationStage: Double] = [
+            .downloading: 0.1,  // Only counts if downloading large model
+            .extracting: 0.05,
+            .loading: 0.15,
+            .diffusion: 0.5,
+            .volumeDecoding: 0.15,
+            .saving: 0.05
+        ]
+
+        var progress: Double = 0
+
+        for stage in GenerationStage.allCases {
+            guard let stageProgress = generationStages[stage] else { continue }
+            let weight = weights[stage] ?? 0
+
+            switch stageProgress.status {
+            case .completed:
+                progress += weight
+            case .inProgress:
+                progress += weight * stageProgress.progress
+            default:
+                break
+            }
+        }
+
+        return min(progress, 1.0)
+    }
+
+    // MARK: - Initialization
+    override init(env: PythonEnvironment) {
+        super.init(env: env)
+
+        // Log memory management strategy
+        let coordinator = ModelLoadingCoordinator.shared
+        print("[Memory] System RAM: \(coordinator.formattedSystemRAM)")
+        print("[Memory] Loading strategy: \(coordinator.strategy.description)")
+
+        // Check if setup was already completed using marker file ONLY
+        // UserDefaults is no longer used - it persists even when app data is deleted
+        let wasSetupComplete = PathManager.isSetupComplete
+
+        // Debug logging for setup state
+        print("[Setup] Checking setup completion:")
+        print("[Setup]   Marker file path: \(PathManager.setupCompletionMarkerPath.path)")
+        print("[Setup]   Marker file exists: \(FileManager.default.fileExists(atPath: PathManager.setupCompletionMarkerPath.path))")
+        print("[Setup]   isSetupComplete: \(wasSetupComplete)")
+
+        if wasSetupComplete {
+            isSetupComplete = true
+            currentStep = .input
+            setupSubStepCompleted = Set(SetupSubStep.allCases)
+            // Mark Python environment ready for generation
+            env.markHunyuanReady()
+            print("[Setup] Setup already complete, skipping to input step")
+        } else {
+            currentStep = .setup
+            // Clear any stale UserDefaults value
+            UserDefaults.standard.removeObject(forKey: "SetupComplete")
+            print("[Setup] Setup required, starting setup flow")
+        }
+
+        checkModelsDownloaded()
+        setupGenerationObservation()
+    }
+
+    /// Check if models are downloaded
+    func checkModelsDownloaded() {
+        isLargeModelDownloaded = PathManager.isHunyuanModelDownloaded(variant: "std")
+        isSmallModelDownloaded = PathManager.isHunyuanModelDownloaded(variant: "mini")
+
+        print("[Setup] Model status - Small: \(isSmallModelDownloaded), Large: \(isLargeModelDownloaded)")
+    }
+
+    /// Check if the large model (Hunyuan3D-2.1) is downloaded (legacy)
+    func checkLargeModelDownloaded() {
+        checkModelsDownloaded()
+    }
+
+    // MARK: - Image Loading
+    func loadImage(from url: URL) {
+        Task {
+            do {
+                let image = try await loadInputImage(from: url)
+
+                await MainActor.run {
+                    segmentations.removeAll()
+                    addSegmentation()
+                    editableMaskImage = nil
+                    maskHistory.removeAll()
+                    brushPreviewPosition = nil
+                    compositeImage = nil
+                    generated3DModelURL = nil
+                    generationStages = [:]
+                    generationStatus = ""
+                    zoomScale = 1.0
+                    useExistingAlpha = false
+
+                    imageHasAlpha = ImageService.shared.checkImageHasAlpha(image)
+
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        currentStep = .segment
+                    }
+                }
+
+                await initializeImage()
+            } catch {
+                print("[Load] Failed to load image: \(error)")
+                // Handle error in UI if needed
+            }
+        }
+    }
+
+    func checkImageHasAlpha() {
+        guard let image = inputImage else { return }
+        imageHasAlpha = ImageService.shared.checkImageHasAlpha(image)
+    }
+
+    private func initializeImage() async {
+        guard let path = inputImagePath else { return }
+        do {
+            let size = try await env.setImage(path: path)
+            imagePixelSize = size
+        } catch {
+            print("[Init] Failed to set image: \(error)")
+        }
+    }
+
+    // MARK: - Navigation
+    func goBack() {
+        withAnimation(.easeOut(duration: 0.2)) {
+            switch currentStep {
+            case .setup:
+                break  // Can't go back from setup
+            case .input:
+                break
+            case .segment:
+                segmentations.removeAll()
+                inputImage = nil
+                inputImagePath = nil
+                imagePixelSize = .zero
+                imageHasAlpha = false
+                currentStep = .input
+            case .touchup:
+                editableMaskImage = nil
+                maskHistory.removeAll()
+                brushPreviewPosition = nil
+                currentStep = .segment
+            case .generate:
+                compositeImage = nil
+                generated3DModelURL = nil
+                generationStages = [:]
+                generationStatus = ""
+                generationStartTime = nil
+                generationDuration = nil
+                currentStep = .touchup
+            case .postProcess:
+                meshComponents.removeAll()
+                selectedComponentIndices.removeAll()
+                processedModelURL = nil
+                currentStep = .generate
+            }
+        }
+    }
+
+    func clearAll() {
+        withAnimation(.easeOut(duration: 0.2)) {
+            inputImage = nil
+            inputImagePath = nil
+            segmentations.removeAll()
+            activeSegmentationIndex = 0
+            useExistingAlpha = false
+            imageHasAlpha = false
+            editableMaskImage = nil
+            maskHistory.removeAll()
+            compositeImage = nil
+            generated3DModelURL = nil
+            generationStages = [:]
+            generationStartTime = nil
+            generationDuration = nil
+            meshComponents.removeAll()
+            selectedComponentIndices.removeAll()
+            processedModelURL = nil
+            zoomScale = 1.0
+            currentStep = .input
+        }
+    }
+
+    // MARK: - Utilities
+    func colorForMask(_ index: Int) -> Color {
+        AppDesign.neonColors[index % AppDesign.neonColors.count]
+    }
+
+    func colorForSegmentation(_ index: Int) -> Color {
+        AppDesign.neonColors[index % AppDesign.neonColors.count]
+    }
+
+    func stageTextColor(_ status: StageStatus) -> Color {
+        switch status {
+        case .completed: return AppDesign.success
+        case .inProgress: return .primary
+        case .pending: return .secondary
+        case .cancelled: return AppDesign.warning
+        case .failed: return AppDesign.destructive
+        }
+    }
+
+    func formatDuration(_ duration: TimeInterval) -> String {
+        TimeFormatter.formatDuration(duration)
+    }
+
+    func fitSize(_ imageSize: CGSize, in containerSize: CGSize) -> CGSize {
+        guard imageSize.width > 0 && imageSize.height > 0 && containerSize.width > 0 && containerSize.height > 0 else {
+            return .zero
+        }
+
+        let imageAspect = imageSize.width / imageSize.height
+        let containerAspect = containerSize.width / containerSize.height
+        let margin: CGFloat = containerSize.width < 600 ? 0.95 : 0.9
+
+        if imageAspect > containerAspect {
+            let width = containerSize.width * margin
+            return CGSize(width: width, height: width / imageAspect)
+        } else {
+            let height = containerSize.height * margin
+            return CGSize(width: height * imageAspect, height: height)
+        }
+    }
+}

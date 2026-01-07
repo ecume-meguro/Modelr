@@ -1,5 +1,5 @@
 [project]
-name = "modelrv3-hunyuan"
+name = "modelr-hunyuan"
 version = "0.1.0"
 # Python dependencies for Hunyuan3D-2 3D generation
 # Note: Overrides are defined in [tool.uv] section to fix transitive dependencies
@@ -69,7 +69,7 @@ dependencies = [
     "hy3dgen",
     # Shared core module (defined in sources below)
     # Required for: Logging, validation, config utilities
-    "modelrv3-core",
+    "modelr-core",
 ]
 requires-python = ">=3.10,<4.0.0"
 
@@ -89,4 +89,4 @@ override-dependencies = [
 
 [tool.uv.sources]
 hy3dgen = { git = "https://github.com/tencent/Hunyuan3D-2.git" }
-modelrv3-core = { path = "../modelrv3_core" }
+modelr-core = { path = "../../python/modelr_core" }

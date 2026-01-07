@@ -1,10 +1,11 @@
 # Color Scheme Documentation
 
-ModelrV3 uses a specific color palette for UI elements and visual feedback. This document explains color choices, accessibility considerations, and how to modify colors.
+Modelr uses a specific color palette for UI elements and visual feedback. This document explains color choices, accessibility considerations, and how to modify colors.
 
 ## Overview
 
-Colors in ModelrV3 serve multiple purposes:
+Colors in Modelr serve multiple purposes:
+
 - **Visual Feedback:** Indicate segmentation masks, selection areas
 - **Accessibility:** Ensure readability and usability
 - **Branding:** Maintain consistent visual identity
@@ -17,6 +18,7 @@ Colors in ModelrV3 serve multiple purposes:
 **Hex:** `#3264C8`
 
 **Where Used:**
+
 - Generated segmentation masks
 - Paint tool brush strokes (adding to mask)
 - Mask overlays on images
@@ -26,6 +28,7 @@ Colors in ModelrV3 serve multiple purposes:
 1. **High Visibility:** Blue stands out against most image backgrounds
 2. **Good Contrast:** Works well on both light and dark images
 3. **Distinct from Common Colors:**
+
    - Avoids green (common in nature photos)
    - Avoids red (often used for errors/important alerts)
    - Avoids yellow (can be hard to see on light backgrounds)
@@ -36,6 +39,7 @@ Colors in ModelrV3 serve multiple purposes:
 ### Mask Color Implementation
 
 **Swift (ImageProcessingService.swift):**
+
 ```swift
 let color: NSColor = stroke.isErasing
     ? NSColor.clear
@@ -43,6 +47,7 @@ let color: NSColor = stroke.isErasing
 ```
 
 **Python (sam_wrapper.py):**
+
 ```python
 b, g, r, a = (50, 100, 200, 255)
 rgba[:, :, 0] = b
@@ -55,7 +60,7 @@ rgba[:, :, 3] = mask_255
 
 ### macOS System Colors
 
-ModelrV3 primarily uses Apple's system colors for UI elements to maintain native appearance:
+Modelr primarily uses Apple's system colors for UI elements to maintain native appearance:
 
 ```swift
 // Standard UI elements
@@ -72,14 +77,15 @@ NSColor.controlBackgroundColor // Input fields, buttons
 
 **Selection Colors:**
 
-| Element | Color | Usage |
-|----------|--------|-------|
-| Point tool | RGB(0, 255, 0) - Lime | Click points |
-| Bounding box | RGB(0, 255, 255) - Cyan | Box outlines |
-| Lasso | RGB(255, 0, 255) - Magenta | Selection paths |
-| Paint brush (erase) | Clear | Erasing from mask |
+| Element             | Color                      | Usage             |
+| ------------------- | -------------------------- | ----------------- |
+| Point tool          | RGB(0, 255, 0) - Lime      | Click points      |
+| Bounding box        | RGB(0, 255, 255) - Cyan    | Box outlines      |
+| Lasso               | RGB(255, 0, 255) - Magenta | Selection paths   |
+| Paint brush (erase) | Clear                      | Erasing from mask |
 
 **Implementation (sam_wrapper.py):**
+
 ```python
 def save_debug_image(image_np, points, box, output_dir):
     debug_img = Image.fromarray(image_np)
@@ -101,6 +107,7 @@ def save_debug_image(image_np, points, box, output_dir):
 ### Progress Indicators
 
 **Colors Used:**
+
 - Progress bar: `controlAccentColor`
 - Success state: Green (system)
 - Error state: Red (system)
@@ -113,10 +120,12 @@ def save_debug_image(image_np, points, box, output_dir):
 All text and important UI elements meet WCAG AA standards:
 
 **Text Colors:**
+
 - Label text: Dark gray on light background (contrast > 4.5:1)
 - Secondary text: Medium gray (contrast > 3:1)
 
 **Mask Visibility:**
+
 - SAM2 mask alpha: 0.7-0.9 for visibility
 - Adjustable based on user preference (future enhancement)
 
@@ -125,10 +134,12 @@ All text and important UI elements meet WCAG AA standards:
 The palette considers common forms of color blindness:
 
 1. **Deuteranopia (green-weak):**
+
    - Blue (50, 100, 200) is still distinguishable
    - Cyan (0, 255, 255) contrasts with blue
 
 2. **Protanopia (red-weak):**
+
    - Blue remains unaffected
    - Green/blue distinction still works
 
@@ -138,7 +149,7 @@ The palette considers common forms of color blindness:
 
 ### High Contrast Mode
 
-ModelrV3 respects macOS high contrast accessibility setting:
+Modelr respects macOS high contrast accessibility setting:
 
 ```swift
 if NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast {
@@ -154,7 +165,7 @@ if NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast {
 
 **Step 1: Update Swift code**
 
-File: `ModelrV3/Core/Services/Implementations/ImageProcessingService.swift:91-93`
+File: `Modelr/Core/Services/Implementations/ImageProcessingService.swift:91-93`
 
 ```swift
 // Current
@@ -226,15 +237,15 @@ enum ColorTheme: String, CaseIterable {
 
 ### Common RGB Values
 
-| Color | RGB | Hex | Usage |
-|-------|-----|-----|-------|
-| Black | (0, 0, 0) | #000000 | Text, borders |
-| White | (255, 255, 255) | #FFFFFF | Background |
-| SAM2 Mask | (50, 100, 200) | #3264C8 | Segmentation masks |
-| Lime | (0, 255, 0) | #00FF00 | Point markers |
-| Cyan | (0, 255, 255) | #00FFFF | Bounding boxes |
-| Magenta | (255, 0, 255) | #FF00FF | Lasso selections |
-| Clear | (0, 0, 0, 0) | Transparent | Eraser |
+| Color     | RGB             | Hex         | Usage              |
+| --------- | --------------- | ----------- | ------------------ |
+| Black     | (0, 0, 0)       | #000000     | Text, borders      |
+| White     | (255, 255, 255) | #FFFFFF     | Background         |
+| SAM2 Mask | (50, 100, 200)  | #3264C8     | Segmentation masks |
+| Lime      | (0, 255, 0)     | #00FF00     | Point markers      |
+| Cyan      | (0, 255, 255)   | #00FFFF     | Bounding boxes     |
+| Magenta   | (255, 0, 255)   | #FF00FF     | Lasso selections   |
+| Clear     | (0, 0, 0, 0)    | Transparent | Eraser             |
 
 ### System Colors
 
@@ -285,6 +296,7 @@ NSColor.keyboardFocusIndicatorColor  // Focus rings
 **Visual Testing:**
 
 1. Test with variety of images:
+
    - High contrast images
    - Low contrast images
    - Colorful images
@@ -311,7 +323,7 @@ func testMaskColor() {
 
 ## Related Files
 
-- `ModelrV3/Core/Services/Implementations/ImageProcessingService.swift:61-118` - Mask color application
+- `Modelr/Core/Services/Implementations/ImageProcessingService.swift:61-118` - Mask color application
 - `Resources/sam_wrapper.py:426-447` - Python mask color
 - `Resources/sam_wrapper.py:449-479` - Debug image colors
 - `Resources/correct_self_test_mask.png` - Reference mask with correct colors

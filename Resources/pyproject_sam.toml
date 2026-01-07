@@ -1,14 +1,14 @@
 [project]
-name = "modelrv3-sam"
+name = "modelr-sam"
 version = "0.1.0"
-description = "SAM3 environment for ModelrV3 with MLX support"
+description = "SAM3 environment for Modelr with MLX support"
 requires-python = ">=3.13,<4.0.0"
 dependencies = [
     # Image processing (for sam_wrapper.py)
     "opencv-python>=4.8.0",
     # Local packages (defined in sources below)
     "mlx-sam3",
-    "modelrv3-core",
+    "modelr-core",
 ]
 
 [build-system]
@@ -21,5 +21,5 @@ packages = []
 py-modules = []
 
 [tool.uv.sources]
-mlx-sam3 = { path = "mlx-sam3" }
-modelrv3-core = { path = "../modelrv3_core" }
+mlx-sam3 = { path = "../../python/mlx-sam3" }
+modelr-core = { path = "../../python/modelr_core" }

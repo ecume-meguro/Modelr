@@ -9,27 +9,28 @@ generate:
 # Prerequisites: Xcode project must exist (run 'make generate' first)
 # Usage: make build
 build: generate
-	xcodebuild -project ModelrV3.xcodeproj -scheme ModelrV3 -configuration Debug -derivedDataPath build build
+	xcodebuild -project Modelr.xcodeproj -scheme Modelr -configuration Debug -derivedDataPath build build
 
 # Build and run the application
 # Usage: make run
 run: build
-	./build/Build/Products/Debug/ModelrV3.app/Contents/MacOS/ModelrV3
+	./build/Build/Products/Debug/Modelr.app/Contents/MacOS/Modelr
 	
 debug3d: build
-	./build/Build/Products/Debug/ModelrV3.app/Contents/MacOS/ModelrV3 --debug-3d-viewer
+	./build/Build/Products/Debug/Modelr.app/Contents/MacOS/Modelr --debug-3d-viewer
 
 runsetup: build
-	./build/Build/Products/Debug/ModelrV3.app/Contents/MacOS/ModelrV3 --force-setup
+	./build/Build/Products/Debug/Modelr.app/Contents/MacOS/Modelr --force-setup
 	
 # Run unit and integration tests
 # Usage: make test
 test: generate
-	xcodebuild -project ModelrV3.xcodeproj -scheme ModelrV3Tests -configuration Debug -derivedDataPath build test -destination 'platform=macOS'
+	xcodebuild -project Modelr.xcodeproj -scheme ModelrTests -configuration Debug -derivedDataPath build test -destination 'platform=macOS'
 
 # Clean build artifacts and generated Xcode project
 # Usage: make clean
 clean:
+	rm -rf Modelr.xcodeproj
 	rm -rf ModelrV3.xcodeproj
 	rm -rf build
 

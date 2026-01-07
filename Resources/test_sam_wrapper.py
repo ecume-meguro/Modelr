@@ -75,7 +75,7 @@ class TestModelLoading(unittest.TestCase):
 
     @unittest.skipIf(
         not os.path.exists(os.path.expanduser(
-            "~/Library/Application Support/ModelrV3/checkpoints/sam2.1_hiera_base_plus.pt"
+            "~/Library/Application Support/Modelr/checkpoints/sam2.1_hiera_base_plus.pt"
         )),
         "Checkpoint not downloaded"
     )
@@ -86,7 +86,7 @@ class TestModelLoading(unittest.TestCase):
 
         model_cfg = sam_wrapper.MODEL_CONFIGS["base_plus"]
         checkpoint_path = os.path.expanduser(
-            "~/Library/Application Support/ModelrV3/checkpoints/sam2.1_hiera_base_plus.pt"
+            "~/Library/Application Support/Modelr/checkpoints/sam2.1_hiera_base_plus.pt"
         )
         device = "mps" if torch.backends.mps.is_available() else "cpu"
 

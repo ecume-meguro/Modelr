@@ -1,10 +1,10 @@
-# Coordinate Systems in ModelrV3
+# Coordinate Systems in Modelr
 
-ModelrV3 uses multiple coordinate systems throughout the application to handle different contexts (user interaction, image processing, and model inference). Understanding these systems and their transformations is crucial for working with the codebase.
+Modelr uses multiple coordinate systems throughout the application to handle different contexts (user interaction, image processing, and model inference). Understanding these systems and their transformations is crucial for working with the codebase.
 
 ## Overview
 
-ModelrV3 operates with three distinct coordinate systems:
+Modelr operates with three distinct coordinate systems:
 
 1. **Normalized Coordinates** (0-1 range) - Device-independent, image-relative
 2. **Pixel Coordinates** - Absolute pixel positions in the image
@@ -23,10 +23,12 @@ User Interaction (View) → Normalized → Image Processing (Pixel) → Python B
 **Purpose:** Device-independent storage and model communication
 
 **Range:** `(0.0, 0.0)` to `(1.0, 1.0)` where:
+
 - `(0.0, 0.0)` = top-left corner
 - `(1.0, 1.0)` = bottom-right corner
 
 **Used by:**
+
 - `SAMPoint.normalizedCoords`
 - `SAMBox.startPoint` and `endPoint`
 - `LassoSelection.points`
@@ -34,12 +36,14 @@ User Interaction (View) → Normalized → Image Processing (Pixel) → Python B
 - `SAMRequest.points` and `box` (after conversion)
 
 **Advantages:**
+
 - Resolution-independent
 - Easy to convert to any image size
 - Consistent across different zoom levels
 - Compact storage (single-precision floats)
 
 **Example:**
+
 ```swift
 let point = SAMPoint(normalizedCoords: CGPoint(x: 0.5, y: 0.75))
 // Point at 50% width, 75% height of image
@@ -52,12 +56,14 @@ let point = SAMPoint(normalizedCoords: CGPoint(x: 0.5, y: 0.75))
 **Range:** `(0, 0)` to `(width-1, height-1)` where width/height are image dimensions
 
 **Used by:**
+
 - Python backend (`sam_wrapper.py`)
 - Image processing algorithms
 - File I/O operations
 - Mask generation
 
 **Example:**
+
 ```swift
 let imageSize = CGSize(width: 1920, height: 1080)
 let point = SAMPoint(normalizedCoords: CGPoint(x: 0.5, y: 0.5))
@@ -72,12 +78,14 @@ let pixelCoords = point.pixelCoords(for: imageSize)
 **Range:** Depends on view size (may change with zooming)
 
 **Used by:**
+
 - SwiftUI gesture handlers
 - Drawing overlays
 - User tap/drag events
 - On-screen visualizations
 
 **Example:**
+
 ```swift
 let viewSize = CGSize(width: 800, height: 600)
 let normalizedPoint = CGPoint(x: 0.5, y: 0.5)
@@ -171,18 +179,21 @@ Normalized Coords (0-1) [Stored in Models]
 ## When to Use Each System
 
 ### Use Normalized Coordinates When:
+
 - Storing user annotations (points, boxes, lassos, strokes)
 - Communicating with the Python backend (after conversion to pixels)
 - Persisting data (resolution-independent)
 - Comparing annotations across different image sizes
 
 ### Use Pixel Coordinates When:
+
 - Working with the Python backend directly
 - Processing images at the pixel level
 - Implementing image manipulation algorithms
 - Reading/writing image files
 
 ### Use View Coordinates When:
+
 - Handling user interactions (taps, drags)
 - Drawing overlays in SwiftUI
 - Implementing zoom and pan functionality
@@ -195,6 +206,7 @@ Normalized Coords (0-1) [Stored in Models]
 **Problem:** Passing pixel coordinates when normalized coordinates are expected.
 
 **Example:**
+
 ```swift
 // WRONG
 let pixel = CGPoint(x: 960, y: 540)
@@ -212,6 +224,7 @@ let point = SAMPoint(normalizedCoords: normalized)
 **Problem:** Using view size for pixel coordinate conversion when you should use image size.
 
 **Example:**
+
 ```swift
 // WRONG - using view size for pixel conversion
 let pixel = normalizedPoint.toViewCoords(viewSize)
@@ -227,6 +240,7 @@ let pixel = normalizedPoint.toViewCoords(imageSize)
 **Problem:** Coordinates outside the 0-1 range causing unexpected behavior.
 
 **Example:**
+
 ```swift
 // Coordinates outside valid range
 let point = CGPoint(x: 1.5, y: -0.2)
@@ -245,6 +259,7 @@ let clamped = point.clamped // (1.0, 0.0)
 **Problem:** Multiple conversions causing precision loss.
 
 **Example:**
+
 ```swift
 let original = CGPoint(x: 0.123456789, y: 0.987654321)
 let pixel = original.toViewCoords(CGSize(width: 1000, height: 1000))
@@ -259,6 +274,7 @@ let back = pixel.toNormalized(CGSize(width: 1000, height: 1000))
 **Problem:** Non-square images causing distortion when not accounting for aspect ratio.
 
 **Example:**
+
 ```swift
 let imageSize = CGSize(width: 1920, height: 1080) // 16:9
 let viewSize = CGSize(width: 400, height: 400) // 1:1
@@ -283,6 +299,7 @@ Coordinate transformations have comprehensive test coverage in `ModelrV3Tests/Co
 - Aspect ratio handling
 
 Run tests with:
+
 ```bash
 make test
 ```
@@ -336,7 +353,7 @@ let overlayPoint = normalizedTap.toViewCoords(viewSize)
 
 ## Related Files
 
-- `ModelrV3/Core/Models/Models.swift` - Coordinate system models and extensions
-- `ModelrV3/Core/Services/Implementations/PythonEnvironment.swift` - Python communication
+- `Modelr/Core/Models/Models.swift` - Coordinate system models and extensions
+- `Modelr/Core/Services/Implementations/PythonEnvironment.swift` - Python communication
 - `ModelrV3Tests/CoordinateTests.swift` - Coordinate transformation tests
 - `Resources/sam_wrapper.py` - Python backend coordinate handling

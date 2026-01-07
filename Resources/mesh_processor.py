@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Mesh Processor for ModelrV3
+Mesh Processor for Modelr
 ===========================
 
 This module uses trimesh to analyze and process 3D meshes:

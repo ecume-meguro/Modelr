@@ -1,8 +1,0 @@
-Metadata-Version: 2.4
-Name: modelrv3-sam
-Version: 0.1.0
-Summary: SAM3 environment for ModelrV3 with MLX support
-Requires-Python: <4.0.0,>=3.13
-Requires-Dist: opencv-python>=4.8.0
-Requires-Dist: mlx-sam3
-Requires-Dist: modelrv3-core

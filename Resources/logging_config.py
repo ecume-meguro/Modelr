@@ -4,15 +4,15 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-LOG_DIR = Path.home() / "Library" / "Logs" / "ModelrV3"
+LOG_DIR = Path.home() / "Library" / "Logs" / "Modelr"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-LOG_FILE = LOG_DIR / "modelrv3.log"
+LOG_FILE = LOG_DIR / "modelr.log"
 LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
 
 def setup_logging(log_level: str = "INFO", log_to_file: bool = True) -> logging.Logger:
-    logger = logging.getLogger("ModelrV3")
+    logger = logging.getLogger("Modelr")
     logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
     logger.handlers.clear()
 
@@ -35,10 +35,10 @@ def setup_logging(log_level: str = "INFO", log_to_file: bool = True) -> logging.
     return logger
 
 
-def get_logger(name: str = "ModelrV3") -> logging.Logger:
-    if not logging.getLogger("ModelrV3").handlers:
+def get_logger(name: str = "Modelr") -> logging.Logger:
+    if not logging.getLogger("Modelr").handlers:
         setup_logging()
-    return logging.getLogger(f"ModelrV3.{name}")
+    return logging.getLogger(f"Modelr.{name}")
 
 
 logger = get_logger()

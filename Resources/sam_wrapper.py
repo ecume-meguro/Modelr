@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MLX SAM3 Wrapper for ModelrV3
+MLX SAM3 Wrapper for Modelr
 =============================
 Refactored using BaseModelServer for modularity.
 """
@@ -18,14 +18,15 @@ from PIL import Image, ImageDraw
 from sam3 import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
 
-from modelrv3_core import (
+from modelr_core import (
     BaseModelServer,
     get_logger,
     log_info,
     log_debug,
     save_mask_rgba,
+    get_model_size_formatted,
 )
-from modelrv3_core.exceptions import ModelLoadError, ImageValidationError
+from modelr_core.exceptions import ModelLoadError, ImageValidationError
 
 class SAM3Server(BaseModelServer):
     def __init__(self, model_type: str = "default", output_dir: str = "."):
@@ -128,7 +129,11 @@ class SAM3Server(BaseModelServer):
             log_debug(f"Failed to save debug image: {e}", self.logger)
 
 def main():
-    if "--server" in sys.argv:
+    if "--get-size" in sys.argv:
+        size_str = get_model_size_formatted("sam3")
+        print(f"SIZE:{size_str}", flush=True)
+        return
+    elif "--server" in sys.argv:
         output_dir = "."
         for i, arg in enumerate(sys.argv):
             if arg == "--output-dir" and i + 1 < len(sys.argv):
@@ -141,7 +146,7 @@ def main():
         server.initialize()
         print("Model loaded successfully")
     else:
-        print("Usage: sam_wrapper.py --server [--output-dir <path>]")
+        print("Usage: sam_wrapper.py --server [--output-dir <path>] | --get-size | --test")
 
 if __name__ == "__main__":
     main()

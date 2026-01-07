@@ -1,6 +1,6 @@
 # API Documentation
 
-This document describes the public API of ModelrV3 for developers who want to integrate or extend functionality.
+This document describes the public API of Modelr for developers who want to integrate or extend functionality.
 
 ## Table of Contents
 

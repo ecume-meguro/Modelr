@@ -2,13 +2,14 @@
   "models": {
     "sam2": {
       "default_type": "base_plus",
-      "mask_color": [50, 100, 200, 255]
+      "mask_color": [50, 100, 200, 255],
+      "model_size_gb": 3.0
     },
     "hunyuan3d": {
       "default_steps": 50,
       "default_resolution": 384,
       "large_model_size_gb": 7.4,
-      "mini_model_size_gb": 7.2
+      "mini_model_size_gb": 3.8
     }
   },
   "limits": {

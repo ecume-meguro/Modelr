@@ -1,7 +1,7 @@
 [project]
-name = "modelrv3-tools"
+name = "modelr-tools"
 version = "0.1.0"
-description = "Lightweight tools environment for ModelrV3 (mesh processing)"
+description = "Lightweight tools environment for Modelr (mesh processing)"
 requires-python = ">=3.13,<4.0.0"
 dependencies = [
     # Mesh processing
@@ -10,7 +10,7 @@ dependencies = [
     # Graph operations for mesh component analysis
     "networkx>=3.0",
     # Shared core module
-    "modelrv3-core",
+    "modelr-core",
 ]
 
 [build-system]
@@ -23,4 +23,4 @@ packages = []
 py-modules = []
 
 [tool.uv.sources]
-modelrv3-core = { path = "../modelrv3_core" }
+modelr-core = { path = "../../python/modelr_core" }

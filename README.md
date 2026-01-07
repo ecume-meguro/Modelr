@@ -1,4 +1,4 @@
-# ModelrV3
+# Modelr
 
 A macOS application for interactive image segmentation and 3D model generation using Meta's SAM2 and Tencent's Hunyuan3D-2.
 
@@ -13,7 +13,7 @@ A macOS application for interactive image segmentation and 3D model generation u
 
 ## Screenshots
 
-*Coming soon - Screenshots will be added in future releases*
+_Coming soon - Screenshots will be added in future releases_
 
 ## Requirements
 
@@ -27,12 +27,14 @@ A macOS application for interactive image segmentation and 3D model generation u
 ### Quick Start
 
 1. Clone the repository:
+
    ```bash
-   git clone https://github.com/yourusername/ModelrV3.git
-   cd ModelrV3
+   git clone https://github.com/yourusername/Modelr.git
+   cd Modelr
    ```
 
 2. Install dependencies and build:
+
    ```bash
    make build
    ```
@@ -45,11 +47,13 @@ A macOS application for interactive image segmentation and 3D model generation u
 ### Manual Installation
 
 1. Install [uv](https://github.com/astral-sh/uv) (Python package manager):
+
    ```bash
    curl -LsSf https://astral.sh/uv/install.sh | sh
    ```
 
 2. Generate Xcode project:
+
    ```bash
    xcodegen generate
    ```
@@ -61,7 +65,7 @@ A macOS application for interactive image segmentation and 3D model generation u
 
 ## Quick Start Guide
 
-1. **Launch ModelrV3** - The app will automatically download and set up required Python models on first run
+1. **Launch Modelr** - The app will automatically download and set up required Python models on first run
 2. **Load an Image** - Drag and drop or paste an image into the editor
 3. **Preprocess (Optional)** - Use crop or lasso-delete tools to prepare the image
 4. **Segment** - Select a tool (point, box, lasso, or paint) to select your object
@@ -70,7 +74,7 @@ A macOS application for interactive image segmentation and 3D model generation u
 
 ## Architecture Overview
 
-ModelrV3 follows a clean architecture with clear separation of concerns:
+Modelr follows a clean architecture with clear separation of concerns:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -144,8 +148,8 @@ make clean
 ### Directory Structure
 
 ```
-ModelrV3/
-├── ModelrV3/                 # Main Swift application
+Modelr/
+├── Modelr/                 # Main Swift application
 │   ├── Core/
 │   │   ├── Errors/          # Error definitions
 │   │   ├── Models/          # Data models
@@ -154,7 +158,7 @@ ModelrV3/
 │   ├── Views/               # SwiftUI views
 │   ├── ContentView.swift     # Main editor
 │   ├── PythonEnvironment.swift  # Python coordination
-│   └── ModelrV3App.swift   # App entry point
+│   └── ModelrV3App.swift   # App entry point (ModelrApp)
 ├── Resources/               # Python scripts and configs
 │   ├── sam_wrapper.py       # SAM2 wrapper
 │   ├── hunyuan_wrapper.py  # Hunyuan3D wrapper
@@ -169,33 +173,41 @@ ModelrV3/
 ### Setup Issues
 
 **Problem**: "uv binary not found"
+
 - **Solution**: Ensure uv is installed and in your PATH
 
 **Problem**: "Python worker failed to start"
-- **Solution**: Check that `~/Library/Application Support/ModelrV3` exists and has correct permissions
+
+- **Solution**: Check that `~/Library/Application Support/Modelr` exists and has correct permissions
 
 ### Model Download Issues
 
 **Problem**: Models fail to download during setup
+
 - **Solution**: Check your internet connection and HuggingFace access
 
 **Problem**: Slow model downloads
+
 - **Solution**: Progress monitoring is built into the setup UI. Be patient for first-time setup (~500MB total)
 
 ### Runtime Issues
 
 **Problem**: "Prediction failed" errors
+
 - **Solution**: Try resetting the predictor by clearing annotations and reloading the image
 
 **Problem**: 3D generation fails
+
 - **Solution**: Ensure you have enough RAM (8GB+ recommended) and disk space
 
 ### Performance Issues
 
 **Problem**: Slow segmentation
+
 - **Solution**: Use "base_plus" model (default) for best performance. Switch to "tiny" for older Macs.
 
 **Problem**: 3D generation takes too long
+
 - **Solution**: Reduce "Diffusion Steps" or "Mesh Resolution" in the Generate tab
 
 ## License
@@ -204,7 +216,7 @@ ModelrV3/
 
 ## Contributing
 
-Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing to ModelrV3.
+Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing to Modelr.
 
 ## Acknowledgments
 

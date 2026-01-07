@@ -1,6 +1,6 @@
-# Contributing to ModelrV3
+# Contributing to Modelr
 
-Thank you for your interest in contributing to ModelrV3! This document provides guidelines for contributing code, documentation, and other improvements.
+Thank you for your interest in contributing to Modelr! This document provides guidelines for contributing code, documentation, and other improvements.
 
 ## Table of Contents
 
@@ -222,6 +222,7 @@ enum ModelError: Error, LocalizedError {
 ### Examples
 
 **Feature:**
+
 ```
 feat(editor): add lasso selection tool
 
@@ -230,6 +231,7 @@ Users can draw a closed path around objects to select them.
 ```
 
 **Bug Fix:**
+
 ```
 fix(python): handle worker timeout gracefully
 
@@ -239,6 +241,7 @@ that can be caught and displayed to the user.
 ```
 
 **Refactor:**
+
 ```
 refactor(state): move image state to separate module
 
@@ -248,6 +251,7 @@ testability.
 ```
 
 **Documentation:**
+
 ```
 docs(architecture): add system diagram
 
@@ -275,17 +279,20 @@ and data flow between Swift and Python components.
 ### Creating PR
 
 1. **Create feature branch:**
+
    ```bash
    git checkout -b feature/your-feature-name
    ```
 
 2. **Commit changes:**
+
    ```bash
    git add .
    git commit -m "feat(scope): your commit message"
    ```
 
 3. **Push to remote:**
+
    ```bash
    git push origin feature/your-feature-name
    ```
@@ -301,20 +308,24 @@ and data flow between Swift and Python components.
 
 ```markdown
 ## Description
+
 Brief description of what this PR does and why.
 
 ## Type of Change
+
 - [ ] Bug fix (non-breaking change which fixes an issue)
 - [ ] New feature (non-breaking change which adds functionality)
 - [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
 - [ ] Documentation update
 
 ## Testing
+
 - [ ] Unit tests pass
 - [ ] Integration tests pass
 - [ ] Manual testing completed
 
 ## Checklist
+
 - [ ] Code follows style guidelines
 - [ ] Self-review completed
 - [ ] Comments added for complex code
@@ -324,6 +335,7 @@ Brief description of what this PR does and why.
 - [ ] All tests passing
 
 ## Related Issues
+
 Closes #123, #456
 ```
 
@@ -454,7 +466,7 @@ Add file header for complex files:
 ```swift
 //
 //  ImageProcessingService.swift
-//  ModelrV3
+//  Modelr
 //
 //  Created by [Name] on [Date].
 //  Provides image processing operations including cropping,
@@ -480,18 +492,21 @@ import AppKit
 ### Setting Up Development Environment
 
 1. **Clone repository:**
+
    ```bash
-   git clone https://github.com/yourusername/ModelrV3.git
-   cd ModelrV3
+    git clone https://github.com/yourusername/Modelr.git
+    cd Modelr
    ```
 
 2. **Install dependencies:**
+
    ```bash
    make generate
    make build
    ```
 
 3. **Run tests:**
+
    ```bash
    make test
    ```
@@ -504,21 +519,25 @@ import AppKit
 ### Development Workflow
 
 1. **Create feature branch:**
+
    ```bash
    git checkout -b feature/your-feature
    ```
 
 2. **Make changes:**
+
    - Write code
    - Add tests
    - Update documentation
 
 3. **Test locally:**
+
    ```bash
    make test
    ```
 
 4. **Commit and push:**
+
    ```bash
    git add .
    git commit -m "feat: description"
@@ -540,4 +559,4 @@ import AppKit
 - Join discussions for design discussions
 - Check existing issues before creating new ones
 
-Thank you for contributing to ModelrV3!
+Thank you for contributing to Modelr!

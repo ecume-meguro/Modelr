@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Clean model downloader - bypasses HuggingFace Hub's proprietary directory structure.
-Stores models in a simple, flat structure: ~/Library/Application Support/ModelrV3/models/
+Stores models in a simple, flat structure: ~/Library/Application Support/Modelr/models/
 """
 
 import os
@@ -39,7 +39,7 @@ MODELS = {
 
 def get_models_dir() -> Path:
     """Get the clean models directory."""
-    models_dir = Path.home() / "Library" / "Application Support" / "ModelrV3" / "models"
+    models_dir = Path.home() / "Library" / "Application Support" / "Modelr" / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
     return models_dir
 
