@@ -19,7 +19,7 @@ struct GenerationPanel: View {
     @ViewBuilder
     private var generationProgressView: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(visibleStages.enumerated()), id: \.element) { index, stage in
+            ForEach(visibleStages, id: \.self) { stage in
                 StageProgressRowView(
                     stage: stage,
                     stageData: viewModel.generationStages[stage] ?? StageProgress(),
@@ -32,14 +32,6 @@ struct GenerationPanel: View {
                     ) : nil,
                     stageTextColor: viewModel.stageTextColor
                 )
-
-                if index < visibleStages.count - 1 {
-                    Rectangle()
-                        .fill(Color.secondary.opacity(0.1))
-                        .frame(height: 1)
-                        .padding(.leading, 28)
-                        .padding(.vertical, AppDesign.Spacing.p4)
-                }
             }
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.generationStages.map { "\($0.key):\($0.value.status)" })
@@ -262,17 +254,17 @@ private struct StageProgressRowView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Main row
-            HStack(spacing: AppDesign.Spacing.p12) {
+            HStack(spacing: AppDesign.Spacing.p8) {
                 statusIndicator
                     .frame(width: 16, height: 16)
 
                 stageInfoRow
             }
-            .padding(.vertical, AppDesign.Spacing.p6)
+            .padding(.vertical, AppDesign.Spacing.p4)
 
             // Expandable sub-content (progress bar, download stats)
             if hasSubContent {
-                VStack(alignment: .leading, spacing: AppDesign.Spacing.p4) {
+                VStack(alignment: .leading, spacing: AppDesign.Spacing.p2) {
                     if stageData.progress > 0 {
                         ProgressView(value: progressAnimated)
                             .progressViewStyle(.linear)
@@ -283,7 +275,7 @@ private struct StageProgressRowView: View {
                         downloadStatsRow(info: info)
                     }
                 }
-                .padding(.leading, 28) // Align with text after icon
+                .padding(.leading, 24) // Align with text after icon
                 .padding(.bottom, AppDesign.Spacing.p4)
                 .transition(.asymmetric(
                     insertion: .opacity.combined(with: .scale(scale: 0.95, anchor: .top)).combined(with: .move(edge: .top)),
@@ -337,7 +329,7 @@ private struct StageProgressRowView: View {
     private var stageInfoRow: some View {
         HStack(spacing: AppDesign.Spacing.p4) {
             Text(stage.rawValue)
-                .font(.system(size: AppDesign.FontSize.subheadline, weight: isActive ? .semibold : .regular))
+                .font(.system(size: AppDesign.FontSize.body, weight: isActive ? .semibold : .regular))
                 .foregroundColor(stageTextColor(stageData.status))
                 .animation(.easeInOut(duration: 0.2), value: isActive)
 

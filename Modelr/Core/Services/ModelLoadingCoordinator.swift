@@ -237,6 +237,7 @@ class ModelLoadingCoordinator: ObservableObject {
         // Use a class to allow mutation from closure
         final class ProgressTracker {
             var lastReportedStep = 0
+            var lastTotalSteps = 0
             var inVolumeDecoding = false
         }
         let tracker = ProgressTracker()
@@ -301,14 +302,34 @@ class ModelLoadingCoordinator: ObservableObject {
                         }
                     }
 
+                    // Detect stage change: if total steps jumps significantly (e.g., 25 -> 899),
+                    // it means we've moved from diffusion to volume decoding
+                    if tracker.lastTotalSteps > 0 && totalSteps > tracker.lastTotalSteps * 3 {
+                        // Total steps increased dramatically - this is volume decoding
+                        if !tracker.inVolumeDecoding {
+                            tracker.inVolumeDecoding = true
+                            tracker.lastReportedStep = 0
+                            print("[tqdm] Detected stage change to volume decoding (steps: \(tracker.lastTotalSteps) -> \(totalSteps))")
+                        }
+                    }
+                    tracker.lastTotalSteps = totalSteps
+
                     // Only report if step changed to avoid flooding
-                    if currentStep > tracker.lastReportedStep {
+                    if currentStep > tracker.lastReportedStep || (currentStep == 1 && tracker.lastReportedStep > currentStep) {
                         tracker.lastReportedStep = currentStep
                         let progress = Double(percent) / 100.0
                         let detail = currentStep > 0 ? "\(currentStep)/\(totalSteps)" : ""
-                        print("[tqdm] Diffusion step \(detail) at \(percent)%")
-                        DispatchQueue.main.async {
-                            onProgress?("diffusion", detail, 0.15 + progress * 0.65)
+
+                        if tracker.inVolumeDecoding {
+                            print("[tqdm] Volume decoding step \(detail) at \(percent)%")
+                            DispatchQueue.main.async {
+                                onProgress?("volume_decoding", detail, 0.80 + progress * 0.15)
+                            }
+                        } else {
+                            print("[tqdm] Diffusion step \(detail) at \(percent)%")
+                            DispatchQueue.main.async {
+                                onProgress?("diffusion", detail, 0.15 + progress * 0.65)
+                            }
                         }
                     }
                 }

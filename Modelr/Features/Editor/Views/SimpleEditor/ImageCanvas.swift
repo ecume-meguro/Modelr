@@ -38,8 +38,12 @@ struct ImageCanvas: View {
             if viewModel.currentStep == .setup {
                 setupCanvasContent
             } else if viewModel.currentStep == .postProcess {
-                if !viewModel.componentFiles.isEmpty {
-                    // Use component viewer for highlighting when multiple components
+                if viewModel.isAnalyzingMesh || viewModel.isExtractingComponents {
+                    // Show loading state while preparing colored view
+                    postProcessLoadingView
+                        .padding(AppDesign.Spacing.p24)
+                } else if !viewModel.componentFiles.isEmpty {
+                    // Use component viewer with coloring for all meshes
                     ComponentModelViewerContainer(
                         componentFiles: viewModel.componentFiles.map {
                             ComponentModelViewer.ComponentFile(index: $0.index, path: $0.path)
@@ -49,7 +53,7 @@ struct ImageCanvas: View {
                     .id(viewModel.componentFiles.count) // Refresh when components change
                     .padding(AppDesign.Spacing.p24)
                 } else if let modelURL = viewModel.currentMeshURL {
-                    // Fallback to regular viewer for single component
+                    // Fallback to regular viewer only if extraction failed
                     ModelViewerContainer(modelURL: modelURL, viewMode: viewModel.viewMode)
                         .id("\(modelURL)-\(viewModel.viewMode)")
                         .padding(AppDesign.Spacing.p24)
@@ -517,6 +521,27 @@ extension ImageCanvas {
             .padding(AppDesign.Spacing.p24)
             .transition(.scale.combined(with: .opacity))
         }
+    }
+
+    @ViewBuilder
+    private var postProcessLoadingView: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color(NSColor(calibratedWhite: 0.1, alpha: 1.0)))
+                .shadow(color: .black.opacity(0.3), radius: 20, y: 10)
+
+            VStack(spacing: AppDesign.Spacing.p16) {
+                ProgressView()
+                    .scaleEffect(1.2)
+                Text("Preparing 3D view...")
+                    .font(.system(size: AppDesign.FontSize.body))
+                    .foregroundColor(.secondary)
+            }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+        )
     }
 
     @ViewBuilder

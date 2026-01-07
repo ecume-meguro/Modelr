@@ -54,13 +54,19 @@ extension SimpleEditorViewModel {
             }
         }
 
-        if meshComponents.count > 1 {
+        // Always extract components for visualization (even single component gets colored)
+        if !meshComponents.isEmpty {
             await extractComponentsForVisualization()
         }
     }
 
     func extractComponentsForVisualization() async {
         guard let modelURL = currentMeshURL else { return }
+
+        await MainActor.run {
+            isExtractingComponents = true
+            componentFiles.removeAll()
+        }
 
         let tempDir = NSTemporaryDirectory() + "mesh_components_\(UUID().uuidString)"
 
@@ -71,6 +77,7 @@ extension SimpleEditorViewModel {
         )
 
         await MainActor.run {
+            isExtractingComponents = false
             if let result = result,
                result["success"] as? Bool == true,
                let components = result["components"] as? [[String: Any]] {

@@ -122,6 +122,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     @Published var meshComponents: [MeshComponent] = []
     @Published var selectedComponentIndices: Set<Int> = []
     @Published var isAnalyzingMesh: Bool = false
+    @Published var isExtractingComponents: Bool = false
     @Published var isProcessingMesh: Bool = false
     @Published var processedModelURL: URL?
     @Published var selectedExportFormat: ExportFormat = .obj
