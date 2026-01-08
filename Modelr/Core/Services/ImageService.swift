@@ -80,71 +80,75 @@ class ImageService {
     }
 
     /// Creates a composite image by applying a mask to a source image
+    /// Uses autoreleasepool to manage memory for large images
     func createCompositeImage(source: NSImage, mask: NSImage) -> NSImage? {
-        guard let sourceCG = source.cgImage(forProposedRect: nil, context: nil, hints: nil),
-              let maskCG = mask.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        return autoreleasepool {
+            guard let sourceCG = source.cgImage(forProposedRect: nil, context: nil, hints: nil),
+                  let maskCG = mask.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
 
-        let width = sourceCG.width
-        let height = sourceCG.height
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let totalPixels = width * height
+            let width = sourceCG.width
+            let height = sourceCG.height
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+            let totalPixels = width * height
 
-        guard let (sourceContext, sourceData) = self.createRGBAContext(width: width, height: height, colorSpace: colorSpace) else { return nil }
-        sourceContext.draw(sourceCG, in: CGRect(x: 0, y: 0, width: width, height: height))
+            guard let (sourceContext, sourceData) = self.createRGBAContext(width: width, height: height, colorSpace: colorSpace) else { return nil }
+            sourceContext.draw(sourceCG, in: CGRect(x: 0, y: 0, width: width, height: height))
 
-        guard let (maskContext, maskData) = self.createRGBAContext(width: width, height: height, colorSpace: colorSpace) else { return nil }
-        maskContext.draw(maskCG, in: CGRect(x: 0, y: 0, width: width, height: height))
+            guard let (maskContext, maskData) = self.createRGBAContext(width: width, height: height, colorSpace: colorSpace) else { return nil }
+            maskContext.draw(maskCG, in: CGRect(x: 0, y: 0, width: width, height: height))
 
-        guard let (outputContext, outputData) = self.createRGBAContext(width: width, height: height, colorSpace: colorSpace) else { return nil }
+            guard let (outputContext, outputData) = self.createRGBAContext(width: width, height: height, colorSpace: colorSpace) else { return nil }
 
-        let sourcePixels = sourceData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
-        let maskPixels = maskData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
-        let outputPixels = outputData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
+            let sourcePixels = sourceData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
+            let maskPixels = maskData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
+            let outputPixels = outputData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
 
-        // Check if mask has a useful alpha channel or is just a grayscale image
-        var hasAlphaInfo = false
-        for i in 0..<min(totalPixels, 1000) {
-            let a = maskPixels[i * 4 + 3]
-            if a > 0 && a < 255 {
-                hasAlphaInfo = true
-                break
+            // Check if mask has a useful alpha channel or is just a grayscale image
+            var hasAlphaInfo = false
+            for i in 0..<min(totalPixels, 1000) {
+                let a = maskPixels[i * 4 + 3]
+                if a > 0 && a < 255 {
+                    hasAlphaInfo = true
+                    break
+                }
             }
+
+            // RGBA format (premultipliedLast): R=0, G=1, B=2, A=3
+            for i in 0..<totalPixels {
+                let offset = i * 4
+                let r = maskPixels[offset]
+                let g = maskPixels[offset + 1]
+                let b = maskPixels[offset + 2]
+                let a = maskPixels[offset + 3]
+
+                let isForeground: Bool
+                if hasAlphaInfo {
+                    isForeground = a > AppConstants.luminanceThreshold
+                } else {
+                    let luminance = (UInt32(r) + UInt32(g) + UInt32(b)) / 3
+                    isForeground = luminance > AppConstants.luminanceThreshold
+                }
+
+                if isForeground {
+                    outputPixels[offset] = sourcePixels[offset]
+                    outputPixels[offset + 1] = sourcePixels[offset + 1]
+                    outputPixels[offset + 2] = sourcePixels[offset + 2]
+                    outputPixels[offset + 3] = 255
+                } else {
+                    outputPixels[offset] = 0
+                    outputPixels[offset + 1] = 0
+                    outputPixels[offset + 2] = 0
+                    outputPixels[offset + 3] = 0
+                }
+            }
+
+            guard let finalCG = outputContext.makeImage() else { return nil }
+            return NSImage(cgImage: finalCG, size: NSSize(width: width, height: height))
         }
-
-        // RGBA format (premultipliedLast): R=0, G=1, B=2, A=3
-        for i in 0..<totalPixels {
-            let offset = i * 4
-            let r = maskPixels[offset]
-            let g = maskPixels[offset + 1]
-            let b = maskPixels[offset + 2]
-            let a = maskPixels[offset + 3]
-
-            let isForeground: Bool
-            if hasAlphaInfo {
-                isForeground = a > AppConstants.luminanceThreshold
-            } else {
-                let luminance = (UInt32(r) + UInt32(g) + UInt32(b)) / 3
-                isForeground = luminance > AppConstants.luminanceThreshold
-            }
-
-            if isForeground {
-                outputPixels[offset] = sourcePixels[offset]
-                outputPixels[offset + 1] = sourcePixels[offset + 1]
-                outputPixels[offset + 2] = sourcePixels[offset + 2]
-                outputPixels[offset + 3] = 255
-            } else {
-                outputPixels[offset] = 0
-                outputPixels[offset + 1] = 0
-                outputPixels[offset + 2] = 0
-                outputPixels[offset + 3] = 0
-            }
-        }
-
-        guard let finalCG = outputContext.makeImage() else { return nil }
-        return NSImage(cgImage: finalCG, size: NSSize(width: width, height: height))
     }
 
     /// Merge multiple masks using OR operation (luminance or alpha > 128)
+    /// Uses autoreleasepool to prevent memory spikes when processing many masks
     func mergeMasks(_ masks: [NSImage]) -> NSImage? {
         guard !masks.isEmpty else { return nil }
         guard let firstCG = masks.first?.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
@@ -160,29 +164,41 @@ class ImageService {
         memset(outputPixels, 0, totalPixels * 4)
 
         for mask in masks {
-            guard let cgMask = mask.cgImage(forProposedRect: nil, context: nil, hints: nil) else { continue }
-
-            guard let (maskContext, maskData) = self.createRGBAContext(width: width, height: height, colorSpace: colorSpace) else { continue }
-
-            maskContext.draw(cgMask, in: CGRect(x: 0, y: 0, width: width, height: height))
-            let maskPixels = maskData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
-
-            for i in 0..<totalPixels {
-                let offset = i * 4
-                let r = maskPixels[offset]
-                let g = maskPixels[offset + 1]
-                let b = maskPixels[offset + 2]
-                let a = maskPixels[offset + 3]
-
-                let luminance = (UInt16(r) + UInt16(g) + UInt16(b)) / 3
-                let isMaskPixel = a > 128 || luminance > 128
-
-                if isMaskPixel {
-                    outputPixels[offset + 0] = 255
-                    outputPixels[offset + 1] = 255
-                    outputPixels[offset + 2] = 255
-                    outputPixels[offset + 3] = AppConstants.opaqueAlpha
+            // Use autoreleasepool to ensure each mask's context is released before the next
+            autoreleasepool {
+                // Get CGImage for this mask
+                guard let cgMask = mask.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+                    return  // Skip this mask, continue to next
                 }
+
+                // Create context for this mask
+                guard let contextResult = self.createRGBAContext(width: width, height: height, colorSpace: colorSpace) else {
+                    return  // Skip this mask, continue to next
+                }
+                let maskContext = contextResult.context
+                let maskData = contextResult.data
+
+                maskContext.draw(cgMask, in: CGRect(x: 0, y: 0, width: width, height: height))
+                let maskPixels = maskData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
+
+                for i in 0..<totalPixels {
+                    let offset = i * 4
+                    let r = maskPixels[offset]
+                    let g = maskPixels[offset + 1]
+                    let b = maskPixels[offset + 2]
+                    let a = maskPixels[offset + 3]
+
+                    let luminance = (UInt16(r) + UInt16(g) + UInt16(b)) / 3
+                    let isMaskPixel = a > 128 || luminance > 128
+
+                    if isMaskPixel {
+                        outputPixels[offset + 0] = 255
+                        outputPixels[offset + 1] = 255
+                        outputPixels[offset + 2] = 255
+                        outputPixels[offset + 3] = AppConstants.opaqueAlpha
+                    }
+                }
+                // maskContext is released here at end of autoreleasepool
             }
         }
 

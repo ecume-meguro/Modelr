@@ -92,6 +92,9 @@ class PythonProcessManager {
         self.stdinPipe = stdin
         self.stdoutPipe = stdout
 
+        // Register for cleanup on app termination
+        ProcessCleanup.shared.registerProcess(process.processIdentifier)
+
         print("Persistent worker started with PID \(process.processIdentifier)")
     }
 
@@ -99,9 +102,19 @@ class PythonProcessManager {
         stdinPipe?.fileHandleForWriting.closeFile()
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
 
-        if let process = persistentProcess, process.isRunning {
-            process.terminate()
-            process.waitUntilExit()
+        if let process = persistentProcess {
+            let pid = process.processIdentifier
+            ProcessCleanup.shared.unregisterProcess(pid)
+
+            if process.isRunning {
+                // Kill the process group to ensure Python children are also killed
+                let pgid = getpgid(pid)
+                if pgid > 0 {
+                    kill(-pgid, SIGTERM)
+                }
+                process.terminate()
+                process.waitUntilExit()
+            }
         }
 
         persistentProcess = nil
@@ -197,6 +210,8 @@ class PythonProcessManager {
 
         do {
             try process.run()
+            // Register for cleanup on app termination
+            ProcessCleanup.shared.registerProcess(process.processIdentifier)
         } catch {
             pipe.fileHandleForReading.readabilityHandler = nil
             completion(.failure(error))
@@ -206,6 +221,9 @@ class PythonProcessManager {
         Task.detached { [weak self] in
             process.waitUntilExit()
             pipe.fileHandleForReading.readabilityHandler = nil
+
+            // Unregister since process has exited
+            ProcessCleanup.shared.unregisterProcess(process.processIdentifier)
 
             await MainActor.run {
                 self?.currentGenerationProcess = nil
@@ -232,8 +250,18 @@ class PythonProcessManager {
         }
 
         isGenerationCancelled = true
+        let pid = process.processIdentifier
+
+        // Kill the process group to ensure Python children are also killed
+        let pgid = getpgid(pid)
+        if pgid > 0 {
+            kill(-pgid, SIGTERM)
+        }
+
         process.terminate()
-        kill(process.processIdentifier, SIGINT)
+        kill(pid, SIGKILL)
+
+        ProcessCleanup.shared.unregisterProcess(pid)
         currentGenerationProcess = nil
     }
 }

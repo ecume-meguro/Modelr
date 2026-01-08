@@ -30,7 +30,7 @@ extension SimpleEditorViewModel {
                         self.generationStages[.saving] = StageProgress(status: .completed, progress: 1.0, detail: "")
                         self.generationStages[.handoff] = StageProgress(status: .inProgress, progress: 0, detail: "Analyzing...")
                     }
-                    self.checkLargeModelDownloaded()
+                    self.checkModelsDownloaded()
                     // Notify coordinator that generation is complete
                     Task {
                         await ModelLoadingCoordinator.shared.onGenerationComplete(env: self.env)
@@ -39,23 +39,26 @@ extension SimpleEditorViewModel {
                     Task { @MainActor in
                         print("[Gen] Starting handoff task...")
 
-                        // Run preload (this does the heavy Python processing AND SceneKit preloading)
-                        // Progress updates are handled inside preloadMeshAnalysis via updateHandoffProgress
-                        await self.preloadMeshAnalysis()
+                        // Use defer to GUARANTEE transition happens even if preload fails
+                        defer {
+                            print("[Gen] Calling transitionToPostProcess (defer)...")
 
-                        print("[Gen] Preload complete, marking handoff done...")
-
-                        // Mark handoff complete and all stages done
-                        withAnimation(.spring(response: 0.2, dampingFraction: 0.9)) {
+                            // Mark handoff complete - set directly without explicit animation
+                            // The sidebar has implicit .animation(value:) that handles this
                             self.generationStages[.handoff] = StageProgress(status: .completed, progress: 1.0, detail: "")
+
+                            // Transition to post-process (also sets state directly, letting implicit animations work)
+                            self.transitionToPostProcess()
+
+                            print("[Gen] transitionToPostProcess returned, currentStep=\(self.currentStep)")
                         }
 
-                        print("[Gen] Calling transitionToPostProcess...")
+                        // Run preload (this does the heavy Python processing AND SceneKit preloading)
+                        // Progress updates are handled inside preloadMeshAnalysis via updateHandoffProgress
+                        // Even if this fails or times out, the defer block ensures transition happens
+                        await self.preloadMeshAnalysis()
 
-                        // Immediate transition - everything is preloaded
-                        self.transitionToPostProcess()
-
-                        print("[Gen] transitionToPostProcess returned, currentStep=\(self.currentStep)")
+                        print("[Gen] Preload complete")
                     }
                 case .failed(let error):
                     self.isGenerating = false
@@ -74,38 +77,50 @@ extension SimpleEditorViewModel {
         let masks = segmentations.flatMap { $0.selectedMasks }
         let source = inputImage
 
+        // Try to use preloaded composite first
+        let preloadedComposite = preloadManager.getPreloadedComposite()
+
         // Animate step change FIRST for immediate UI response
         withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
             currentStep = .generate
         }
 
-        // Create composite image async to avoid blocking the animation
-        Task {
-            // If no mask yet, merge in background
-            let maskToUse: NSImage? = await {
-                if let existing = existingMask {
-                    return existing
-                }
-                return await Task.detached(priority: .userInitiated) {
-                    ImageService.shared.mergeMasks(masks)
-                }.value
-            }()
-
-            guard let mask = maskToUse else { return }
-
-            // Store the mask if we just created it
-            if editableMaskImage == nil {
-                editableMaskImage = mask
-            }
-
-            // Create composite in background
-            guard let source = source else { return }
-            let composite = await Task.detached(priority: .userInitiated) {
-                ImageService.shared.createCompositeImage(source: source, mask: mask)
-            }.value
-
+        if let composite = preloadedComposite {
+            // Use preloaded composite immediately
             withAnimation(.easeOut(duration: 0.2)) {
                 compositeImage = composite
+            }
+            // Clear preloaded data
+            preloadManager.clearPreloadedComposite()
+        } else {
+            // Fall back to async composite creation
+            Task {
+                // If no mask yet, merge in background
+                let maskToUse: NSImage? = await {
+                    if let existing = existingMask {
+                        return existing
+                    }
+                    return await Task.detached(priority: .userInitiated) {
+                        ImageService.shared.mergeMasks(masks)
+                    }.value
+                }()
+
+                guard let mask = maskToUse else { return }
+
+                // Store the mask if we just created it
+                if editableMaskImage == nil {
+                    editableMaskImage = mask
+                }
+
+                // Create composite in background
+                guard let source = source else { return }
+                let composite = await Task.detached(priority: .userInitiated) {
+                    ImageService.shared.createCompositeImage(source: source, mask: mask)
+                }.value
+
+                withAnimation(.easeOut(duration: 0.2)) {
+                    compositeImage = composite
+                }
             }
         }
     }
@@ -126,42 +141,79 @@ extension SimpleEditorViewModel {
 
     func generate3D() {
         guard let composite = compositeImage,
-              let mask = editableMaskImage else { return }
+              let mask = editableMaskImage else {
+            lastError = AppError.generation("No composite image or mask available")
+            showErrorAlert = true
+            return
+        }
 
         // Use the centralized ImageService to convert images to PNG, preserving alpha
         guard let tempImagePath = ImageService.shared.convertToPNG(image: composite, originalName: "composite"),
               let tempMaskPath = ImageService.shared.convertToPNG(image: mask, originalName: "mask") else {
-            print("[Generation] Failed to create temporary images for processing")
+            lastError = AppError.imageProcessing("Failed to create temporary images for processing")
+            showErrorAlert = true
             return
         }
 
         print("[Generation] Composite image: \(tempImagePath)")
         print("[Generation] Mask image: \(tempMaskPath)")
 
+        // Cancel any previous generation task
+        generationTask?.cancel()
+
         isGenerating = true
         generationStartTime = Date()
         generationStages = [:]
+        lastError = nil
 
-        Task {
-            // Prepare for generation (offloads SAM if using conservative strategy)
-            let coordinator = ModelLoadingCoordinator.shared
-            _ = await coordinator.prepareForGeneration(env: env)
+        generationTask = Task { [weak self] in
+            guard let self = self else { return }
 
-            await ServiceContainer.shared.generationService.generate(
-                imagePath: tempImagePath,
-                maskPath: tempMaskPath,
-                steps: Int(customSteps),
-                resolution: Int(customResolution),
-                modelVariant: selectedPreset.modelVariant
-            )
+            do {
+                // Check for cancellation
+                try Task.checkCancellation()
+
+                // Prepare for generation (offloads SAM if using conservative strategy)
+                let coordinator = ModelLoadingCoordinator.shared
+                let ready = await coordinator.prepareForGeneration(env: self.env)
+
+                guard ready else {
+                    throw AppError.generation("Failed to prepare generation environment")
+                }
+
+                // Check for cancellation before starting generation
+                try Task.checkCancellation()
+
+                await ServiceContainer.shared.generationService.generate(
+                    imagePath: tempImagePath,
+                    maskPath: tempMaskPath,
+                    steps: Int(self.customSteps),
+                    resolution: Int(self.customResolution),
+                    modelVariant: self.selectedPreset.modelVariant
+                )
+            } catch is CancellationError {
+                print("[Generation] Generation cancelled")
+                self.isGenerating = false
+            } catch {
+                print("[Generation] Error: \(error)")
+                self.isGenerating = false
+                self.lastError = (error as? AppError) ?? AppError.generation(error.localizedDescription)
+                self.showErrorAlert = true
+            }
         }
     }
 
     func stopGeneration() {
+        // Cancel the generation task
+        generationTask?.cancel()
+        generationTask = nil
+
         // Cancel via the Hunyuan server (this is where generation actually runs)
         ModelLoadingCoordinator.shared.cancelGeneration()
+
         // Also cancel via the service to reset status
         ServiceContainer.shared.generationService.cancel()
+
         isGenerating = false
         markRemainingStagesCancelled()
         print("[Gen] Generation stopped by user")

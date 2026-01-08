@@ -49,13 +49,33 @@ extension SimpleEditorViewModel {
         let index = activeSegmentationIndex
         let text = segmentations[index].textPrompt
 
-        Task {
-            await performPrediction(for: index, text: text, points: [])
-            await MainActor.run {
-                if index < segmentations.count {
-                    segmentations[index].isProcessing = false
-                    segmentations[index].name = text.capitalized
+        // Cancel any previous segmentation task
+        segmentationTask?.cancel()
+
+        segmentationTask = Task { [weak self] in
+            guard let self = self else { return }
+
+            do {
+                try Task.checkCancellation()
+                await self.performPrediction(for: index, text: text, points: [])
+
+                try Task.checkCancellation()
+                if index < self.segmentations.count {
+                    self.segmentations[index].isProcessing = false
+                    self.segmentations[index].name = text.capitalized
                 }
+            } catch is CancellationError {
+                // Cancelled, just reset processing state
+                if index < self.segmentations.count {
+                    self.segmentations[index].isProcessing = false
+                }
+            } catch {
+                print("[Segmentation] Error: \(error)")
+                if index < self.segmentations.count {
+                    self.segmentations[index].isProcessing = false
+                }
+                self.lastError = AppError.imageProcessing(error.localizedDescription)
+                self.showErrorAlert = true
             }
         }
     }
@@ -71,11 +91,29 @@ extension SimpleEditorViewModel {
         let index = activeSegmentationIndex
         let points = segmentations[index].points
 
-        Task {
-            await performPrediction(for: index, text: nil, points: points)
-            await MainActor.run {
-                if index < segmentations.count {
-                    segmentations[index].isProcessing = false
+        // Cancel any previous segmentation task
+        segmentationTask?.cancel()
+
+        segmentationTask = Task { [weak self] in
+            guard let self = self else { return }
+
+            do {
+                try Task.checkCancellation()
+                await self.performPrediction(for: index, text: nil, points: points)
+
+                try Task.checkCancellation()
+                if index < self.segmentations.count {
+                    self.segmentations[index].isProcessing = false
+                }
+            } catch is CancellationError {
+                // Cancelled, just reset processing state
+                if index < self.segmentations.count {
+                    self.segmentations[index].isProcessing = false
+                }
+            } catch {
+                print("[Segmentation] Error: \(error)")
+                if index < self.segmentations.count {
+                    self.segmentations[index].isProcessing = false
                 }
             }
         }
@@ -103,10 +141,17 @@ extension SimpleEditorViewModel {
                     segmentations[index].allMasks = masks
                     segmentations[index].selectedMaskIndices = [0]
                 }
+                // Trigger preloading of merged mask for faster transition to touchup
+                triggerMaskPreload()
             }
         } catch {
             print("[Prediction] Error: \(error)")
         }
+    }
+
+    /// Trigger preloading of merged mask when segmentations change
+    func triggerMaskPreload() {
+        preloadManager.preloadMergedMask(from: segmentations)
     }
 
     /// Select mask for a specific segmentation (shift to add/remove from selection)
@@ -125,6 +170,9 @@ extension SimpleEditorViewModel {
         } else {
             segmentations[segmentationIndex].selectedMaskIndices = [maskIndex]
         }
+
+        // Trigger preloading when mask selection changes
+        triggerMaskPreload()
     }
 
     func createMaskFromAlpha() {

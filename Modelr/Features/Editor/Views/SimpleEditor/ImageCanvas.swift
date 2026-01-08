@@ -43,44 +43,51 @@ struct ImageCanvas: View {
 
             // Post-process: show colored component viewer (only after handoff completes)
             if viewModel.currentStep == .postProcess {
-                Group {
-                    if viewModel.isAnalyzingMesh || viewModel.isExtractingComponents {
-                        postProcessLoadingView
+                ZStack {
+                    Group {
+                        if viewModel.isAnalyzingMesh || viewModel.isExtractingComponents {
+                            postProcessLoadingView
+                                .padding(AppDesign.Spacing.p24)
+                        } else if !viewModel.componentFiles.isEmpty && !viewModel.preloadedComponentNodes.isEmpty {
+                            // Show colored components (preloaded with materials) - instant!
+                            ComponentModelViewerContainer(
+                                componentFiles: viewModel.componentFiles.map {
+                                    ComponentModelViewer.ComponentFile(index: $0.index, path: $0.path)
+                                },
+                                keepIndices: viewModel.keepIndices,
+                                deleteIndices: viewModel.deleteIndices,
+                                highlightedIndex: viewModel.highlightedComponentIndex,
+                                isolatedIndex: viewModel.isolatedComponentIndex,
+                                displayMode: viewModel.meshDisplayMode,
+                                preloadedNodes: viewModel.preloadedComponentNodes
+                            )
+                            .id("components-\(viewModel.componentFiles.count)")
                             .padding(AppDesign.Spacing.p24)
-                    } else if !viewModel.componentFiles.isEmpty && !viewModel.preloadedComponentNodes.isEmpty {
-                        // Show colored components (preloaded with materials) - instant!
-                        ComponentModelViewerContainer(
-                            componentFiles: viewModel.componentFiles.map {
-                                ComponentModelViewer.ComponentFile(index: $0.index, path: $0.path)
-                            },
-                            keepIndices: viewModel.keepIndices,
-                            deleteIndices: viewModel.deleteIndices,
-                            highlightedIndex: viewModel.highlightedComponentIndex,
-                            isolatedIndex: viewModel.isolatedComponentIndex,
-                            displayMode: viewModel.meshDisplayMode,
-                            preloadedNodes: viewModel.preloadedComponentNodes
-                        )
-                        .id("components-\(viewModel.componentFiles.count)")
-                        .padding(AppDesign.Spacing.p24)
-                    } else if !viewModel.componentFiles.isEmpty {
-                        // Fallback: component files exist but no preloaded nodes (load from disk)
-                        ComponentModelViewerContainer(
-                            componentFiles: viewModel.componentFiles.map {
-                                ComponentModelViewer.ComponentFile(index: $0.index, path: $0.path)
-                            },
-                            keepIndices: viewModel.keepIndices,
-                            deleteIndices: viewModel.deleteIndices,
-                            highlightedIndex: viewModel.highlightedComponentIndex,
-                            isolatedIndex: viewModel.isolatedComponentIndex,
-                            displayMode: viewModel.meshDisplayMode
-                        )
-                        .id("components-fallback-\(viewModel.componentFiles.count)")
-                        .padding(AppDesign.Spacing.p24)
-                    } else if let modelURL = viewModel.currentMeshURL {
-                        // Final fallback: show raw model
-                        ModelViewerContainer(modelURL: modelURL, viewMode: viewModel.viewMode)
-                            .id("\(modelURL)-\(viewModel.viewMode)")
+                        } else if !viewModel.componentFiles.isEmpty {
+                            // Fallback: component files exist but no preloaded nodes (load from disk)
+                            ComponentModelViewerContainer(
+                                componentFiles: viewModel.componentFiles.map {
+                                    ComponentModelViewer.ComponentFile(index: $0.index, path: $0.path)
+                                },
+                                keepIndices: viewModel.keepIndices,
+                                deleteIndices: viewModel.deleteIndices,
+                                highlightedIndex: viewModel.highlightedComponentIndex,
+                                isolatedIndex: viewModel.isolatedComponentIndex,
+                                displayMode: viewModel.meshDisplayMode
+                            )
+                            .id("components-fallback-\(viewModel.componentFiles.count)")
                             .padding(AppDesign.Spacing.p24)
+                        } else if let modelURL = viewModel.currentMeshURL {
+                            // Final fallback: show raw model
+                            ModelViewerContainer(modelURL: modelURL, viewMode: viewModel.viewMode)
+                                .id("\(modelURL)-\(viewModel.viewMode)")
+                                .padding(AppDesign.Spacing.p24)
+                        }
+                    }
+
+                    // Floating display mode pill
+                    if !viewModel.isAnalyzingMesh && !viewModel.isExtractingComponents && !viewModel.componentFiles.isEmpty {
+                        displayModePill
                     }
                 }
                 .transition(.asymmetric(
@@ -130,8 +137,6 @@ struct ImageCanvas: View {
         if viewModel.currentSetupSubStep == .chooseModel && !viewModel.setupSubStepCompleted.contains(.chooseModel) {
             modelSelectorView
                 .onAppear {
-                    // Start environment configuration in background while user chooses model
-                    viewModel.startBackgroundEnvironmentSetup()
                     // Fetch live model sizes from HuggingFace
                     Task {
                         await sizeService.queryAllSizes()
@@ -542,6 +547,50 @@ extension ImageCanvas {
             .buttonStyle(.plain)
             .padding(AppDesign.Spacing.p24)
             .transition(.scale.combined(with: .opacity))
+        }
+    }
+
+    @ViewBuilder
+    var displayModePill: some View {
+        VStack {
+            HStack {
+                Spacer()
+                HStack(spacing: 4) {
+                    ForEach(SimpleEditorViewModel.MeshDisplayMode.allCases, id: \.self) { mode in
+                        let isSelected = viewModel.meshDisplayMode == mode
+
+                        Button {
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                viewModel.meshDisplayMode = mode
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: mode == .solid ? "cube.fill" : "cube")
+                                    .font(.system(size: 11, weight: isSelected ? .medium : .regular))
+                                Text(mode == .solid ? "Solid" : "Wire")
+                                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                            }
+                            .foregroundStyle(isSelected ? .white : .white.opacity(0.7))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                isSelected ? Color.white.opacity(0.2) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 6)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(4)
+                .background(.ultraThinMaterial.opacity(0.8))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
+                )
+                .padding(AppDesign.Spacing.p16)
+            }
+            Spacer()
         }
     }
 

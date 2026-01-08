@@ -236,7 +236,7 @@ struct SimpleEditorSidebar: View {
             // Content area with side connector
             if showContent {
                 HStack(alignment: .top, spacing: AppDesign.Spacing.p12) {
-                    // Side connector bar
+                    // Side connector bar (or matching spacer for last item)
                     if !isLast {
                         Rectangle()
                             .fill(isStepCompleted(stepNumber) ? AppDesign.success : Color.secondary.opacity(0.2))
@@ -244,8 +244,10 @@ struct SimpleEditorSidebar: View {
                             .padding(.leading, 11)
                             .animation(.easeInOut(duration: 0.25), value: isStepCompleted(stepNumber))
                     } else {
+                        // Match connector bar width (2px + 11px padding = 13px)
                         Color.clear
-                            .frame(width: 24)
+                            .frame(width: 2)
+                            .padding(.leading, 11)
                     }
 
                     // Content

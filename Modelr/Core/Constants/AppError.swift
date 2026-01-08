@@ -214,6 +214,10 @@ enum AppError: Error, LocalizedError {
     case python(PythonError)
     case pythonComm(PythonCommunicationError)
     case system(Error)
+    case imageProcessing(String)
+    case generation(String)
+    case meshProcessing(String)
+    case cancelled
     case unknown
 
     var errorDescription: String? {
@@ -228,8 +232,46 @@ enum AppError: Error, LocalizedError {
             return error.localizedDescription
         case .system(let error):
             return error.localizedDescription
+        case .imageProcessing(let message):
+            return "Image processing error: \(message)"
+        case .generation(let message):
+            return "3D generation error: \(message)"
+        case .meshProcessing(let message):
+            return "Mesh processing error: \(message)"
+        case .cancelled:
+            return "Operation was cancelled"
         case .unknown:
             return "An unknown error occurred"
+        }
+    }
+
+    /// Whether this error is recoverable (can retry)
+    var isRecoverable: Bool {
+        switch self {
+        case .imageProcessing, .generation, .meshProcessing:
+            return true
+        case .cancelled:
+            return false
+        case .validation, .setup, .python, .pythonComm, .system, .unknown:
+            return false
+        }
+    }
+
+    /// User-friendly suggested action
+    var suggestedAction: String? {
+        switch self {
+        case .imageProcessing:
+            return "Try loading a different image"
+        case .generation:
+            return "Try again or adjust generation settings"
+        case .meshProcessing:
+            return "Try exporting in a different format"
+        case .setup:
+            return "Restart the app and try setup again"
+        case .cancelled:
+            return nil
+        case .validation, .python, .pythonComm, .system, .unknown:
+            return "Please restart the app"
         }
     }
 }

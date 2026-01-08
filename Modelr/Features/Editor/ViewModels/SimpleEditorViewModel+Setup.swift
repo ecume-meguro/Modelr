@@ -337,17 +337,64 @@ extension SimpleEditorViewModel {
         downloadMonitor.stopMonitoring()
     }
 
-    // MARK: - Navigation Helpers (Legacy Compatibility)
+    // MARK: - Navigation Helpers
 
-    func startBackgroundEnvironmentSetup() {
-        // Run setup sequentially
-    }
-
+    /// Handle back button action with appropriate warnings based on current state
     func handleBackAction() {
+        // During setup, always warn if not on first substep
         if currentStep == .setup && currentSetupSubStep != .chooseModel {
             showStartOverWarning = true
-        } else {
+            return
+        }
+
+        // Check if current step has significant state that would be lost
+        switch currentStep {
+        case .setup, .input:
             goBack()
+        case .segment:
+            // Warn if there are valid masks that would be lost
+            if totalValidMasks > 0 {
+                showDiscardImageWarning = true
+            } else {
+                goBack()
+            }
+        case .touchup:
+            // Warn if mask was edited (history indicates changes)
+            if !maskHistory.isEmpty || editableMaskImage != nil {
+                showBackWarning = true
+            } else {
+                goBack()
+            }
+        case .generate:
+            // Warn if 3D model was generated
+            if generated3DModelURL != nil || isGenerating {
+                showDiscardModelWarning = true
+            } else {
+                goBack()
+            }
+        case .postProcess:
+            // Warn if there are pending changes
+            if hasPendingDeletions || processedModelURL != nil {
+                showDiscardModelWarning = true
+            } else {
+                goBack()
+            }
+        }
+    }
+
+    /// Check if the current step can safely go back without losing work
+    var canGoBackSafely: Bool {
+        switch currentStep {
+        case .setup, .input:
+            return true
+        case .segment:
+            return totalValidMasks == 0
+        case .touchup:
+            return maskHistory.isEmpty && editableMaskImage == nil
+        case .generate:
+            return generated3DModelURL == nil && !isGenerating
+        case .postProcess:
+            return !hasPendingDeletions && processedModelURL == nil
         }
     }
 

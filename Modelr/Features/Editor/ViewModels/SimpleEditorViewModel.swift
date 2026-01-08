@@ -11,9 +11,50 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     // MARK: - Subscriptions
     var cancellables = Set<AnyCancellable>()
 
+    // MARK: - Preload Manager
+    let preloadManager = PreloadManager.shared
+
+    // MARK: - Task Management (for proper cancellation)
+    var imageLoadTask: Task<Void, Never>?
+    var segmentationTask: Task<Void, Never>?
+    var generationTask: Task<Void, Never>?
+    var cleanupTask: Task<Void, Never>?
+
     // MARK: - Workflow State
-    enum Step { case setup, input, segment, touchup, generate, postProcess }
+    enum Step: Int, CaseIterable, Comparable {
+        case setup = 0
+        case input = 1
+        case segment = 2
+        case touchup = 3
+        case generate = 4
+        case postProcess = 5
+
+        static func < (lhs: Step, rhs: Step) -> Bool {
+            lhs.rawValue < rhs.rawValue
+        }
+
+        /// Previous step in the workflow (nil for setup)
+        var previous: Step? {
+            guard rawValue > 0 else { return nil }
+            return Step(rawValue: rawValue - 1)
+        }
+
+        /// Check if transitioning from this step loses important work
+        var hasSignificantState: Bool {
+            switch self {
+            case .setup, .input: return false
+            case .segment: return true  // Has segmentation masks
+            case .touchup: return true  // Has edited mask
+            case .generate: return true // Has 3D model
+            case .postProcess: return true // Has post-process edits
+            }
+        }
+    }
     @Published var currentStep: Step = .setup
+
+    // MARK: - Error State
+    @Published var lastError: AppError?
+    @Published var showErrorAlert: Bool = false
 
     // MARK: - Setup State
     enum SetupSubStep: String, CaseIterable {
@@ -142,7 +183,6 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     enum MeshDisplayMode: String, CaseIterable {
         case solid = "Solid"
         case wireframe = "Wireframe"
-        case transparent = "Transparent"
     }
     @Published var meshDisplayMode: MeshDisplayMode = .solid
 
@@ -266,41 +306,55 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         print("[Setup] Model status - Small: \(isSmallModelDownloaded), Large: \(isLargeModelDownloaded)")
     }
 
-    /// Check if the large model (Hunyuan3D-2.1) is downloaded (legacy)
-    func checkLargeModelDownloaded() {
-        checkModelsDownloaded()
-    }
-
     // MARK: - Image Loading
     func loadImage(from url: URL) {
-        Task {
+        // Cancel any previous load task
+        imageLoadTask?.cancel()
+
+        imageLoadTask = Task { [weak self] in
+            guard let self = self else { return }
+
             do {
-                let image = try await loadInputImage(from: url)
+                // Check for cancellation before starting
+                try Task.checkCancellation()
 
-                await MainActor.run {
-                    segmentations.removeAll()
-                    addSegmentation()
-                    editableMaskImage = nil
-                    maskHistory.removeAll()
-                    brushPreviewPosition = nil
-                    compositeImage = nil
-                    generated3DModelURL = nil
-                    generationStages = [:]
-                    generationStatus = ""
-                    zoomScale = 1.0
-                    useExistingAlpha = false
+                let image = try await self.loadInputImage(from: url)
 
-                    imageHasAlpha = ImageService.shared.checkImageHasAlpha(image)
+                // Check for cancellation after loading
+                try Task.checkCancellation()
 
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        currentStep = .segment
-                    }
+                // Reset state for new image (synchronous, no race condition)
+                self.segmentations.removeAll()
+                self.addSegmentation()
+                self.editableMaskImage = nil
+                self.maskHistory.removeAll()
+                self.brushPreviewPosition = nil
+                self.compositeImage = nil
+                self.generated3DModelURL = nil
+                self.generationStages = [:]
+                self.generationStatus = ""
+                self.zoomScale = 1.0
+                self.useExistingAlpha = false
+                self.lastError = nil
+
+                self.imageHasAlpha = ImageService.shared.checkImageHasAlpha(image)
+
+                withAnimation(.easeOut(duration: 0.25)) {
+                    self.currentStep = .segment
                 }
 
-                await initializeImage()
+                // Initialize with Python backend
+                try Task.checkCancellation()
+                await self.initializeImage()
+
+            } catch is CancellationError {
+                // Task was cancelled, silently ignore
+                print("[Load] Image load cancelled")
             } catch {
                 print("[Load] Failed to load image: \(error)")
-                // Handle error in UI if needed
+                // Show error to user
+                self.lastError = AppError.imageProcessing(error.localizedDescription)
+                self.showErrorAlert = true
             }
         }
     }
@@ -321,94 +375,92 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     }
 
     // MARK: - Navigation
-    func goBack() {
-        // Capture the target step and animate immediately
-        let targetStep: Step
-        switch currentStep {
-        case .setup, .input:
-            return  // Can't go back
-        case .segment:
-            targetStep = .input
-        case .touchup:
-            targetStep = .segment
-        case .generate:
-            targetStep = .touchup
-        case .postProcess:
-            targetStep = .generate
+
+    /// Navigate back one step, cleaning up state appropriately
+    /// - Parameter force: If true, skip confirmation dialogs
+    func goBack(force: Bool = false) {
+        guard let targetStep = currentStep.previous else {
+            return  // Can't go back from setup
         }
 
-        // Animate step change FIRST for immediate response
+        // Cancel any pending tasks that would update the current step's state
+        cancelPendingTasks(for: currentStep)
+
+        // Clean up state for the current step BEFORE transitioning (synchronous)
+        cleanupStateForStep(currentStep)
+
+        // Animate step change
         withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
             currentStep = targetStep
         }
+    }
 
-        // Clean up state async (after a tiny delay to let animation start)
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(50))
-
-            switch targetStep {
-            case .input:
-                segmentations.removeAll()
-                inputImage = nil
-                inputImagePath = nil
-                imagePixelSize = .zero
-                imageHasAlpha = false
-            case .segment:
-                editableMaskImage = nil
-                maskHistory.removeAll()
-                brushPreviewPosition = nil
-            case .touchup:
-                compositeImage = nil
-                generated3DModelURL = nil
-                generationStages = [:]
-                generationStatus = ""
-                generationStartTime = nil
-                generationDuration = nil
-            case .generate:
-                // Clear post-process state
-                meshComponents.removeAll()
-                keepIndices.removeAll()
-                deleteIndices.removeAll()
-                highlightedComponentIndex = nil
-                isolatedComponentIndex = nil
-                processedModelURL = nil
-                componentFiles.removeAll()
-                preloadedComponentNodes.removeAll()
-                // Clear generated model to restart generation
-                generated3DModelURL = nil
-                generationStages = [:]
-                generationStatus = ""
-                generationStartTime = nil
-                generationDuration = nil
-            default:
-                break
+    /// Cancel pending tasks for a specific step
+    private func cancelPendingTasks(for step: Step) {
+        switch step {
+        case .setup:
+            // Cancel setup-related tasks if any
+            break
+        case .input:
+            imageLoadTask?.cancel()
+            imageLoadTask = nil
+        case .segment:
+            segmentationTask?.cancel()
+            segmentationTask = nil
+        case .touchup:
+            // No long-running tasks in touchup
+            break
+        case .generate:
+            generationTask?.cancel()
+            generationTask = nil
+            if isGenerating {
+                stopGeneration()
             }
+        case .postProcess:
+            meshPreloadTask?.cancel()
+            meshPreloadTask = nil
         }
     }
 
-    func clearAll() {
-        // Animate to input FIRST
-        withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
-            currentStep = .input
-        }
-
-        // Clean up state after animation starts
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(50))
-
+    /// Clean up state when leaving a step (called BEFORE transition)
+    private func cleanupStateForStep(_ step: Step) {
+        switch step {
+        case .setup:
+            break
+        case .input:
+            // Going back to setup - this shouldn't happen normally
+            break
+        case .segment:
+            // Going back to input - clear segmentation state
+            segmentations.removeAll()
             inputImage = nil
             inputImagePath = nil
-            segmentations.removeAll()
-            activeSegmentationIndex = 0
-            useExistingAlpha = false
+            imagePixelSize = .zero
             imageHasAlpha = false
+            useExistingAlpha = false
+            // Clear preloaded mask
+            preloadManager.clearPreloadedMask()
+        case .touchup:
+            // Going back to segment - clear touchup edits but keep segmentation
             editableMaskImage = nil
             maskHistory.removeAll()
+            brushPreviewPosition = nil
+            isStrokeInProgress = false
+            // Clear preloaded composite
+            preloadManager.clearPreloadedComposite()
+        case .generate:
+            // Going back to touchup - clear generation state
             compositeImage = nil
             generated3DModelURL = nil
             generationStages = [:]
+            generationStatus = ""
             generationStartTime = nil
             generationDuration = nil
+            isGenerating = false
+            // Reset download monitoring
+            resetDownloadMonitoringState()
+        case .postProcess:
+            // Going back to generate - clear post-process state
             meshComponents.removeAll()
             keepIndices.removeAll()
             deleteIndices.removeAll()
@@ -418,8 +470,112 @@ class SimpleEditorViewModel: BaseEditorViewModel {
             componentFiles.removeAll()
             preloadedComponentNodes.removeAll()
             meshDisplayMode = .solid
-            zoomScale = 1.0
+            // Also clear generated model so user can regenerate
+            generated3DModelURL = nil
+            generationStages = [:]
+            generationStatus = ""
+            generationStartTime = nil
+            generationDuration = nil
         }
+    }
+
+    /// Reset download monitoring state
+    private func resetDownloadMonitoringState() {
+        downloadedBytes = 0
+        downloadTotalBytes = 0
+        downloadSpeed = 0
+        downloadTimeRemaining = 0
+        pinnedDownloadTotalBytes = nil
+        didQueryCurrentDownloadTotal = false
+        isUsingHuggingFaceDownloadProgress = false
+        downloadMonitor.stopMonitoring()
+    }
+
+    /// Clear all state and return to input step
+    func clearAll() {
+        // Cancel ALL pending tasks first
+        cancelAllTasks()
+
+        // Clear all state synchronously BEFORE animation
+        resetAllState()
+
+        // Animate to input
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+            currentStep = .input
+        }
+    }
+
+    /// Cancel all pending tasks across all steps
+    private func cancelAllTasks() {
+        imageLoadTask?.cancel()
+        imageLoadTask = nil
+        segmentationTask?.cancel()
+        segmentationTask = nil
+        generationTask?.cancel()
+        generationTask = nil
+        cleanupTask?.cancel()
+        cleanupTask = nil
+        meshPreloadTask?.cancel()
+        meshPreloadTask = nil
+
+        // Clear all preloaded data
+        preloadManager.cancelAll()
+
+        // Stop generation if in progress
+        if isGenerating {
+            stopGeneration()
+        }
+    }
+
+    /// Reset all state to initial values
+    private func resetAllState() {
+        // Input state
+        inputImage = nil
+        inputImagePath = nil
+        imagePixelSize = .zero
+        imageHasAlpha = false
+
+        // Segmentation state
+        segmentations.removeAll()
+        activeSegmentationIndex = 0
+        useExistingAlpha = false
+
+        // Touchup state
+        editableMaskImage = nil
+        maskHistory.removeAll()
+        brushPreviewPosition = nil
+        isStrokeInProgress = false
+
+        // Generation state
+        compositeImage = nil
+        generated3DModelURL = nil
+        generationStages = [:]
+        generationStatus = ""
+        generationStartTime = nil
+        generationDuration = nil
+        isGenerating = false
+
+        // Post-process state
+        meshComponents.removeAll()
+        keepIndices.removeAll()
+        deleteIndices.removeAll()
+        highlightedComponentIndex = nil
+        isolatedComponentIndex = nil
+        processedModelURL = nil
+        componentFiles.removeAll()
+        preloadedComponentNodes.removeAll()
+        meshDisplayMode = .solid
+
+        // UI state
+        zoomScale = 1.0
+        showingOriginal = false
+
+        // Download state
+        resetDownloadMonitoringState()
+
+        // Error state
+        lastError = nil
+        showErrorAlert = false
     }
 
     // MARK: - Utilities

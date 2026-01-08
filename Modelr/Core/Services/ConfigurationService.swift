@@ -85,7 +85,10 @@ class ConfigurationService: ObservableObject {
     }
     
     var maxImageDimension: Int {
-        config?.limits.maxImageSize ?? 16384
+        // Cap at 4096 to prevent extreme memory usage
+        // 4K images are sufficient for most use cases and keep memory reasonable
+        // (4096x4096x4 = 64MB per RGBA context vs 1GB for 16K)
+        min(config?.limits.maxImageSize ?? 4096, 4096)
     }
     
     var sam2MaskColor: Color {

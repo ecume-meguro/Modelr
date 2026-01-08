@@ -5,13 +5,29 @@ import UniformTypeIdentifiers
 struct PostProcessPanel: View {
     @ObservedObject var viewModel: SimpleEditorViewModel
 
+    /// Check if this is a clean mesh (single component, no artifacts)
+    private var isCleanMesh: Bool {
+        viewModel.meshComponents.count == 1
+    }
+
+    /// Check if there are any artifacts (components with < 1000 faces)
+    private var hasArtifacts: Bool {
+        viewModel.meshComponents.contains { $0.faceCount < 1000 }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p16) {
             if viewModel.isAnalyzingMesh {
                 analyzingView
             } else if viewModel.meshComponents.isEmpty {
                 noComponentsView
+            } else if isCleanMesh {
+                // Single mesh - no artifacts found
+                cleanMeshView
             } else {
+                // Header explaining post-processing
+                postProcessHeader
+
                 // Isolation banner (if active)
                 if viewModel.isolatedComponentIndex != nil {
                     isolationBanner
@@ -112,7 +128,7 @@ struct PostProcessPanel: View {
                 }
             }
         }
-        .padding(AppDesign.Spacing.p10)
+        .padding(AppDesign.Spacing.p8)
         .background(AppDesign.success.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
@@ -146,7 +162,7 @@ struct PostProcessPanel: View {
                 }
             }
         }
-        .padding(AppDesign.Spacing.p10)
+        .padding(AppDesign.Spacing.p8)
         .background(AppDesign.destructive.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
@@ -178,12 +194,18 @@ struct PostProcessPanel: View {
 
     // MARK: - Component Row
 
+    /// Check if a component is likely an artifact (small face count)
+    private func isLikelyArtifact(_ component: MeshComponent) -> Bool {
+        component.faceCount < 1000
+    }
+
     @ViewBuilder
     private func componentRow(_ component: MeshComponent, isKeep: Bool) -> some View {
         let isHighlighted = viewModel.highlightedComponentIndex == component.index
         let isIsolated = viewModel.isolatedComponentIndex == component.index
         let baseColor = isKeep ? AppDesign.success : AppDesign.destructive
         let label = componentLabel(for: component)
+        let isArtifact = isLikelyArtifact(component)
 
         // Check if this is the only item in keep list (can't move to delete)
         let canMoveToDelete = isKeep && viewModel.keepIndices.count > 1
@@ -206,6 +228,11 @@ struct PostProcessPanel: View {
                             .font(.system(size: 9))
                             .foregroundStyle(AppDesign.accent)
                     }
+
+                    // Likely artifact badge
+                    if isArtifact {
+                        artifactBadge
+                    }
                 }
 
                 HStack(spacing: 6) {
@@ -218,6 +245,27 @@ struct PostProcessPanel: View {
             }
 
             Spacer()
+
+            // Isolate button (only for keep items)
+            if isKeep {
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        if isIsolated {
+                            viewModel.exitIsolation()
+                        } else {
+                            viewModel.isolateComponent(component.index)
+                        }
+                    }
+                } label: {
+                    Image(systemName: isIsolated ? "eye.fill" : "eye")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(isIsolated ? AppDesign.accent : .secondary)
+                        .frame(width: 32, height: 32)
+                        .background(isIsolated ? AppDesign.accent.opacity(0.15) : Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+                .help(isIsolated ? "Show All" : "Isolate")
+            }
 
             // Move button (larger click area)
             Button {
@@ -242,7 +290,7 @@ struct PostProcessPanel: View {
             .help(isKeep ? (canMoveToDelete ? "Move to Delete" : "Cannot delete last item") : "Move to Keep")
         }
         .padding(.vertical, AppDesign.Spacing.p8)
-        .padding(.horizontal, AppDesign.Spacing.p10)
+        .padding(.horizontal, AppDesign.Spacing.p8)
         .background(
             RoundedRectangle(cornerRadius: 8)
                 .fill(isHighlighted ? Color.yellow.opacity(0.15) : Color.primary.opacity(0.03))
@@ -348,6 +396,111 @@ struct PostProcessPanel: View {
                 .font(.system(size: 9))
         }
         .foregroundStyle(isWatertight ? AnyShapeStyle(AppDesign.success) : AnyShapeStyle(Color.secondary.opacity(0.6)))
+    }
+
+    @ViewBuilder
+    private var artifactBadge: some View {
+        HStack(spacing: 2) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 7))
+            Text("Likely Artifact")
+                .font(.system(size: 8, weight: .medium))
+        }
+        .foregroundStyle(AppDesign.warning)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(AppDesign.warning.opacity(0.15), in: Capsule())
+    }
+
+    // MARK: - Header View
+
+    @ViewBuilder
+    private var postProcessHeader: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p6) {
+            HStack(spacing: AppDesign.Spacing.p6) {
+                Image(systemName: "wand.and.stars")
+                    .font(.system(size: AppDesign.FontSize.body))
+                    .foregroundStyle(AppDesign.accent)
+                Text("Review & Clean Up")
+                    .font(.system(size: AppDesign.FontSize.subheadline, weight: .semibold))
+            }
+
+            Text("We found \(viewModel.meshComponents.count) objects in your model. Some may be unintended artifacts from the generation process. Use the isolate button to inspect individual meshes in the 3D viewer.")
+                .font(.system(size: AppDesign.FontSize.caption))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(AppDesign.Spacing.p10)
+        .background(AppDesign.accent.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(AppDesign.accent.opacity(0.15), lineWidth: 1)
+        )
+    }
+
+    // MARK: - Clean Mesh View (Single Component)
+
+    @ViewBuilder
+    private var cleanMeshView: some View {
+        if let component = viewModel.meshComponents.first {
+            VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+                // Success header - matches CompletedRow alignment
+                HStack(spacing: AppDesign.Spacing.p8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: AppDesign.FontSize.body))
+                        .foregroundStyle(AppDesign.success)
+                    Text("No Artifacts Found")
+                        .font(.system(size: AppDesign.FontSize.body))
+                        .foregroundStyle(AppDesign.success)
+                }
+
+                Text("Your model is clean and ready to export")
+                    .font(.system(size: AppDesign.FontSize.caption))
+                    .foregroundStyle(.secondary)
+
+                // Mesh stats
+                VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
+                    AppDesign.SectionLabel("Mesh Statistics")
+
+                    HStack(spacing: AppDesign.Spacing.p16) {
+                        statItem(icon: "triangle", value: formatNumber(component.faceCount), label: "Faces")
+                        statItem(icon: "circle.dotted", value: formatNumber(component.vertexCount), label: "Vertices")
+                    }
+
+                    HStack(spacing: AppDesign.Spacing.p8) {
+                        watertightBadge(component.isWatertight)
+                        Spacer()
+                    }
+                }
+                .padding(AppDesign.Spacing.p10)
+                .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                )
+
+                Divider().padding(.vertical, AppDesign.Spacing.p4)
+
+                // Export section
+                exportSection
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func statItem(icon: String, value: String, label: String) -> some View {
+        HStack(spacing: AppDesign.Spacing.p6) {
+            Image(systemName: icon)
+                .font(.system(size: AppDesign.FontSize.caption))
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(value)
+                    .font(.system(size: AppDesign.FontSize.body, weight: .medium, design: .monospaced))
+                Text(label)
+                    .font(.system(size: AppDesign.FontSize.xs))
+                    .foregroundStyle(.tertiary)
+            }
+        }
     }
 
     // MARK: - Other Views

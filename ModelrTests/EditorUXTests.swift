@@ -309,4 +309,162 @@ final class EditorUXTests: XCTestCase {
         // Edge
         XCTAssertTrue(rect.contains(CGPoint(x: 0.2, y: 0.5)), "Edge should be inside")
     }
+
+    // MARK: - Step Enum Tests
+
+    func testStepComparable() throws {
+        XCTAssertTrue(SimpleEditorViewModel.Step.setup < SimpleEditorViewModel.Step.input)
+        XCTAssertTrue(SimpleEditorViewModel.Step.input < SimpleEditorViewModel.Step.segment)
+        XCTAssertTrue(SimpleEditorViewModel.Step.segment < SimpleEditorViewModel.Step.touchup)
+        XCTAssertTrue(SimpleEditorViewModel.Step.touchup < SimpleEditorViewModel.Step.generate)
+        XCTAssertTrue(SimpleEditorViewModel.Step.generate < SimpleEditorViewModel.Step.postProcess)
+    }
+
+    func testStepPrevious() throws {
+        XCTAssertNil(SimpleEditorViewModel.Step.setup.previous)
+        XCTAssertEqual(SimpleEditorViewModel.Step.input.previous, .setup)
+        XCTAssertEqual(SimpleEditorViewModel.Step.segment.previous, .input)
+        XCTAssertEqual(SimpleEditorViewModel.Step.touchup.previous, .segment)
+        XCTAssertEqual(SimpleEditorViewModel.Step.generate.previous, .touchup)
+        XCTAssertEqual(SimpleEditorViewModel.Step.postProcess.previous, .generate)
+    }
+
+    func testStepHasSignificantState() throws {
+        XCTAssertFalse(SimpleEditorViewModel.Step.setup.hasSignificantState)
+        XCTAssertFalse(SimpleEditorViewModel.Step.input.hasSignificantState)
+        XCTAssertTrue(SimpleEditorViewModel.Step.segment.hasSignificantState)
+        XCTAssertTrue(SimpleEditorViewModel.Step.touchup.hasSignificantState)
+        XCTAssertTrue(SimpleEditorViewModel.Step.generate.hasSignificantState)
+        XCTAssertTrue(SimpleEditorViewModel.Step.postProcess.hasSignificantState)
+    }
+
+    func testStepAllCases() throws {
+        let allSteps = SimpleEditorViewModel.Step.allCases
+        XCTAssertEqual(allSteps.count, 6)
+        XCTAssertEqual(allSteps[0], .setup)
+        XCTAssertEqual(allSteps[5], .postProcess)
+    }
+
+    func testStepRawValues() throws {
+        XCTAssertEqual(SimpleEditorViewModel.Step.setup.rawValue, 0)
+        XCTAssertEqual(SimpleEditorViewModel.Step.input.rawValue, 1)
+        XCTAssertEqual(SimpleEditorViewModel.Step.segment.rawValue, 2)
+        XCTAssertEqual(SimpleEditorViewModel.Step.touchup.rawValue, 3)
+        XCTAssertEqual(SimpleEditorViewModel.Step.generate.rawValue, 4)
+        XCTAssertEqual(SimpleEditorViewModel.Step.postProcess.rawValue, 5)
+    }
+
+    // MARK: - AppError Tests
+
+    func testAppErrorDescriptions() throws {
+        let imageError = AppError.imageProcessing("Test error")
+        XCTAssertTrue(imageError.localizedDescription.contains("Image processing"))
+
+        let generationError = AppError.generation("Gen error")
+        XCTAssertTrue(generationError.localizedDescription.contains("3D generation"))
+
+        let meshError = AppError.meshProcessing("Mesh error")
+        XCTAssertTrue(meshError.localizedDescription.contains("Mesh processing"))
+
+        let cancelledError = AppError.cancelled
+        XCTAssertTrue(cancelledError.localizedDescription.contains("cancelled"))
+    }
+
+    func testAppErrorRecoverable() throws {
+        XCTAssertTrue(AppError.imageProcessing("test").isRecoverable)
+        XCTAssertTrue(AppError.generation("test").isRecoverable)
+        XCTAssertTrue(AppError.meshProcessing("test").isRecoverable)
+        XCTAssertFalse(AppError.cancelled.isRecoverable)
+        XCTAssertFalse(AppError.setup(message: "test").isRecoverable)
+        XCTAssertFalse(AppError.unknown.isRecoverable)
+    }
+
+    func testAppErrorSuggestedAction() throws {
+        XCTAssertNotNil(AppError.imageProcessing("test").suggestedAction)
+        XCTAssertNotNil(AppError.generation("test").suggestedAction)
+        XCTAssertNotNil(AppError.meshProcessing("test").suggestedAction)
+        XCTAssertNil(AppError.cancelled.suggestedAction)
+    }
+
+    // MARK: - Generation Stage Tests
+
+    func testGenerationStageAllCases() throws {
+        let stages = GenerationStage.allCases
+        XCTAssertGreaterThan(stages.count, 0)
+    }
+
+    func testStageProgressStatus() throws {
+        let inProgress = StageProgress(status: .inProgress, progress: 0.5, detail: "Working...")
+        XCTAssertEqual(inProgress.status, .inProgress)
+        XCTAssertEqual(inProgress.progress, 0.5)
+        XCTAssertEqual(inProgress.detail, "Working...")
+
+        let completed = StageProgress(status: .completed, progress: 1.0, detail: "")
+        XCTAssertEqual(completed.status, .completed)
+        XCTAssertEqual(completed.progress, 1.0)
+
+        let cancelled = StageProgress(status: .cancelled, progress: 0, detail: "")
+        XCTAssertEqual(cancelled.status, .cancelled)
+    }
+
+    // MARK: - PreloadManager Tests
+
+    @MainActor
+    func testPreloadManagerSingleton() throws {
+        let manager1 = PreloadManager.shared
+        let manager2 = PreloadManager.shared
+        XCTAssertTrue(manager1 === manager2)
+    }
+
+    @MainActor
+    func testPreloadManagerInitialState() throws {
+        let manager = PreloadManager.shared
+        manager.cancelAll()
+
+        XCTAssertFalse(manager.isMaskMergePreloading)
+        XCTAssertFalse(manager.isCompositePreloading)
+        XCTAssertNil(manager.preloadedMergedMask)
+        XCTAssertNil(manager.preloadedComposite)
+    }
+
+    @MainActor
+    func testPreloadManagerCancelAll() throws {
+        let manager = PreloadManager.shared
+
+        // Start some preloading (will be cancelled immediately)
+        manager.cancelAll()
+
+        XCTAssertFalse(manager.isMaskMergePreloading)
+        XCTAssertFalse(manager.isCompositePreloading)
+        XCTAssertNil(manager.preloadedMergedMask)
+        XCTAssertNil(manager.preloadedComposite)
+    }
+
+    @MainActor
+    func testPreloadManagerClearMask() throws {
+        let manager = PreloadManager.shared
+        manager.clearPreloadedMask()
+
+        XCTAssertFalse(manager.isMaskMergePreloading)
+        XCTAssertNil(manager.preloadedMergedMask)
+    }
+
+    @MainActor
+    func testPreloadManagerClearComposite() throws {
+        let manager = PreloadManager.shared
+        manager.clearPreloadedComposite()
+
+        XCTAssertFalse(manager.isCompositePreloading)
+        XCTAssertNil(manager.preloadedComposite)
+    }
+
+    @MainActor
+    func testGetMergedMaskWithNoPreload() throws {
+        let manager = PreloadManager.shared
+        manager.cancelAll()
+
+        // With empty segmentations, should return nil
+        let result = manager.getMergedMask(from: [])
+        XCTAssertNil(result)
+    }
 }

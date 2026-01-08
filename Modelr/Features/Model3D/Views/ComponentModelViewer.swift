@@ -382,14 +382,6 @@ struct ComponentModelViewer: NSViewRepresentable {
                 material.blendMode = .replace
                 material.writesToDepthBuffer = true
                 material.lightingModel = .constant
-            case .transparent:
-                material.fillMode = .fill
-                material.transparency = 0.4  // Lower value = more transparent in SceneKit
-                material.transparencyMode = .dualLayer
-                material.blendMode = .alpha
-                material.writesToDepthBuffer = false
-                material.readsFromDepthBuffer = true
-                material.lightingModel = .physicallyBased
             }
         }
 

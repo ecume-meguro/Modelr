@@ -96,6 +96,12 @@ class HunyuanProcessManager {
         }
 
         try process?.run()
+
+        // Register for cleanup on app termination
+        if let pid = process?.processIdentifier {
+            ProcessCleanup.shared.registerProcess(pid)
+        }
+
         print("[Hunyuan] Server started with PID \(process?.processIdentifier ?? -1)")
     }
 
@@ -129,9 +135,13 @@ class HunyuanProcessManager {
         }
     }
 
-    /// Stop the server
+    /// Stop the server synchronously, ensuring all child processes are killed
     func stopServer() {
-        guard isRunning else { return }
+        guard let proc = process else { return }
+        let pid = proc.processIdentifier
+
+        // Unregister from cleanup
+        ProcessCleanup.shared.unregisterProcess(pid)
 
         // Try graceful exit first
         if let stdin = stdinPipe?.fileHandleForWriting {
@@ -139,15 +149,28 @@ class HunyuanProcessManager {
             try? stdin.write(contentsOf: Data(exitCommand.utf8))
         }
 
-        // Give it a moment to exit gracefully
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            if self?.isRunning == true {
-                self?.process?.terminate()
-            }
-        }
-
+        // Clear handlers before waiting
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
         stderrPipe?.fileHandleForReading.readabilityHandler = nil
+
+        // Give brief grace period, then force kill
+        if proc.isRunning {
+            usleep(200_000) // 200ms grace period
+
+            if proc.isRunning {
+                // Kill the process group to ensure Python children are also killed
+                let pgid = getpgid(pid)
+                if pgid > 0 {
+                    kill(-pgid, SIGTERM)
+                    usleep(50_000) // 50ms
+                    kill(-pgid, SIGKILL)
+                }
+                proc.terminate()
+            }
+
+            // Wait for exit to ensure cleanup is complete before returning
+            proc.waitUntilExit()
+        }
 
         process = nil
         stdinPipe = nil

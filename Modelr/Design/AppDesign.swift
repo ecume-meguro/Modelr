@@ -295,12 +295,13 @@ enum AppDesign {
         }
 
         var body: some View {
-            HStack(spacing: Spacing.p8) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: FontSize.body))
-                    .foregroundStyle(success)
+            HStack(spacing: Spacing.p6) {
+                // Subtle gray checkmark
+                Image(systemName: "checkmark")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
                 Text(text)
-                    .font(.system(size: FontSize.body))
+                    .font(.system(size: FontSize.caption))
                     .foregroundStyle(.secondary)
             }
         }

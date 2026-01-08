@@ -20,14 +20,6 @@ struct SimpleEditorView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .navigationTitle("")
-        .toolbar {
-            // Display mode toolbar - only in post-process step
-            if viewModel.currentStep == .postProcess && !viewModel.meshComponents.isEmpty {
-                ToolbarItemGroup(placement: .principal) {
-                    displayModeToolbar
-                }
-            }
-        }
         .frame(minWidth: 700, minHeight: 500)
         .background(
             Button("") {
@@ -41,45 +33,30 @@ struct SimpleEditorView: View {
         .task {
             await viewModel.env.preloadSAMModel()
         }
-    }
-
-    @ViewBuilder
-    private var displayModeToolbar: some View {
-        HStack(spacing: 2) {
-            ForEach(SimpleEditorViewModel.MeshDisplayMode.allCases, id: \.self) { mode in
-                Button {
-                    withAnimation(.easeOut(duration: 0.15)) {
-                        viewModel.meshDisplayMode = mode
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: iconForDisplayMode(mode))
-                            .font(.system(size: 11))
-                        Text(mode.rawValue)
-                            .font(.system(size: 12, weight: viewModel.meshDisplayMode == mode ? .semibold : .regular))
-                    }
-                    .foregroundStyle(viewModel.meshDisplayMode == mode ? .primary : .secondary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(
-                        viewModel.meshDisplayMode == mode ? Color.primary.opacity(0.1) : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 5)
-                    )
+        // Error alert for user feedback
+        .alert("Error", isPresented: $viewModel.showErrorAlert) {
+            Button("OK") {
+                viewModel.lastError = nil
+            }
+            if viewModel.lastError?.isRecoverable == true {
+                Button("Retry") {
+                    // For now just dismiss - specific retry logic can be added per error type
+                    viewModel.lastError = nil
                 }
-                .buttonStyle(.plain)
+            }
+        } message: {
+            if let error = viewModel.lastError {
+                VStack {
+                    Text(error.localizedDescription)
+                    if let suggestion = error.suggestedAction {
+                        Text(suggestion)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
-        .padding(3)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
     }
 
-    private func iconForDisplayMode(_ mode: SimpleEditorViewModel.MeshDisplayMode) -> String {
-        switch mode {
-        case .solid: return "cube.fill"
-        case .wireframe: return "cube"
-        case .transparent: return "cube.transparent"
-        }
-    }
 }
 
 #Preview {

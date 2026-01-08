@@ -188,10 +188,9 @@ extension SimpleEditorViewModel {
     func transitionToPostProcess() {
         print("[PostProcess] transitionToPostProcess called - currentStep was: \(currentStep)")
 
-        // Instant transition since everything is preloaded
-        withAnimation(.easeOut(duration: 0.15)) {
-            currentStep = .postProcess
-        }
+        // Set step directly - views have implicit animations via .animation(value: currentStep)
+        // Using explicit withAnimation here conflicts with those implicit animations, causing glitches
+        currentStep = .postProcess
 
         print("[PostProcess] transitionToPostProcess - currentStep is now: \(currentStep)")
         print("[PostProcess] Data check: componentFiles=\(componentFiles.count), preloadedNodes=\(preloadedComponentNodes.count), meshComponents=\(meshComponents.count)")
@@ -454,7 +453,18 @@ extension SimpleEditorViewModel {
 
         do {
             try process.run()
-            process.waitUntilExit()
+
+            // Wait with timeout (30 seconds max to prevent hanging)
+            let timeout: TimeInterval = 30
+            let startTime = Date()
+            while process.isRunning {
+                if Date().timeIntervalSince(startTime) > timeout {
+                    print("[MeshProcessor] Timeout after \(timeout)s, terminating process")
+                    process.terminate()
+                    return nil
+                }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
 
             let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
             let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
