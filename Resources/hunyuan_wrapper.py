@@ -741,7 +741,7 @@ class HunyuanServer:
                 progress_callback=progress_callback,
                 cancel_check=should_cancel,
                 preview_callback=preview_callback,
-                preview_interval=100  # ~72 previews for resolution 384
+                preview_interval=200  # ~36 previews, ~14s overhead for resolution 384
             )
 
             self._is_generating = False
