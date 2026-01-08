@@ -89,8 +89,6 @@ import torch
 import numpy as np
 from PIL import Image
 from huggingface_hub import snapshot_download
-import base64
-from io import BytesIO
 
 from modelr_core import (
     get_logger,
@@ -111,265 +109,6 @@ from modelr_core.exceptions import (
 
 logger = get_logger("hunyuan_wrapper")
 HUNYUAN_CACHE_DIR = ModelConfig.get_hunyuan_cache_dir()
-
-# Global preview callback - set by server during generation
-_preview_callback = None
-
-
-def render_mesh_to_image(vertices: np.ndarray, faces: np.ndarray, size: int = 256) -> Optional[bytes]:
-    """Render a mesh to a PNG image using simple orthographic projection.
-
-    Returns PNG bytes or None if rendering fails.
-    """
-    try:
-        import trimesh
-
-        # Create trimesh object
-        mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
-
-        # Center and normalize the mesh
-        mesh.vertices -= mesh.centroid
-        scale = max(mesh.extents)
-        if scale > 0:
-            mesh.vertices /= scale
-
-        # Try to use pyrender for better quality if available
-        try:
-            import pyrender
-            from pyrender import RenderFlags
-
-            # Create scene
-            scene = pyrender.Scene(bg_color=[0.1, 0.1, 0.1, 1.0])
-
-            # Add mesh with material
-            material = pyrender.MetallicRoughnessMaterial(
-                baseColorFactor=[0.8, 0.8, 0.85, 1.0],
-                metallicFactor=0.2,
-                roughnessFactor=0.6
-            )
-            mesh_pyrender = pyrender.Mesh.from_trimesh(mesh, material=material)
-            scene.add(mesh_pyrender)
-
-            # Add camera - position for nice 3/4 view
-            camera = pyrender.PerspectiveCamera(yfov=np.pi / 4.0)
-            camera_pose = np.array([
-                [0.866, -0.25, 0.433, 1.0],
-                [0.0, 0.866, 0.5, 0.8],
-                [-0.5, -0.433, 0.75, 1.5],
-                [0.0, 0.0, 0.0, 1.0]
-            ])
-            scene.add(camera, pose=camera_pose)
-
-            # Add lights
-            light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=3.0)
-            scene.add(light, pose=camera_pose)
-
-            # Render
-            renderer = pyrender.OffscreenRenderer(size, size)
-            color, _ = renderer.render(scene, flags=RenderFlags.SHADOWS_DIRECTIONAL)
-            renderer.delete()
-
-            # Convert to PNG
-            img = Image.fromarray(color)
-            buffer = BytesIO()
-            img.save(buffer, format='PNG', optimize=True)
-            return buffer.getvalue()
-
-        except ImportError:
-            # Fall back to simple wireframe rendering
-            pass
-
-        # Simple fallback: render depth map as grayscale image
-        # Project vertices to 2D using orthographic projection with rotation
-        angle = np.pi / 6  # 30 degrees
-        rot_y = np.array([
-            [np.cos(angle), 0, np.sin(angle)],
-            [0, 1, 0],
-            [-np.sin(angle), 0, np.cos(angle)]
-        ])
-        rot_x = np.array([
-            [1, 0, 0],
-            [0, np.cos(angle/2), -np.sin(angle/2)],
-            [0, np.sin(angle/2), np.cos(angle/2)]
-        ])
-        rotated = mesh.vertices @ rot_y.T @ rot_x.T
-
-        # Create depth image
-        img = np.ones((size, size), dtype=np.float32) * 255
-
-        # Project and draw faces
-        for face in faces:
-            pts = rotated[face]
-            # Map to image coordinates
-            px = ((pts[:, 0] + 1) * 0.4 * size + size * 0.1).astype(int)
-            py = ((1 - pts[:, 1]) * 0.4 * size + size * 0.1).astype(int)
-            depth = pts[:, 2].mean()
-
-            # Simple depth-based shading
-            shade = int(128 + depth * 80)
-            shade = max(50, min(200, shade))
-
-            # Draw triangle edges (simple wireframe)
-            for i in range(3):
-                x0, y0 = px[i], py[i]
-                x1, y1 = px[(i+1)%3], py[(i+1)%3]
-                if 0 <= x0 < size and 0 <= y0 < size:
-                    img[y0, x0] = min(img[y0, x0], shade)
-                if 0 <= x1 < size and 0 <= y1 < size:
-                    img[y1, x1] = min(img[y1, x1], shade)
-
-        # Convert to PIL and PNG
-        img_pil = Image.fromarray(img.astype(np.uint8), mode='L')
-        buffer = BytesIO()
-        img_pil.save(buffer, format='PNG')
-        return buffer.getvalue()
-
-    except Exception as e:
-        print(f"[PREVIEW] Render failed: {e}", file=sys.stderr, flush=True)
-        return None
-
-
-def create_preview_volume_decoder(original_decoder, preview_callback, preview_interval: int = 100):
-    """Create a patched volume decoder that emits preview images during decoding.
-
-    Args:
-        original_decoder: The original VanillaVolumeDecoder instance
-        preview_callback: Callable(image_bytes, progress_float) to send previews
-        preview_interval: Generate preview every N chunks
-
-    Returns:
-        A patched decoder that wraps the original
-    """
-    from tqdm import tqdm
-    from einops import repeat
-    from skimage import measure
-
-    class PreviewVolumeDecoder:
-        """Volume decoder wrapper that generates preview images during decoding."""
-
-        def __init__(self, original, callback, interval):
-            self.original = original
-            self.callback = callback
-            self.interval = interval
-
-        @torch.no_grad()
-        def __call__(
-            self,
-            latents: torch.FloatTensor,
-            geo_decoder,
-            bounds=1.01,
-            num_chunks: int = 10000,
-            octree_resolution: int = None,
-            enable_pbar: bool = True,
-            **kwargs,
-        ):
-            device = latents.device
-            dtype = latents.dtype
-            batch_size = latents.shape[0]
-
-            # Generate query points (same as original)
-            if isinstance(bounds, float):
-                bounds = [-bounds, -bounds, -bounds, bounds, bounds, bounds]
-
-            bbox_min, bbox_max = np.array(bounds[0:3]), np.array(bounds[3:6])
-
-            # Generate dense grid points
-            length = bbox_max - bbox_min
-            num_cells = octree_resolution
-            x = np.linspace(bbox_min[0], bbox_max[0], int(num_cells) + 1, dtype=np.float32)
-            y = np.linspace(bbox_min[1], bbox_max[1], int(num_cells) + 1, dtype=np.float32)
-            z = np.linspace(bbox_min[2], bbox_max[2], int(num_cells) + 1, dtype=np.float32)
-            [xs, ys, zs] = np.meshgrid(x, y, z, indexing="ij")
-            xyz = np.stack((xs, ys, zs), axis=-1)
-            grid_size = [int(num_cells) + 1, int(num_cells) + 1, int(num_cells) + 1]
-
-            xyz_samples = torch.from_numpy(xyz).to(device, dtype=dtype).contiguous().reshape(-1, 3)
-
-            # Calculate total chunks for progress
-            total_points = xyz_samples.shape[0]
-            total_chunks = (total_points + num_chunks - 1) // num_chunks
-
-            # Process chunks with preview generation
-            batch_logits = []
-            chunks_processed = 0
-
-            pbar = tqdm(range(0, total_points, num_chunks), desc="Volume Decoding", disable=not enable_pbar)
-
-            for start in pbar:
-                chunk_queries = xyz_samples[start: start + num_chunks, :]
-                chunk_queries = repeat(chunk_queries, "p c -> b p c", b=batch_size)
-                logits = geo_decoder(queries=chunk_queries, latents=latents)
-                batch_logits.append(logits)
-                chunks_processed += 1
-
-                # Generate preview at intervals
-                if self.callback and chunks_processed % self.interval == 0:
-                    progress = chunks_processed / total_chunks
-                    try:
-                        # Build partial grid
-                        partial_logits = torch.cat(batch_logits, dim=1)
-                        current_points = partial_logits.shape[1]
-
-                        # Create full grid with NaN for uncomputed regions
-                        full_size = grid_size[0] * grid_size[1] * grid_size[2]
-                        full_logits = torch.full((batch_size, full_size), float('nan'), device=device)
-                        full_logits[:, :current_points] = partial_logits.squeeze(-1) if partial_logits.dim() > 2 else partial_logits
-
-                        grid_logits = full_logits.view((batch_size, *grid_size)).float()
-
-                        # Run marching cubes on partial grid (replace NaN with negative for outside)
-                        grid_np = grid_logits[0].cpu().numpy()
-                        grid_np = np.nan_to_num(grid_np, nan=-1.0)
-
-                        try:
-                            vertices, faces, _, _ = measure.marching_cubes(
-                                grid_np, 0.0, method="lewiner"
-                            )
-                            # Scale vertices to bounds
-                            vertices = vertices / np.array(grid_size) * (bbox_max - bbox_min) + bbox_min
-
-                            # Render preview
-                            if len(vertices) > 100:  # Only if we have meaningful geometry
-                                img_bytes = render_mesh_to_image(vertices, faces, size=256)
-                                if img_bytes:
-                                    self.callback(img_bytes, progress)
-                                    print(f"[PREVIEW] Sent preview at {progress*100:.0f}%", file=sys.stderr, flush=True)
-                        except Exception as e:
-                            # Marching cubes can fail on partial/noisy data - that's OK
-                            print(f"[PREVIEW] Marching cubes skipped: {e}", file=sys.stderr, flush=True)
-                            pass
-
-                    except Exception as e:
-                        print(f"[PREVIEW] Preview generation failed: {e}", file=sys.stderr, flush=True)
-
-            # Combine all logits
-            grid_logits = torch.cat(batch_logits, dim=1)
-            grid_logits = grid_logits.view((batch_size, *grid_size)).float()
-
-            return grid_logits
-
-    return PreviewVolumeDecoder(original_decoder, preview_callback, preview_interval)
-
-
-def patch_pipeline_for_preview(pipeline, preview_callback, preview_interval: int = 100):
-    """Patch a Hunyuan pipeline to emit preview images during volume decoding.
-
-    Args:
-        pipeline: The Hunyuan3DDiTFlowMatchingPipeline instance
-        preview_callback: Callable(image_bytes, progress_float) to send previews
-        preview_interval: Generate preview every N chunks (default 100)
-    """
-    if preview_callback is None:
-        return
-
-    try:
-        original_decoder = pipeline.vae.volume_decoder
-        pipeline.vae.volume_decoder = create_preview_volume_decoder(
-            original_decoder, preview_callback, preview_interval
-        )
-        print(f"[PREVIEW] Patched pipeline for preview (interval={preview_interval})", file=sys.stderr, flush=True)
-    except Exception as e:
-        print(f"[PREVIEW] Failed to patch pipeline: {e}", file=sys.stderr, flush=True)
 
 
 class HunyuanGenerator:
@@ -521,18 +260,13 @@ class HunyuanGenerator:
         num_steps: int = 50,
         octree_resolution: int = 384,
         progress_callback: Optional[Callable[[str, float, Optional[str]], None]] = None,
-        cancel_check: Optional[Callable[[], bool]] = None,
-        preview_callback: Optional[Callable[[bytes, float], None]] = None,
-        preview_interval: int = 100
+        cancel_check: Optional[Callable[[], bool]] = None
     ) -> str:
         """Generate 3D model.
 
         Args:
             cancel_check: Optional callable that returns True if generation should be cancelled.
                          Checked at the start of each diffusion step for clean cancellation.
-            preview_callback: Optional callable(image_bytes, progress) to receive preview images
-                             during volume decoding.
-            preview_interval: Generate preview every N chunks (default 100, ~72 previews total)
         """
         if self.pipeline is None:
             self.load()
@@ -566,10 +300,6 @@ class HunyuanGenerator:
                     if current_step == num_steps:
                         print("[STAGE] volume_decoding", file=sys.stderr, flush=True)
                         progress_callback("Volume Decoding", 0.82, "Extracting mesh...")
-
-            # Patch pipeline for preview if callback provided
-            if preview_callback:
-                patch_pipeline_for_preview(self.pipeline, preview_callback, preview_interval)
 
             with torch.inference_mode():
                 # Try with callback first
@@ -651,18 +381,6 @@ class HunyuanServer:
             "detail": detail
         })
 
-    def send_preview(self, message_id: str, image_bytes: bytes, progress: float):
-        """Send a preview image during volume decoding."""
-        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-        self.send_response({
-            "success": True,
-            "type": "preview",
-            "messageId": message_id,
-            "stage": "volume_decoding",
-            "progress": 0.80 + progress * 0.15,  # Map to 80-95% range
-            "previewImage": image_base64
-        })
-
     def handle_generate(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Handle a generation request."""
         message_id = request.get("messageId", "")
@@ -729,19 +447,13 @@ class HunyuanServer:
                     return True
                 return False
 
-            # Preview callback for real-time mesh preview during volume decoding
-            def preview_callback(image_bytes: bytes, progress: float):
-                self.send_preview(message_id, image_bytes, progress)
-
             result_path = self.generator.generate(
                 image=image,
                 output_path=output_path,
                 num_steps=steps,
                 octree_resolution=resolution,
                 progress_callback=progress_callback,
-                cancel_check=should_cancel,
-                preview_callback=preview_callback,
-                preview_interval=200  # ~36 previews, ~14s overhead for resolution 384
+                cancel_check=should_cancel
             )
 
             self._is_generating = False

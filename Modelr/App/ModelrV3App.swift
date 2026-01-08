@@ -24,16 +24,9 @@ struct ModelrApp: App {
 
         // Force refresh resources (useful during development)
         // Launch with: --refresh-resources or set REFRESH_RESOURCES=1
-        // In DEBUG builds, always refresh to pick up latest Python code changes
-        #if DEBUG
-        let shouldForceRefresh = true
-        #else
-        let shouldForceRefresh = CommandLine.arguments.contains("--refresh-resources") ||
-                                 ProcessInfo.processInfo.environment["REFRESH_RESOURCES"] == "1"
-        #endif
-
-        if shouldForceRefresh {
-            print("[App] Refreshing resources (DEBUG or forced)...")
+        if CommandLine.arguments.contains("--refresh-resources") ||
+           ProcessInfo.processInfo.environment["REFRESH_RESOURCES"] == "1" {
+            print("[App] Force refreshing resources...")
             dependencyService.refreshResources()
         } else {
             // Auto-refresh resources if app version changed (preserves models)

@@ -315,8 +315,7 @@ deinit {
                         } else {
                             progress("PROGRESS:\(percent)% - \(detail)")
                         }
-                    },
-                    onPreview: preview
+                    }
                 )
                 completion(.success(resultURL))
             } catch {
