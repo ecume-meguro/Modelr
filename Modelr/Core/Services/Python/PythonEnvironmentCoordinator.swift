@@ -258,6 +258,7 @@ deinit {
         resolution: Int,
         modelVariant: String = "std",
         progress: @escaping (String) -> Void,
+        preview: ((Data) -> Void)? = nil,
         completion: @escaping (Result<URL, Error>) -> Void
     ) async {
         guard dependencyService.hunyuanVenvReady else {
@@ -314,7 +315,8 @@ deinit {
                         } else {
                             progress("PROGRESS:\(percent)% - \(detail)")
                         }
-                    }
+                    },
+                    onPreview: preview
                 )
                 completion(.success(resultURL))
             } catch {

@@ -17,7 +17,8 @@ class GenerationService: ObservableObject {
     @Published var status: GenerationStatus = .idle
     @Published var startTime: Date?
     @Published var duration: TimeInterval?
-    
+    @Published var previewImage: NSImage?  // Real-time preview during volume decoding
+
     private let env: PythonEnvironment
     
     init(env: PythonEnvironment = PythonEnvironment()) {
@@ -34,7 +35,8 @@ class GenerationService: ObservableObject {
         status = .preparing
         startTime = Date()
         duration = nil
-        
+        previewImage = nil  // Clear any previous preview
+
         await env.generate3DModel(
             imagePath: imagePath,
             maskPath: maskPath,
@@ -44,6 +46,14 @@ class GenerationService: ObservableObject {
             progress: { [weak self] progressString in
                 Task { @MainActor in
                     self?.handleProgressUpdate(progressString)
+                }
+            },
+            preview: { [weak self] imageData in
+                // Update preview image from PNG data
+                Task { @MainActor in
+                    if let image = NSImage(data: imageData) {
+                        self?.previewImage = image
+                    }
                 }
             },
             completion: { [weak self] result in

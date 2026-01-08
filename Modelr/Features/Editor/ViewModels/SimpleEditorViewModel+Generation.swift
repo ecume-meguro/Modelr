@@ -5,6 +5,14 @@ import Combine
 extension SimpleEditorViewModel {
 
     func setupGenerationObservation() {
+        // Observe preview images during volume decoding
+        ServiceContainer.shared.generationService.$previewImage
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] previewImage in
+                self?.generationPreviewImage = previewImage
+            }
+            .store(in: &cancellables)
+
         ServiceContainer.shared.generationService.$status
             .receive(on: DispatchQueue.main)
             .sink { [weak self] status in

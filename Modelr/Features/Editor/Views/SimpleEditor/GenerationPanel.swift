@@ -19,20 +19,48 @@ struct GenerationPanel: View {
 
     @ViewBuilder
     private var generationProgressView: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(visibleStages, id: \.self) { stage in
-                StageProgressRowView(
-                    stage: stage,
-                    stageData: viewModel.generationStages[stage] ?? StageProgress(),
-                    isPreloaded: stage == .loading && ModelLoadingCoordinator.shared.isHunyuanReady,
-                    downloadInfo: stage == .downloading ? (
-                        progress: viewModel.formattedDownloadProgress,
-                        speed: viewModel.formattedDownloadSpeed,
-                        remaining: viewModel.formattedTimeRemaining,
-                        hasData: viewModel.downloadTotalBytes > 0
-                    ) : nil,
-                    stageTextColor: viewModel.stageTextColor
-                )
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+            // Real-time 3D preview during volume decoding
+            if let previewImage = viewModel.generationPreviewImage,
+               viewModel.generationStages[.volumeDecoding]?.status == .inProgress {
+                VStack(spacing: AppDesign.Spacing.p8) {
+                    Image(nsImage: previewImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxHeight: 200)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(AppDesign.accent.opacity(0.3), lineWidth: 1)
+                        )
+                        .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
+                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                        .animation(.easeOut(duration: 0.2), value: previewImage)
+
+                    Text("Mesh Preview")
+                        .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, AppDesign.Spacing.p8)
+            }
+
+            // Stage progress list
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(visibleStages, id: \.self) { stage in
+                    StageProgressRowView(
+                        stage: stage,
+                        stageData: viewModel.generationStages[stage] ?? StageProgress(),
+                        isPreloaded: stage == .loading && ModelLoadingCoordinator.shared.isHunyuanReady,
+                        downloadInfo: stage == .downloading ? (
+                            progress: viewModel.formattedDownloadProgress,
+                            speed: viewModel.formattedDownloadSpeed,
+                            remaining: viewModel.formattedTimeRemaining,
+                            hasData: viewModel.downloadTotalBytes > 0
+                        ) : nil,
+                        stageTextColor: viewModel.stageTextColor
+                    )
+                }
             }
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.generationStages.map { "\($0.key):\($0.value.status)" })

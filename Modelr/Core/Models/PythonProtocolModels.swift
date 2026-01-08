@@ -152,8 +152,8 @@ struct HunyuanRequest: Codable {
 struct HunyuanResponse: Codable {
     let success: Bool
     let messageId: String?
-    let type: String?         // "progress", "complete", "error"
-    let stage: String?        // "loading", "diffusion", "exporting"
+    let type: String?         // "progress", "complete", "error", "preview"
+    let stage: String?        // "loading", "diffusion", "volume_decoding", "exporting"
     let progress: Double?     // 0.0 - 1.0
     let detail: String?       // Progress detail message
     let outputPath: String?   // Path to generated model
@@ -163,4 +163,5 @@ struct HunyuanResponse: Codable {
     let server: String?       // e.g. "hunyuan"
     let variant: String?      // e.g. "mini", "std"
     let status: String?       // e.g. "pong", "exiting"
+    let previewImage: String? // Base64-encoded PNG preview during volume decoding
 }

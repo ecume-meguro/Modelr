@@ -155,6 +155,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     @Published var generationStages: [GenerationStage: StageProgress] = [:]
     @Published var isLargeModelDownloaded: Bool = false
     @Published var isSmallModelDownloaded: Bool = false
+    @Published var generationPreviewImage: NSImage?  // Real-time 3D preview during volume decoding
 
     // MARK: - Warning Dialogs
     @Published var showBackWarning: Bool = false

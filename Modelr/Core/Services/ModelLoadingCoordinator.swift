@@ -212,13 +212,15 @@ class ModelLoadingCoordinator: ObservableObject {
     /// Generate 3D model using the persistent Hunyuan server
     /// - Parameters:
     ///   - onProgress: Callback with (stage, detail, progress) where stage is "loading"/"diffusion"/"volume_decoding"/"saving"
+    ///   - onPreview: Callback with preview image data during volume decoding (base64 PNG)
     func generate(
         imagePath: String,
         maskPath: String?,
         outputPath: String,
         steps: Int,
         resolution: Int,
-        onProgress: ((String, String, Double) -> Void)?
+        onProgress: ((String, String, Double) -> Void)?,
+        onPreview: ((Data) -> Void)? = nil
     ) async throws -> URL {
         guard let manager = hunyuanProcessManager, manager.isRunning else {
             throw PythonError.workerNotRunning
@@ -353,6 +355,16 @@ class ModelLoadingCoordinator: ObservableObject {
         }
 
         let response = try await manager.sendRequest(request) { progress in
+            // Handle preview images from volume decoding
+            if progress.type == "preview", let previewBase64 = progress.previewImage {
+                if let previewData = Data(base64Encoded: previewBase64) {
+                    print("[JSON Progress] Received preview image (\(previewData.count) bytes)")
+                    DispatchQueue.main.async {
+                        onPreview?(previewData)
+                    }
+                }
+            }
+
             // JSON progress from Python callback (if it works)
             if let stage = progress.stage, let value = progress.progress {
                 let detail = progress.detail ?? ""
