@@ -407,6 +407,11 @@ class ModelLoadingCoordinator: ObservableObject {
         print("[ModelLoadingCoordinator] Hunyuan server stopped")
     }
 
+    /// Cancel current generation without stopping the server
+    func cancelGeneration() {
+        hunyuanProcessManager?.cancelGeneration()
+    }
+
     /// Cancel any ongoing startup operation
     func cancelStartup() {
         startupTask?.cancel()

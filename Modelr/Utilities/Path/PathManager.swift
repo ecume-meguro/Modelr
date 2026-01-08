@@ -78,6 +78,22 @@ struct PathManager {
         configDirectory.appendingPathComponent("setup_complete.json")
     }
 
+    /// Path to bundled-resources marker file.
+    ///
+    /// This is intentionally separate from setup completion so we can refresh
+    /// Python scripts/config on app updates without requiring re-setup.
+    static var resourcesMarkerPath: URL {
+        configDirectory.appendingPathComponent("resources_version.json")
+    }
+
+    /// Path to environment version marker file.
+    ///
+    /// Tracks the build number when Python environments were last synced.
+    /// When build changes, environments need re-syncing but models don't need re-downloading.
+    static var environmentMarkerPath: URL {
+        configDirectory.appendingPathComponent("environment_version.json")
+    }
+
     /// Check if setup has been completed successfully
     static var isSetupComplete: Bool {
         guard FileManager.default.fileExists(atPath: setupCompletionMarkerPath.path) else {
@@ -108,6 +124,9 @@ struct PathManager {
         ]
         let data = try JSONSerialization.data(withJSONObject: marker, options: .prettyPrinted)
         try data.write(to: setupCompletionMarkerPath)
+
+        // Also update environment marker to sync with setup completion
+        try updateEnvironmentMarker()
     }
 
     /// Current app version from bundle
@@ -137,6 +156,73 @@ struct PathManager {
             return true // Can't read marker, refresh to be safe
         }
         return false
+    }
+
+    /// Check if bundled resources need refreshing (based on app version/build).
+    ///
+    /// Returns true when the marker is missing (first run) or when version/build changed.
+    static var needsBundledResourcesRefresh: Bool {
+        guard FileManager.default.fileExists(atPath: resourcesMarkerPath.path) else {
+            return true
+        }
+        do {
+            let data = try Data(contentsOf: resourcesMarkerPath)
+            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let storedVersion = json["app_version"] as? String ?? "0.0.0"
+                let storedBuild = json["build_number"] as? String ?? "0"
+                return storedVersion != currentAppVersion || storedBuild != currentBuildNumber
+            }
+        } catch {
+            return true
+        }
+        return true
+    }
+
+    /// Check if Python environments need re-syncing (based on build number).
+    ///
+    /// Returns true when the marker is missing or when build number changed.
+    /// This triggers environment sync without model re-download.
+    static var needsEnvironmentRefresh: Bool {
+        // Only check if initial setup is complete - don't trigger env refresh before first setup
+        guard isSetupComplete else { return false }
+
+        guard FileManager.default.fileExists(atPath: environmentMarkerPath.path) else {
+            return true
+        }
+        do {
+            let data = try Data(contentsOf: environmentMarkerPath)
+            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let storedBuild = json["build_number"] as? String ?? "0"
+                return storedBuild != currentBuildNumber
+            }
+        } catch {
+            return true
+        }
+        return true
+    }
+
+    /// Update bundled-resources marker to current app version/build.
+    static func updateResourcesMarker() throws {
+        try ensureDirectoryExists(at: configDirectory)
+        let marker: [String: Any] = [
+            "app_version": currentAppVersion,
+            "build_number": currentBuildNumber,
+            "resources_updated_at": ISO8601DateFormatter().string(from: Date())
+        ]
+        let data = try JSONSerialization.data(withJSONObject: marker, options: .prettyPrinted)
+        try data.write(to: resourcesMarkerPath)
+    }
+
+    /// Update environment marker to current build number.
+    static func updateEnvironmentMarker() throws {
+        try ensureDirectoryExists(at: configDirectory)
+        let marker: [String: Any] = [
+            "app_version": currentAppVersion,
+            "build_number": currentBuildNumber,
+            "environments_synced_at": ISO8601DateFormatter().string(from: Date())
+        ]
+        let data = try JSONSerialization.data(withJSONObject: marker, options: .prettyPrinted)
+        try data.write(to: environmentMarkerPath)
     }
 
     /// Update the version in setup marker without requiring full re-setup

@@ -23,7 +23,7 @@ struct SimpleEditorSidebar: View {
                     stepRow(stepNumber: 2, title: "Segment", isLast: false, locked: !viewModel.isSetupComplete) {
                         segmentContent
                     }
-                    stepRow(stepNumber: 3, title: "Touchup", isLast: false, locked: !viewModel.isSetupComplete) {
+                    stepRow(stepNumber: 3, title: "Touchup (optional)", isLast: false, locked: !viewModel.isSetupComplete) {
                         touchupContent
                     }
                     stepRow(stepNumber: 4, title: "Generate 3D", isLast: false, locked: !viewModel.isSetupComplete) {
@@ -34,7 +34,8 @@ struct SimpleEditorSidebar: View {
                     }
                 }
                 .padding(AppDesign.Spacing.p16)
-                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: viewModel.currentSetupSubStep)
+                .animation(.spring(response: 0.28, dampingFraction: 0.82), value: viewModel.currentSetupSubStep)
+                .animation(.spring(response: 0.25, dampingFraction: 0.85), value: viewModel.currentStep)
             }
 
             Spacer()
@@ -256,8 +257,8 @@ struct SimpleEditorSidebar: View {
                 }
                 .fixedSize(horizontal: false, vertical: true)
                 .transition(.asymmetric(
-                    insertion: .opacity.combined(with: .scale(scale: 0.98, anchor: .top)).animation(.easeOut(duration: 0.25).delay(0.05)),
-                    removal: .opacity.animation(.easeIn(duration: 0.15))
+                    insertion: .opacity.combined(with: .scale(scale: 0.98, anchor: .top)).animation(.spring(response: 0.25, dampingFraction: 0.85)),
+                    removal: .opacity.animation(.easeOut(duration: 0.12))
                 ))
             } else if !isLast {
                 // Collapsed connector
@@ -268,8 +269,8 @@ struct SimpleEditorSidebar: View {
             }
         }
         .opacity(locked ? 0.6 : 1.0)
-        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: showContent)
-        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isDone)
+        .animation(.spring(response: 0.25, dampingFraction: 0.8), value: showContent)
+        .animation(.spring(response: 0.22, dampingFraction: 0.78), value: isDone)
     }
 
     @ViewBuilder
@@ -290,8 +291,8 @@ struct SimpleEditorSidebar: View {
                     .foregroundStyle(locked ? Color.secondary.opacity(0.5) : (isActive ? Color.white : Color.secondary))
             }
         }
-        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isDone)
-        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isActive)
+        .animation(.spring(response: 0.22, dampingFraction: 0.72), value: isDone)
+        .animation(.spring(response: 0.2, dampingFraction: 0.75), value: isActive)
     }
 
     // MARK: - Step State
@@ -347,18 +348,39 @@ struct SimpleEditorSidebar: View {
                     SegmentationPanel(viewModel: viewModel)
 
                     sectionFooter {
-                        AppDesign.GlassButton("Next: Touchup", icon: "wand.and.stars", disabled: viewModel.totalValidMasks == 0) {
-                            viewModel.startTouchup()
+                        // Decision prompt
+                        VStack(alignment: .leading, spacing: AppDesign.Spacing.p6) {
+                            Text("Does the mask look accurate?")
+                                .font(.system(size: AppDesign.FontSize.subheadline, weight: .medium))
+                                .foregroundStyle(.primary)
+                            Text("Check if your object is fully masked")
+                                .font(.system(size: AppDesign.FontSize.caption))
+                                .foregroundStyle(.secondary)
                         }
+                        .padding(.bottom, AppDesign.Spacing.p4)
+
+                        // Two equal options (both secondary so user must choose)
+                        HStack(spacing: AppDesign.Spacing.p8) {
+                            AppDesign.GlassButtonSecondary("Refine Mask", icon: "wand.and.stars", disabled: viewModel.totalValidMasks == 0) {
+                                viewModel.startTouchup()
+                            }
+                            AppDesign.GlassButtonSecondary("Generate 3D", icon: "cube.fill", disabled: viewModel.totalValidMasks == 0) {
+                                viewModel.transitionToGenerate()
+                            }
+                        }
+
                         AppDesign.InlineButton("Back to Input", icon: "arrow.left") {
                             viewModel.handleBackAction()
                         }
                     }
                 }
-                .transition(.opacity.animation(.easeInOut(duration: 0.2)))
+                .transition(.asymmetric(
+                    insertion: .opacity.animation(.easeOut(duration: 0.18)),
+                    removal: .opacity.animation(.easeOut(duration: 0.1))
+                ))
             } else {
                 AppDesign.CompletedRow("\(viewModel.totalValidMasks) \(viewModel.totalValidMasks == 1 ? "object" : "objects") selected")
-                    .transition(.opacity.animation(.easeInOut(duration: 0.2)))
+                    .transition(.opacity.animation(.easeOut(duration: 0.15)))
             }
         }
         .alert("Discard Image?", isPresented: $viewModel.showDiscardImageWarning) {
@@ -385,10 +407,13 @@ struct SimpleEditorSidebar: View {
                         }
                     }
                 }
-                .transition(.opacity.animation(.easeInOut(duration: 0.2)))
+                .transition(.asymmetric(
+                    insertion: .opacity.animation(.easeOut(duration: 0.18)),
+                    removal: .opacity.animation(.easeOut(duration: 0.1))
+                ))
             } else {
                 AppDesign.CompletedRow("Mask refined")
-                    .transition(.opacity.animation(.easeInOut(duration: 0.2)))
+                    .transition(.opacity.animation(.easeOut(duration: 0.15)))
             }
         }
         .alert("Lose Touchup Changes?", isPresented: $viewModel.showBackWarning) {
@@ -418,15 +443,6 @@ struct SimpleEditorSidebar: View {
                     sectionFooter {
                         AppDesign.GlassButtonSecondary("Stop Generation", icon: "stop.fill", destructive: true) {
                             viewModel.stopGeneration()
-                        }
-                    }
-                } else if viewModel.generated3DModelURL != nil {
-                    sectionFooter {
-                        AppDesign.GlassButton("Next: Post-Process", icon: "slider.horizontal.3") {
-                            viewModel.transitionToPostProcess()
-                        }
-                        AppDesign.InlineButton("Back to Touchup", icon: "arrow.left") {
-                            viewModel.handleBackAction()
                         }
                     }
                 }

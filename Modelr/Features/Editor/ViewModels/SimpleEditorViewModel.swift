@@ -1,6 +1,9 @@
 import SwiftUI
 import Foundation
 import Combine
+import SceneKit
+import ModelIO
+import SceneKit.ModelIO
 
 /// ViewModel for ContentViewSimple - manages all state and business logic
 @MainActor
@@ -120,7 +123,10 @@ class SimpleEditorViewModel: BaseEditorViewModel {
 
     // MARK: - Post-Process State
     @Published var meshComponents: [MeshComponent] = []
-    @Published var selectedComponentIndices: Set<Int> = []
+    @Published var keepIndices: Set<Int> = []        // Components to keep (green)
+    @Published var deleteIndices: Set<Int> = []      // Components to delete (red)
+    @Published var highlightedComponentIndex: Int? = nil  // Currently highlighted (yellow in viewer)
+    @Published var isolatedComponentIndex: Int? = nil     // Show only this component (nil = show all)
     @Published var isAnalyzingMesh: Bool = false
     @Published var isExtractingComponents: Bool = false
     @Published var isProcessingMesh: Bool = false
@@ -128,15 +134,35 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     @Published var selectedExportFormat: ExportFormat = .obj
     @Published var componentFiles: [ComponentFile] = []
 
-    // Post-process confirmations and editing state
-    @Published var showDeleteSelectedConfirmation: Bool = false
-    @Published var showKeepSelectedConfirmation: Bool = false
-    @Published var showKeepLargestConfirmation: Bool = false
-    @Published var isEditingKeepLargest: Bool = false
-    @Published var keepLargestCount: Int = 1
+    /// Pre-loaded SceneKit nodes for instant post-process rendering (keyed by component index)
+    @Published var preloadedComponentNodes: [Int: SCNNode] = [:]
+    @Published var isPreloadingScenes: Bool = false
+
+    // Post-process display options
+    enum MeshDisplayMode: String, CaseIterable {
+        case solid = "Solid"
+        case wireframe = "Wireframe"
+        case transparent = "Transparent"
+    }
+    @Published var meshDisplayMode: MeshDisplayMode = .solid
+
+    // Post-process confirmations
+    @Published var showApplyChangesConfirmation: Bool = false
+
+    // Pre-loading task for instant post-process transition
+    var meshPreloadTask: Task<Void, Never>?
+
+    /// Whether we're in the handoff phase (generation complete, preloading for post-process)
+    var isInHandoff: Bool {
+        generationStages[.handoff]?.status == .inProgress
+    }
 
     // Background environment setup tracking
     @Published var isConfiguringEnvironment: Bool = false
+
+    // Environment refresh tracking (for app updates)
+    @Published var isRefreshingEnvironments: Bool = false
+    @Published var environmentRefreshStatus: String = ""
 
     // MARK: - UI State
     @Published var zoomScale: CGFloat = 1.0
@@ -204,11 +230,23 @@ class SimpleEditorViewModel: BaseEditorViewModel {
 
         if wasSetupComplete {
             isSetupComplete = true
-            currentStep = .input
             setupSubStepCompleted = Set(SetupSubStep.allCases)
-            // Mark Python environment ready for generation
-            env.markHunyuanReady()
-            print("[Setup] Setup already complete, skipping to input step")
+
+            // Check if environments need refreshing due to build update
+            if PathManager.needsEnvironmentRefresh {
+                print("[Setup] Build changed, need to refresh Python environments")
+                currentStep = .setup
+                currentSetupSubStep = .configuringSegmentation
+                isRefreshingEnvironments = true
+                Task {
+                    await runEnvironmentRefresh()
+                }
+            } else {
+                currentStep = .input
+                // Mark Python environment ready for generation
+                env.markHunyuanReady()
+                print("[Setup] Setup already complete, skipping to input step")
+            }
         } else {
             currentStep = .setup
             // Clear any stale UserDefaults value
@@ -284,43 +322,80 @@ class SimpleEditorViewModel: BaseEditorViewModel {
 
     // MARK: - Navigation
     func goBack() {
-        withAnimation(.easeOut(duration: 0.2)) {
-            switch currentStep {
-            case .setup:
-                break  // Can't go back from setup
+        // Capture the target step and animate immediately
+        let targetStep: Step
+        switch currentStep {
+        case .setup, .input:
+            return  // Can't go back
+        case .segment:
+            targetStep = .input
+        case .touchup:
+            targetStep = .segment
+        case .generate:
+            targetStep = .touchup
+        case .postProcess:
+            targetStep = .generate
+        }
+
+        // Animate step change FIRST for immediate response
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+            currentStep = targetStep
+        }
+
+        // Clean up state async (after a tiny delay to let animation start)
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(50))
+
+            switch targetStep {
             case .input:
-                break
-            case .segment:
                 segmentations.removeAll()
                 inputImage = nil
                 inputImagePath = nil
                 imagePixelSize = .zero
                 imageHasAlpha = false
-                currentStep = .input
-            case .touchup:
+            case .segment:
                 editableMaskImage = nil
                 maskHistory.removeAll()
                 brushPreviewPosition = nil
-                currentStep = .segment
-            case .generate:
+            case .touchup:
                 compositeImage = nil
                 generated3DModelURL = nil
                 generationStages = [:]
                 generationStatus = ""
                 generationStartTime = nil
                 generationDuration = nil
-                currentStep = .touchup
-            case .postProcess:
+            case .generate:
+                // Clear post-process state
                 meshComponents.removeAll()
-                selectedComponentIndices.removeAll()
+                keepIndices.removeAll()
+                deleteIndices.removeAll()
+                highlightedComponentIndex = nil
+                isolatedComponentIndex = nil
                 processedModelURL = nil
-                currentStep = .generate
+                componentFiles.removeAll()
+                preloadedComponentNodes.removeAll()
+                // Clear generated model to restart generation
+                generated3DModelURL = nil
+                generationStages = [:]
+                generationStatus = ""
+                generationStartTime = nil
+                generationDuration = nil
+            default:
+                break
             }
         }
     }
 
     func clearAll() {
-        withAnimation(.easeOut(duration: 0.2)) {
+        // Animate to input FIRST
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+            currentStep = .input
+        }
+
+        // Clean up state after animation starts
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(50))
+
             inputImage = nil
             inputImagePath = nil
             segmentations.removeAll()
@@ -335,10 +410,15 @@ class SimpleEditorViewModel: BaseEditorViewModel {
             generationStartTime = nil
             generationDuration = nil
             meshComponents.removeAll()
-            selectedComponentIndices.removeAll()
+            keepIndices.removeAll()
+            deleteIndices.removeAll()
+            highlightedComponentIndex = nil
+            isolatedComponentIndex = nil
             processedModelURL = nil
+            componentFiles.removeAll()
+            preloadedComponentNodes.removeAll()
+            meshDisplayMode = .solid
             zoomScale = 1.0
-            currentStep = .input
         }
     }
 

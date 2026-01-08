@@ -18,7 +18,7 @@ struct ImageCanvas: View {
             
             breadcrumbOverlay
             
-            if viewModel.inputImage != nil && viewModel.currentStep != .postProcess && !(viewModel.currentStep == .generate && viewModel.generated3DModelURL != nil) {
+            if viewModel.inputImage != nil && viewModel.currentStep != .postProcess {
                 ScrollWheelZoomOverlay(
                     zoomScale: $viewModel.zoomScale,
                     minZoom: 0.5,
@@ -34,42 +34,93 @@ struct ImageCanvas: View {
     
     @ViewBuilder
     private var imageContent: some View {
-        Group {
+        ZStack {
+            // Setup content
             if viewModel.currentStep == .setup {
                 setupCanvasContent
-            } else if viewModel.currentStep == .postProcess {
-                if viewModel.isAnalyzingMesh || viewModel.isExtractingComponents {
-                    // Show loading state while preparing colored view
-                    postProcessLoadingView
+                    .transition(.opacity.animation(.easeOut(duration: 0.2)))
+            }
+
+            // Post-process: show colored component viewer (only after handoff completes)
+            if viewModel.currentStep == .postProcess {
+                Group {
+                    if viewModel.isAnalyzingMesh || viewModel.isExtractingComponents {
+                        postProcessLoadingView
+                            .padding(AppDesign.Spacing.p24)
+                    } else if !viewModel.componentFiles.isEmpty && !viewModel.preloadedComponentNodes.isEmpty {
+                        // Show colored components (preloaded with materials) - instant!
+                        ComponentModelViewerContainer(
+                            componentFiles: viewModel.componentFiles.map {
+                                ComponentModelViewer.ComponentFile(index: $0.index, path: $0.path)
+                            },
+                            keepIndices: viewModel.keepIndices,
+                            deleteIndices: viewModel.deleteIndices,
+                            highlightedIndex: viewModel.highlightedComponentIndex,
+                            isolatedIndex: viewModel.isolatedComponentIndex,
+                            displayMode: viewModel.meshDisplayMode,
+                            preloadedNodes: viewModel.preloadedComponentNodes
+                        )
+                        .id("components-\(viewModel.componentFiles.count)")
                         .padding(AppDesign.Spacing.p24)
-                } else if !viewModel.componentFiles.isEmpty {
-                    // Use component viewer with coloring for all meshes
-                    ComponentModelViewerContainer(
-                        componentFiles: viewModel.componentFiles.map {
-                            ComponentModelViewer.ComponentFile(index: $0.index, path: $0.path)
-                        },
-                        selectedIndices: viewModel.selectedComponentIndices
-                    )
-                    .id(viewModel.componentFiles.count) // Refresh when components change
-                    .padding(AppDesign.Spacing.p24)
-                } else if let modelURL = viewModel.currentMeshURL {
-                    // Fallback to regular viewer only if extraction failed
-                    ModelViewerContainer(modelURL: modelURL, viewMode: viewModel.viewMode)
-                        .id("\(modelURL)-\(viewModel.viewMode)")
+                    } else if !viewModel.componentFiles.isEmpty {
+                        // Fallback: component files exist but no preloaded nodes (load from disk)
+                        ComponentModelViewerContainer(
+                            componentFiles: viewModel.componentFiles.map {
+                                ComponentModelViewer.ComponentFile(index: $0.index, path: $0.path)
+                            },
+                            keepIndices: viewModel.keepIndices,
+                            deleteIndices: viewModel.deleteIndices,
+                            highlightedIndex: viewModel.highlightedComponentIndex,
+                            isolatedIndex: viewModel.isolatedComponentIndex,
+                            displayMode: viewModel.meshDisplayMode
+                        )
+                        .id("components-fallback-\(viewModel.componentFiles.count)")
                         .padding(AppDesign.Spacing.p24)
+                    } else if let modelURL = viewModel.currentMeshURL {
+                        // Final fallback: show raw model
+                        ModelViewerContainer(modelURL: modelURL, viewMode: viewModel.viewMode)
+                            .id("\(modelURL)-\(viewModel.viewMode)")
+                            .padding(AppDesign.Spacing.p24)
+                    }
                 }
-            } else if viewModel.currentStep == .generate, let modelURL = viewModel.generated3DModelURL {
-                ModelViewerContainer(modelURL: modelURL, viewMode: viewModel.viewMode)
-                    .id("\(modelURL)-\(viewModel.viewMode)")
-                    .padding(AppDesign.Spacing.p24)
-            } else if viewModel.currentStep == .generate, let composite = viewModel.compositeImage {
-                compositeImageView(composite)
-            } else if let image = viewModel.inputImage {
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .scale(scale: 0.98)).animation(.spring(response: 0.25, dampingFraction: 0.9)),
+                    removal: .opacity.animation(.easeOut(duration: 0.1))
+                ))
+            }
+
+            // Generate step: show composite image throughout (including during handoff)
+            // Don't show the 3D model until we transition to postProcess
+            if viewModel.currentStep == .generate {
+                if let composite = viewModel.compositeImage {
+                    compositeImageView(composite)
+                        .transition(.opacity.animation(.easeOut(duration: 0.18)))
+                } else {
+                    // Loading placeholder while composite is being created
+                    ProgressView()
+                        .scaleEffect(1.2)
+                        .transition(.opacity.animation(.easeOut(duration: 0.15)))
+                }
+            }
+
+            // Segment and touchup steps with interactive image
+            if (viewModel.currentStep == .segment || viewModel.currentStep == .touchup), let image = viewModel.inputImage {
                 interactiveImageView(image)
-            } else {
-                dropZoneView
+                    .transition(.opacity.animation(.easeOut(duration: 0.18)))
+            }
+
+            // Input step - drop zone or image
+            if viewModel.currentStep == .input {
+                if let image = viewModel.inputImage {
+                    interactiveImageView(image)
+                        .transition(.opacity.animation(.easeOut(duration: 0.18)))
+                } else {
+                    dropZoneView
+                        .transition(.opacity.animation(.easeOut(duration: 0.2)))
+                }
             }
         }
+        .animation(.spring(response: 0.2, dampingFraction: 0.9), value: viewModel.currentStep)
     }
 
     // MARK: - Setup Canvas Content
@@ -458,6 +509,13 @@ extension ImageCanvas {
                     .position(x: pos.x * size.width, y: pos.y * size.height)
                     .allowsHitTesting(false)
             }
+        } else if viewModel.editableMaskImage == nil && !viewModel.showingOriginal {
+            // Show subtle loading indicator while mask is being merged
+            ProgressView()
+                .scaleEffect(0.8)
+                .frame(width: size.width, height: size.height)
+                .background(Color.black.opacity(0.1))
+                .transition(.opacity.animation(.easeOut(duration: 0.15)))
         }
     }
 

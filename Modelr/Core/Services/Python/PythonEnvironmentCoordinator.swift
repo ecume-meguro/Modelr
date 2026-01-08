@@ -88,6 +88,22 @@ deinit {
         status = "Ready"
     }
 
+    /// Refresh Python environments (venvs) without re-downloading models
+    /// Called when app build changes to update dependencies
+    func refreshEnvironments(onProgress: @escaping (SetupProgressUpdate) -> Void) async -> Bool {
+        let success = await dependencyService.refreshEnvironments(onProgress: onProgress)
+        if success {
+            isSetup = true
+            status = "Ready"
+        }
+        return success
+    }
+
+    /// Check if environments need refreshing
+    var needsEnvironmentRefresh: Bool {
+        dependencyService.needsEnvironmentRefresh
+    }
+
     /// Copy resources to Application Support
     func copyResources() async {
         // Use the internal dependency service which has our improved recursive copy logic

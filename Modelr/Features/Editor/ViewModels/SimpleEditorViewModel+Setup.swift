@@ -21,6 +21,52 @@ extension SimpleEditorViewModel {
         }
     }
 
+    /// Run environment-only refresh (called when build number changes)
+    /// This syncs venvs without re-downloading models
+    func runEnvironmentRefresh() async {
+        await MainActor.run {
+            setupProgress = 0
+            environmentRefreshStatus = "Updating environments..."
+        }
+
+        let success = await env.refreshEnvironments { [weak self] update in
+            Task { @MainActor in
+                guard let self = self else { return }
+
+                // Map stage to substep for visual progress
+                let newSubStep = self.mapStageToSubStep(update.stage)
+                self.currentSetupSubStep = newSubStep
+                self.currentSetupStage = update.stage
+                self.calculateCumulativeProgress(currentStage: update.stage)
+
+                if !update.status.isEmpty {
+                    self.environmentRefreshStatus = update.status
+                    print("[EnvRefresh][\(update.stage.rawValue)] \(update.status)")
+                }
+            }
+        }
+
+        await MainActor.run {
+            isRefreshingEnvironments = false
+
+            if success {
+                setupProgress = 1.0
+                environmentRefreshStatus = "Environments updated"
+
+                // Mark environment ready and transition to input
+                env.markHunyuanReady()
+
+                withAnimation(.easeOut(duration: 0.3)) {
+                    currentStep = .input
+                }
+                print("[EnvRefresh] Environment refresh completed successfully")
+            } else {
+                environmentRefreshStatus = "Environment update failed"
+                print("[EnvRefresh] Environment refresh failed")
+            }
+        }
+    }
+
     /// Run the centralized setup process driven by PythonDependencyService
     private func runSetup() async {
         resetDownloadProgress()

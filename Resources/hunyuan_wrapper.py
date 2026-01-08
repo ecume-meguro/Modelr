@@ -12,8 +12,78 @@ import argparse
 import time
 import gc
 import traceback
-from typing import Optional, Callable, Dict, Any, Tuple
+import select
+import threading
+from typing import Optional, Callable, Dict, Any
 from pathlib import Path
+
+_cancel_file_path = None  # Will be set before generation
+
+
+def _touch_cancel_file() -> None:
+    """Create the cancel file for the *current* Python process.
+
+    The Swift app may be launched via an intermediate process (e.g. `uv`), so the
+    most reliable approach is for the Python server itself to touch the cancel file
+    that the patched tqdm and generation loop check.
+    """
+    global _cancel_file_path
+    try:
+        if _cancel_file_path is None:
+            _cancel_file_path = Path(f"/tmp/modelr_cancel_{os.getpid()}")
+        _cancel_file_path.parent.mkdir(parents=True, exist_ok=True)
+        _cancel_file_path.touch(exist_ok=True)
+        print(f"[CANCEL] Touched cancel file: {_cancel_file_path}", file=sys.stderr, flush=True)
+    except Exception as e:
+        print(f"[CANCEL] Failed to touch cancel file: {e}", file=sys.stderr, flush=True)
+
+def _patch_tqdm():
+    """Patch tqdm to check for cancel file. Must be called before hy3dgen is imported."""
+    import tqdm as tqdm_module
+    import tqdm.auto
+    import tqdm.std
+
+    _OriginalTqdm = tqdm_module.tqdm
+
+    class CancellableTqdm(_OriginalTqdm):
+        """Patched tqdm that checks for cancel file on each update."""
+
+        def _check_cancel(self):
+            global _cancel_file_path
+            if _cancel_file_path and _cancel_file_path.exists():
+                print(f"[TQDM] Cancel file detected, stopping!", file=sys.stderr, flush=True)
+                try:
+                    _cancel_file_path.unlink()
+                except:
+                    pass
+                from modelr_core.exceptions import GenerationError
+                raise GenerationError("Generation cancelled by user")
+
+        def __iter__(self):
+            for item in super().__iter__():
+                self._check_cancel()
+                yield item
+
+        def update(self, n=1):
+            self._check_cancel()
+            return super().update(n)
+
+    # Patch ALL tqdm entry points
+    tqdm_module.tqdm = CancellableTqdm
+    tqdm_module.std.tqdm = CancellableTqdm
+    tqdm.auto.tqdm = CancellableTqdm
+
+    # Also update the trange shortcuts
+    def cancellable_trange(*args, **kwargs):
+        return CancellableTqdm(range(*args), **kwargs)
+
+    tqdm_module.trange = cancellable_trange
+    tqdm.auto.trange = cancellable_trange
+
+    print("[TQDM] Patched for cancellation support", file=sys.stderr, flush=True)
+
+# Patch tqdm IMMEDIATELY before any other imports that might use it
+_patch_tqdm()
 
 import torch
 import numpy as np
@@ -189,9 +259,15 @@ class HunyuanGenerator:
         output_path: str,
         num_steps: int = 50,
         octree_resolution: int = 384,
-        progress_callback: Optional[Callable[[str, float, Optional[str]], None]] = None
+        progress_callback: Optional[Callable[[str, float, Optional[str]], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None
     ) -> str:
-        """Generate 3D model."""
+        """Generate 3D model.
+
+        Args:
+            cancel_check: Optional callable that returns True if generation should be cancelled.
+                         Checked at the start of each diffusion step for clean cancellation.
+        """
         if self.pipeline is None:
             self.load()
 
@@ -204,6 +280,11 @@ class HunyuanGenerator:
             # Create a step callback for diffusion progress
             # hy3dgen uses callback(step_idx, timestep, outputs) signature
             def step_callback(step_idx, timestep, outputs):
+                # Check for cancellation FIRST - this is the cleanest way to break the loop
+                if cancel_check and cancel_check():
+                    print(f"[DIFFUSION] Cancel detected at step {step_idx + 1}, breaking loop", file=sys.stderr, flush=True)
+                    raise GenerationError("Generation cancelled by user")
+
                 if progress_callback:
                     current_step = step_idx + 1
                     steps_reported[0] = current_step
@@ -275,6 +356,8 @@ class HunyuanServer:
         self.model_variant = model_variant
         self.generator = None
         self.logger = get_logger("hunyuan_server")
+        self._cancel_requested = False
+        self._is_generating = False
 
     def initialize(self):
         """Load the model and prepare for generation requests."""
@@ -313,6 +396,10 @@ class HunyuanServer:
         if not output_path:
             return {"success": False, "error": "Output path required", "messageId": message_id}
 
+        # Reset cancel flag
+        self._cancel_requested = False
+        self._is_generating = True
+
         try:
             # Load image
             self.send_progress(message_id, "loading", 0.05, "Loading image...")
@@ -324,7 +411,7 @@ class HunyuanServer:
                 mask_img = load_image(mask_path, convert_mode="L")
                 image = extract_foreground(image, mask_img)
 
-            # Generate with progress callback
+            # Progress callback for reporting status to Swift
             def progress_callback(status: str, value: float, detail: Optional[str] = None):
                 if "Diffusion" in status:
                     stage = "diffusion"
@@ -342,14 +429,34 @@ class HunyuanServer:
 
             self.send_progress(message_id, "diffusion", 0.15, "Starting generation...")
 
+            # Set global cancel file path for the patched tqdm to check
+            global _cancel_file_path
+            _cancel_file_path = Path(f"/tmp/modelr_cancel_{os.getpid()}")
+            # Clean up any stale cancel file from previous runs
+            if _cancel_file_path.exists():
+                try:
+                    _cancel_file_path.unlink()
+                except:
+                    pass
+
+            # Cancel check function - checked at each diffusion step (backup)
+            def should_cancel():
+                if self._cancel_requested:
+                    return True
+                if _cancel_file_path and _cancel_file_path.exists():
+                    return True
+                return False
+
             result_path = self.generator.generate(
                 image=image,
                 output_path=output_path,
                 num_steps=steps,
                 octree_resolution=resolution,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                cancel_check=should_cancel
             )
 
+            self._is_generating = False
             return {
                 "success": True,
                 "type": "complete",
@@ -357,7 +464,34 @@ class HunyuanServer:
                 "outputPath": result_path
             }
 
+        except GenerationError as e:
+            self._is_generating = False
+            if "cancelled" in str(e).lower():
+                log_info("Generation cancelled by user", self.logger)
+                return {
+                    "success": False,
+                    "type": "cancelled",
+                    "messageId": message_id,
+                    "error": "Generation cancelled"
+                }
+            log_error(f"Generation error: {e}", self.logger)
+            return {
+                "success": False,
+                "type": "error",
+                "messageId": message_id,
+                "error": str(e)
+            }
         except Exception as e:
+            self._is_generating = False
+            # Check if this was a cancellation that propagated differently
+            if self._cancel_requested or "cancel" in str(e).lower():
+                log_info("Generation cancelled (caught as Exception)", self.logger)
+                return {
+                    "success": False,
+                    "type": "cancelled",
+                    "messageId": message_id,
+                    "error": "Generation cancelled"
+                }
             log_error(f"Generation error: {e}", self.logger)
             log_debug(traceback.format_exc(), self.logger)
             return {
@@ -368,7 +502,31 @@ class HunyuanServer:
             }
 
     def run(self):
-        """Main server loop - read JSON commands from stdin."""
+        """Main server loop - single stdin reader with queue for cancel support."""
+        import queue
+
+        command_queue = queue.Queue()
+
+        def stdin_reader():
+            """Single thread that reads stdin using select for responsive cancel detection."""
+            stdin_fd = sys.stdin.fileno()
+            try:
+                while True:
+                    # Use select to check if data is available (100ms timeout for responsiveness)
+                    ready, _, _ = select.select([stdin_fd], [], [], 0.1)
+                    if ready:
+                        # Read a line from stdin buffer (bypasses TextIOWrapper buffering)
+                        line_bytes = sys.stdin.buffer.readline()
+                        if not line_bytes:  # EOF
+                            print("[HunyuanServer] stdin EOF, exiting reader", file=sys.stderr, flush=True)
+                            break
+                        line = line_bytes.decode('utf-8').strip()
+                        if line:
+                            print(f"[HunyuanServer] stdin got: {line[:80]}...", file=sys.stderr, flush=True)
+                            command_queue.put(line)
+            except Exception as e:
+                print(f"[HunyuanServer] stdin_reader error: {e}", file=sys.stderr, flush=True)
+
         try:
             self.initialize()
 
@@ -381,17 +539,62 @@ class HunyuanServer:
                 "variant": self.model_variant
             })
 
-            for line in sys.stdin:
-                line = line.strip()
-                if not line:
-                    continue
+            # Start the stdin reader thread
+            reader_thread = threading.Thread(target=stdin_reader, daemon=True)
+            reader_thread.start()
 
+            while True:
                 try:
+                    # Get next command from queue (blocking)
+                    line = command_queue.get()
                     request = json.loads(line)
                     command = request.get("command", "")
 
                     if command == "generate":
-                        response = self.handle_generate(request)
+                        # Reset cancel flag
+                        self._cancel_requested = False
+                        self._is_generating = True
+
+                        # Run generation in a thread so we can check for cancel requests
+                        gen_result = [None]
+                        gen_done = threading.Event()
+
+                        def do_generate():
+                            gen_result[0] = self.handle_generate(request)
+                            gen_done.set()
+
+                        gen_thread = threading.Thread(target=do_generate)
+                        gen_thread.start()
+
+                        # Poll for cancel commands while generating
+                        # The cancel flag is checked directly in the diffusion step callback
+                        while not gen_done.wait(timeout=0.05):
+                            try:
+                                cancel_line = command_queue.get_nowait()
+                                print(f"[HunyuanServer] Got during gen: {cancel_line}", file=sys.stderr, flush=True)
+                                cancel_req = json.loads(cancel_line)
+                                if cancel_req.get("command") == "cancel":
+                                    print("[HunyuanServer] CANCEL received - will stop at next step", file=sys.stderr, flush=True)
+                                    self._cancel_requested = True
+                                    _touch_cancel_file()
+                            except queue.Empty:
+                                pass
+                            except json.JSONDecodeError:
+                                pass
+
+                        gen_thread.join()
+                        self._is_generating = False
+                        response = gen_result[0]
+
+                    elif command == "cancel":
+                        self._cancel_requested = True
+                        # Ensure cancellation works even if the pipeline doesn't support callbacks.
+                        _touch_cancel_file()
+                        response = {
+                            "success": True,
+                            "type": "cancelled",
+                            "message": "No active generation"
+                        }
                     elif command == "ping":
                         response = {
                             "success": True,

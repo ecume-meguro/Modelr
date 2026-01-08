@@ -28,6 +28,9 @@ except ImportError as e:
     }), flush=True)
     sys.exit(1)
 
+# Artifact filtering thresholds
+MIN_FACES_THRESHOLD = 150  # Components with fewer faces are auto-deleted as artifacts
+
 
 def analyze_mesh(mesh_path: str) -> Dict[str, Any]:
     """
@@ -59,31 +62,45 @@ def analyze_mesh(mesh_path: str) -> Dict[str, Any]:
             # Single component
             components_list = [mesh]
 
-        components_info = []
+        # First pass: collect all component data
+        all_components = []
         for i, component in enumerate(components_list):
             if not hasattr(component, 'vertices') or len(component.vertices) == 0:
                 continue
 
+            face_count = len(component.faces) if hasattr(component, 'faces') else 0
             bounds = component.bounds.tolist() if hasattr(component, 'bounds') and component.bounds is not None else [[0,0,0], [0,0,0]]
             center = component.centroid.tolist() if hasattr(component, 'centroid') else [0, 0, 0]
 
             # Calculate component size (diagonal of bounding box)
             if hasattr(component, 'bounds') and component.bounds is not None:
-                size = np.linalg.norm(component.bounds[1] - component.bounds[0])
+                size = float(np.linalg.norm(component.bounds[1] - component.bounds[0]))
             else:
-                size = 0
+                size = 0.0
 
-            info = {
+            is_watertight = bool(component.is_watertight) if hasattr(component, 'is_watertight') else False
+
+            all_components.append({
                 "index": i,
                 "vertex_count": len(component.vertices),
-                "face_count": len(component.faces) if hasattr(component, 'faces') else 0,
+                "face_count": face_count,
                 "bounds_min": bounds[0],
                 "bounds_max": bounds[1],
                 "center": center,
-                "size": float(size),
-                "is_watertight": bool(component.is_watertight) if hasattr(component, 'is_watertight') else False
-            }
-            components_info.append(info)
+                "size": size,
+                "is_watertight": is_watertight
+            })
+
+        # Second pass: filter artifacts with < MIN_FACES_THRESHOLD faces (regardless of watertightness)
+        components_info = []
+        filtered_count = 0
+        for comp in all_components:
+            # Auto-delete any component with fewer than MIN_FACES_THRESHOLD faces
+            if comp["face_count"] < MIN_FACES_THRESHOLD:
+                filtered_count += 1
+                continue
+
+            components_info.append(comp)
 
         # Sort by size (largest first)
         components_info.sort(key=lambda x: x["vertex_count"], reverse=True)
@@ -101,7 +118,8 @@ def analyze_mesh(mesh_path: str) -> Dict[str, Any]:
             "total_vertices": len(mesh.vertices),
             "total_faces": len(mesh.faces) if hasattr(mesh, 'faces') else 0,
             "bounds_min": total_bounds[0],
-            "bounds_max": total_bounds[1]
+            "bounds_max": total_bounds[1],
+            "filtered_artifacts": filtered_count  # Components with < MIN_FACES_THRESHOLD faces
         }
 
     except Exception as e:
@@ -267,6 +285,7 @@ def extract_component(mesh_path: str, component_index: int, output_path: str) ->
 def extract_all_components(mesh_path: str, output_dir: str) -> Dict[str, Any]:
     """
     Extract all components as separate OBJ files for visualization.
+    Filters out artifact components (tiny, non-watertight fragments).
     Returns paths to each component file.
     """
     try:
@@ -279,31 +298,61 @@ def extract_all_components(mesh_path: str, output_dir: str) -> Dict[str, Any]:
         if not components or len(components) == 0:
             components = [mesh]
 
+        # First pass: collect component data for filtering
+        component_data = []
+        for comp in components:
+            if not hasattr(comp, 'vertices') or len(comp.vertices) == 0:
+                continue
+
+            face_count = len(comp.faces) if hasattr(comp, 'faces') else 0
+            if hasattr(comp, 'bounds') and comp.bounds is not None:
+                size = float(np.linalg.norm(comp.bounds[1] - comp.bounds[0]))
+            else:
+                size = 0.0
+            is_watertight = bool(comp.is_watertight) if hasattr(comp, 'is_watertight') else False
+
+            component_data.append({
+                "mesh": comp,
+                "vertex_count": len(comp.vertices),
+                "face_count": face_count,
+                "size": size,
+                "is_watertight": is_watertight
+            })
+
+        # Filter out artifacts with < MIN_FACES_THRESHOLD faces (regardless of watertightness)
+        valid_components = []
+        filtered_count = 0
+        for comp_info in component_data:
+            # Auto-delete any component with fewer than MIN_FACES_THRESHOLD faces
+            if comp_info["face_count"] < MIN_FACES_THRESHOLD:
+                filtered_count += 1
+                continue
+
+            valid_components.append(comp_info)
+
         # Sort by vertex count (largest first)
-        components = sorted(components, key=lambda x: len(x.vertices) if hasattr(x, 'vertices') else 0, reverse=True)
+        valid_components.sort(key=lambda x: x["vertex_count"], reverse=True)
 
         # Ensure output directory exists
         os.makedirs(output_dir, exist_ok=True)
 
         component_files = []
-        for i, comp in enumerate(components):
-            if not hasattr(comp, 'vertices') or len(comp.vertices) == 0:
-                continue
-
+        for i, comp_info in enumerate(valid_components):
             output_path = os.path.join(output_dir, f"component_{i}.obj")
-            comp.export(output_path)
+            comp_info["mesh"].export(output_path)
 
             component_files.append({
                 "index": i,
                 "path": output_path,
-                "vertex_count": len(comp.vertices),
-                "face_count": len(comp.faces) if hasattr(comp, 'faces') else 0
+                "vertex_count": comp_info["vertex_count"],
+                "face_count": comp_info["face_count"]
             })
 
         return {
             "success": True,
             "component_count": len(component_files),
-            "components": component_files
+            "components": component_files,
+            "filtered_artifacts": filtered_count
         }
 
     except Exception as e:

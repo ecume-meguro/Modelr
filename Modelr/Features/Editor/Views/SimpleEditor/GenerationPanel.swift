@@ -6,7 +6,8 @@ struct GenerationPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p16) {
-            if viewModel.isGenerating {
+            if viewModel.isGenerating || viewModel.isInHandoff {
+                // Show progress during generation AND handoff
                 generationProgressView
             } else if let url = viewModel.generated3DModelURL {
                 generationCompletedView(url: url)
@@ -64,10 +65,6 @@ struct GenerationPanel: View {
                         .font(.system(size: AppDesign.FontSize.caption))
                         .foregroundColor(.secondary)
                 }
-            }
-
-            AppDesign.GlassButtonSecondary("Show in Finder", icon: "folder") {
-                NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
             }
         }
     }

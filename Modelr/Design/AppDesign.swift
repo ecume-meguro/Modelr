@@ -155,6 +155,7 @@ enum AppDesign {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
+            .tint(isDisabled ? Color.secondary.opacity(0.3) : accent)
             .disabled(isDisabled)
             .shadow(color: isDisabled ? .clear : accent.opacity(0.15), radius: 8, y: 2)
         }

@@ -162,6 +162,7 @@ enum GenerationStage: String, CaseIterable {
     case diffusion = "Diffusion Sampling"
     case volumeDecoding = "Volume Decoding"
     case saving = "Saving"
+    case handoff = "Handing Off"
 }
 
 /// Progress information for a generation stage

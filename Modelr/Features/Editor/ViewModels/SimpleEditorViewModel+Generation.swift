@@ -24,11 +24,38 @@ extension SimpleEditorViewModel {
                     if let startTime = self.generationStartTime {
                         self.generationDuration = Date().timeIntervalSince(startTime)
                     }
-                    self.markAllStagesCompleted()
+                    // Mark saving complete, show handoff in progress
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        self.markPreviousStagesCompleted(before: .handoff)
+                        self.generationStages[.saving] = StageProgress(status: .completed, progress: 1.0, detail: "")
+                        self.generationStages[.handoff] = StageProgress(status: .inProgress, progress: 0, detail: "Analyzing...")
+                    }
                     self.checkLargeModelDownloaded()
                     // Notify coordinator that generation is complete
                     Task {
                         await ModelLoadingCoordinator.shared.onGenerationComplete(env: self.env)
+                    }
+                    // Start pre-loading mesh analysis and wait for it before transitioning
+                    Task { @MainActor in
+                        print("[Gen] Starting handoff task...")
+
+                        // Run preload (this does the heavy Python processing AND SceneKit preloading)
+                        // Progress updates are handled inside preloadMeshAnalysis via updateHandoffProgress
+                        await self.preloadMeshAnalysis()
+
+                        print("[Gen] Preload complete, marking handoff done...")
+
+                        // Mark handoff complete and all stages done
+                        withAnimation(.spring(response: 0.2, dampingFraction: 0.9)) {
+                            self.generationStages[.handoff] = StageProgress(status: .completed, progress: 1.0, detail: "")
+                        }
+
+                        print("[Gen] Calling transitionToPostProcess...")
+
+                        // Immediate transition - everything is preloaded
+                        self.transitionToPostProcess()
+
+                        print("[Gen] transitionToPostProcess returned, currentStep=\(self.currentStep)")
                     }
                 case .failed(let error):
                     self.isGenerating = false
@@ -39,15 +66,47 @@ extension SimpleEditorViewModel {
     }
 
     func transitionToGenerate() {
-        // If we are coming directly from segment step, we might not have initialized editableMaskImage yet
-        if editableMaskImage == nil {
-            editableMaskImage = mergeAllSelectedMasks()
+        // Check models downloaded (fast filesystem check)
+        checkModelsDownloaded()
+
+        // Capture data on main actor before detaching
+        let existingMask = editableMaskImage
+        let masks = segmentations.flatMap { $0.selectedMasks }
+        let source = inputImage
+
+        // Animate step change FIRST for immediate UI response
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            currentStep = .generate
         }
 
-        createCompositeImage()
-        checkModelsDownloaded()
-        withAnimation(.easeOut(duration: 0.25)) {
-            currentStep = .generate
+        // Create composite image async to avoid blocking the animation
+        Task {
+            // If no mask yet, merge in background
+            let maskToUse: NSImage? = await {
+                if let existing = existingMask {
+                    return existing
+                }
+                return await Task.detached(priority: .userInitiated) {
+                    ImageService.shared.mergeMasks(masks)
+                }.value
+            }()
+
+            guard let mask = maskToUse else { return }
+
+            // Store the mask if we just created it
+            if editableMaskImage == nil {
+                editableMaskImage = mask
+            }
+
+            // Create composite in background
+            guard let source = source else { return }
+            let composite = await Task.detached(priority: .userInitiated) {
+                ImageService.shared.createCompositeImage(source: source, mask: mask)
+            }.value
+
+            withAnimation(.easeOut(duration: 0.2)) {
+                compositeImage = composite
+            }
         }
     }
 
@@ -99,9 +158,13 @@ extension SimpleEditorViewModel {
     }
 
     func stopGeneration() {
+        // Cancel via the Hunyuan server (this is where generation actually runs)
+        ModelLoadingCoordinator.shared.cancelGeneration()
+        // Also cancel via the service to reset status
         ServiceContainer.shared.generationService.cancel()
         isGenerating = false
         markRemainingStagesCancelled()
+        print("[Gen] Generation stopped by user")
     }
 
     func updateGenerationStages(status: String, percent: Double = 0) {
@@ -164,21 +227,31 @@ extension SimpleEditorViewModel {
                 // Try to extract detail like "Extracting mesh..." from the status
                 detail = extractDetailText(from: status)
             }
-            // Use passed percent (from GenerationService) - it's already 0-1 scale
-            let progressValue = percent > 0 ? percent : info.percentComplete / 100.0
+            // Calculate STAGE-SPECIFIC progress from step counts, NOT overall progress
+            let stageProgress: Double
+            if info.totalSteps > 0 {
+                stageProgress = Double(info.currentStep) / Double(info.totalSteps)
+            } else {
+                stageProgress = 0
+            }
             withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                 markPreviousStagesCompleted(before: .volumeDecoding)
                 generationStages[.diffusion] = StageProgress(status: .completed, progress: 1.0, detail: "")
-                generationStages[.volumeDecoding] = StageProgress(status: .inProgress, progress: progressValue, detail: detail)
+                generationStages[.volumeDecoding] = StageProgress(status: .inProgress, progress: stageProgress, detail: detail)
             }
         } else if status.contains("Diffusion Sampling") || status.contains("Generating 3D shape") || status.contains("diffusion") {
             let info = ProgressParser.parseDetailedProgress(status)
             let detail = stepDetail.isEmpty ? (info.totalSteps > 0 ? "\(info.currentStep)/\(info.totalSteps)" : "") : stepDetail
-            // Use passed percent (from GenerationService) - it's already 0-1 scale
-            let progressValue = percent > 0 ? percent : info.percentComplete / 100.0
+            // Calculate STAGE-SPECIFIC progress from step counts, NOT overall progress
+            let stageProgress: Double
+            if info.totalSteps > 0 {
+                stageProgress = Double(info.currentStep) / Double(info.totalSteps)
+            } else {
+                stageProgress = 0
+            }
             withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                 markPreviousStagesCompleted(before: .diffusion)
-                generationStages[.diffusion] = StageProgress(status: .inProgress, progress: progressValue, detail: detail)
+                generationStages[.diffusion] = StageProgress(status: .inProgress, progress: stageProgress, detail: detail)
             }
         } else if status.contains("Exporting") || status.contains("export") {
             // Transition from diffusion to saving when exporting starts

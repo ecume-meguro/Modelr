@@ -279,16 +279,75 @@ class PythonDependencyService {
     func refreshResources() {
         print("[Resources] Refreshing resources (version: \(PathManager.currentAppVersion) build: \(PathManager.currentBuildNumber))...")
         copyResourceFiles()
+        try? PathManager.updateResourcesMarker()
         try? PathManager.updateSetupMarkerVersion()
         print("[Resources] Resources refreshed successfully")
     }
 
     /// Check if resources need refreshing and do it automatically
     func refreshResourcesIfNeeded() {
-        if PathManager.needsResourceRefresh {
-            print("[Resources] App version changed, refreshing resources...")
+        if PathManager.needsBundledResourcesRefresh || PathManager.needsResourceRefresh {
+            print("[Resources] Bundled resources out of date, refreshing...")
             refreshResources()
         }
+    }
+
+    /// Refresh Python environments (venvs) without re-downloading models
+    /// Called when build number changes to update dependencies
+    func refreshEnvironments(onProgress: @escaping (SetupProgressUpdate) -> Void) async -> Bool {
+        let report = { (stage: SetupStage, status: String, log: String?, isDetailed: Bool) in
+            if !status.isEmpty {
+                print("[EnvRefresh][\(stage.rawValue)] \(status)")
+            }
+            if let l = log { print("[EnvRefresh][\(stage.rawValue)] \(l)") }
+            onProgress(SetupProgressUpdate(stage: stage, status: status, logLine: log, isDetailedLog: isDetailed))
+        }
+
+        report(.preparing, "Updating Python environments...", nil, false)
+
+        // First refresh resource files
+        refreshResources()
+
+        guard let uvPath = cachedUvPath else {
+            report(.failed, "uv binary not found", nil, false)
+            return false
+        }
+
+        // Sync SAM environment
+        report(.syncingSAM, "Updating segmentation environment...", nil, false)
+        await setupSAMEnvironment(uvPath: uvPath, onProgress: onProgress)
+        guard samVenvReady else {
+            report(.failed, "SAM environment sync failed", nil, false)
+            return false
+        }
+
+        // Sync Hunyuan environment
+        report(.syncingHunyuan, "Updating 3D generation environment...", nil, false)
+        await setupHunyuanEnvironment(uvPath: uvPath, onProgress: onProgress)
+        guard hunyuanVenvReady else {
+            report(.failed, "Hunyuan environment sync failed", nil, false)
+            return false
+        }
+
+        // Sync Tools environment
+        report(.syncingTools, "Updating mesh tools...", nil, false)
+        await setupToolsEnvironment(uvPath: uvPath, onProgress: onProgress)
+        guard toolsVenvReady else {
+            report(.failed, "Tools environment sync failed", nil, false)
+            return false
+        }
+
+        // Update markers
+        try? PathManager.updateEnvironmentMarker()
+        try? PathManager.updateSetupMarkerVersion()
+
+        report(.completed, "Environments updated", nil, false)
+        return true
+    }
+
+    /// Check if environments need refreshing and schedule it
+    var needsEnvironmentRefresh: Bool {
+        PathManager.needsEnvironmentRefresh
     }
 
     func checkResources() -> Bool {

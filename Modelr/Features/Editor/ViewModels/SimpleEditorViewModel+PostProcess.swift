@@ -1,4 +1,7 @@
 import SwiftUI
+import SceneKit
+import ModelIO
+import SceneKit.ModelIO
 
 // MARK: - Post-Processing
 extension SimpleEditorViewModel {
@@ -8,12 +11,197 @@ extension SimpleEditorViewModel {
         processedModelURL ?? generated3DModelURL
     }
 
+    /// Update handoff progress during preloading
+    func updateHandoffProgress(progress: Double, detail: String) {
+        withAnimation(.spring(response: 0.2, dampingFraction: 0.8)) {
+            generationStages[.handoff] = StageProgress(status: .inProgress, progress: progress, detail: detail)
+        }
+    }
+
+    /// Pre-load mesh analysis in background (called immediately when generation completes)
+    /// This runs the heavy Python processing AND SceneKit loading BEFORE the UI transition
+    func preloadMeshAnalysis() async {
+        guard let modelURL = generated3DModelURL else { return }
+
+        print("[PostProcess] Starting mesh pre-load for: \(modelURL.lastPathComponent)")
+        let startTime = Date()
+
+        // Phase 1: Analyze mesh (0% - 30%)
+        updateHandoffProgress(progress: 0.1, detail: "Analyzing...")
+        let analysisResult = await runMeshProcessor(command: "analyze", inputPath: modelURL.path)
+
+        guard let result = analysisResult,
+              result["success"] as? Bool == true,
+              let components = result["components"] as? [[String: Any]] else {
+            print("[PostProcess] Pre-load analysis failed")
+            return
+        }
+
+        // Parse components
+        let parsedComponents = components.compactMap { comp -> MeshComponent? in
+            guard let index = comp["index"] as? Int,
+                  let vertexCount = comp["vertex_count"] as? Int,
+                  let faceCount = comp["face_count"] as? Int else { return nil }
+
+            return MeshComponent(
+                index: index,
+                vertexCount: vertexCount,
+                faceCount: faceCount,
+                boundsMin: comp["bounds_min"] as? [Double] ?? [0, 0, 0],
+                boundsMax: comp["bounds_max"] as? [Double] ?? [0, 0, 0],
+                center: comp["center"] as? [Double] ?? [0, 0, 0],
+                size: comp["size"] as? Double ?? 0,
+                isWatertight: comp["is_watertight"] as? Bool ?? false
+            )
+        }
+
+        // Phase 2: Extract components (30% - 60%)
+        updateHandoffProgress(progress: 0.3, detail: "Extracting...")
+        let tempDir = NSTemporaryDirectory() + "mesh_components_\(UUID().uuidString)"
+        let extractResult = await runMeshProcessor(
+            command: "extract_all",
+            inputPath: modelURL.path,
+            outputPath: tempDir
+        )
+
+        var extractedFiles: [ComponentFile] = []
+        if let result = extractResult,
+           result["success"] as? Bool == true,
+           let extractedComponents = result["components"] as? [[String: Any]] {
+            extractedFiles = extractedComponents.compactMap { comp -> ComponentFile? in
+                guard let index = comp["index"] as? Int,
+                      let path = comp["path"] as? String else { return nil }
+                return ComponentFile(index: index, path: path)
+            }
+        }
+
+        let analysisElapsed = Date().timeIntervalSince(startTime)
+        print("[PostProcess] Mesh analysis complete in \(String(format: "%.2f", analysisElapsed))s - \(parsedComponents.count) components")
+
+        // Store results on main actor and compute keep/delete indices
+        var computedKeepIndices: Set<Int> = []
+        var computedDeleteIndices: Set<Int> = []
+
+        await MainActor.run {
+            // Only apply if we haven't transitioned yet and these are fresh results
+            if currentStep != .postProcess || meshComponents.isEmpty {
+                meshComponents = parsedComponents
+                componentFiles = extractedFiles
+                autoSortComponents()
+            }
+            // Capture the computed indices for preloading with materials
+            computedKeepIndices = keepIndices
+            computedDeleteIndices = deleteIndices
+        }
+
+        // Phase 3: Pre-load SceneKit nodes WITH MATERIALS (60% - 100%)
+        updateHandoffProgress(progress: 0.6, detail: "Preparing 3D...")
+        print("[PostProcess] Pre-loading SceneKit nodes with materials...")
+        await MainActor.run { isPreloadingScenes = true }
+
+        let preloadedNodes = await preloadSceneKitNodes(
+            from: extractedFiles,
+            keepIndices: computedKeepIndices,
+            deleteIndices: computedDeleteIndices
+        )
+
+        await MainActor.run {
+            preloadedComponentNodes = preloadedNodes
+            isPreloadingScenes = false
+        }
+
+        updateHandoffProgress(progress: 0.95, detail: "Ready")
+
+        let totalElapsed = Date().timeIntervalSince(startTime)
+        print("[PostProcess] Total pre-load complete in \(String(format: "%.2f", totalElapsed))s - \(preloadedNodes.count) SceneKit nodes cached with materials")
+        print("[PostProcess] State: componentFiles=\(componentFiles.count), preloadedNodes=\(preloadedComponentNodes.count), meshComponents=\(meshComponents.count)")
+    }
+
+    /// Pre-load SceneKit nodes from component files WITH materials pre-applied (runs on background thread)
+    private func preloadSceneKitNodes(
+        from files: [ComponentFile],
+        keepIndices: Set<Int>,
+        deleteIndices: Set<Int>
+    ) async -> [Int: SCNNode] {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                var nodes: [Int: SCNNode] = [:]
+
+                // Color constants (same as ComponentModelViewer)
+                let keepColor = NSColor(red: 0.2, green: 0.85, blue: 0.4, alpha: 1.0)
+                let deleteColor = NSColor(red: 0.95, green: 0.3, blue: 0.3, alpha: 1.0)
+                let defaultColor = NSColor.gray
+
+                for file in files {
+                    let url = URL(fileURLWithPath: file.path)
+                    guard FileManager.default.fileExists(atPath: file.path) else { continue }
+
+                    let asset = MDLAsset(url: url)
+                    asset.loadTextures()
+
+                    guard asset.count > 0 else { continue }
+
+                    let loadedScene = SCNScene(mdlAsset: asset)
+
+                    let componentNode = SCNNode()
+                    componentNode.name = "component_\(file.index)"
+
+                    // Determine color based on keep/delete status
+                    let color: NSColor
+                    if keepIndices.contains(file.index) {
+                        color = keepColor
+                    } else if deleteIndices.contains(file.index) {
+                        color = deleteColor
+                    } else {
+                        color = defaultColor
+                    }
+
+                    for child in loadedScene.rootNode.childNodes {
+                        let cloned = child.clone()
+                        // Apply material with correct color
+                        self.applyMaterialRecursively(to: cloned, color: color)
+                        componentNode.addChildNode(cloned)
+                    }
+
+                    nodes[file.index] = componentNode
+                }
+
+                continuation.resume(returning: nodes)
+            }
+        }
+    }
+
+    /// Apply material recursively to a node during preload (nonisolated for background thread use)
+    private nonisolated func applyMaterialRecursively(to node: SCNNode, color: NSColor) {
+        node.geometry?.materials.forEach { material in
+            material.isDoubleSided = true
+            material.diffuse.contents = color
+            material.fillMode = .fill
+            material.transparency = 1.0
+            material.lightingModel = .physicallyBased
+        }
+        for child in node.childNodes {
+            applyMaterialRecursively(to: child, color: color)
+        }
+    }
+
     func transitionToPostProcess() {
-        withAnimation(.easeOut(duration: 0.25)) {
+        print("[PostProcess] transitionToPostProcess called - currentStep was: \(currentStep)")
+
+        // Instant transition since everything is preloaded
+        withAnimation(.easeOut(duration: 0.15)) {
             currentStep = .postProcess
         }
-        Task {
-            await analyzeMesh()
+
+        print("[PostProcess] transitionToPostProcess - currentStep is now: \(currentStep)")
+        print("[PostProcess] Data check: componentFiles=\(componentFiles.count), preloadedNodes=\(preloadedComponentNodes.count), meshComponents=\(meshComponents.count)")
+
+        // If preload didn't populate data (edge case), run fresh analysis
+        if meshComponents.isEmpty {
+            print("[PostProcess] meshComponents empty, running fresh analysis")
+            Task {
+                await analyzeMesh()
+            }
         }
     }
 
@@ -23,7 +211,9 @@ extension SimpleEditorViewModel {
         await MainActor.run {
             isAnalyzingMesh = true
             meshComponents.removeAll()
-            selectedComponentIndices.removeAll()
+            keepIndices.removeAll()
+            deleteIndices.removeAll()
+            highlightedComponentIndex = nil
             componentFiles.removeAll()
         }
 
@@ -55,6 +245,8 @@ extension SimpleEditorViewModel {
         }
 
         // Always extract components for visualization (even single component gets colored)
+        // Note: autoSortComponents() is called inside extractComponentsForVisualization()
+        // in the same MainActor block to avoid flash of gray (unsorted) components
         if !meshComponents.isEmpty {
             await extractComponentsForVisualization()
         }
@@ -87,117 +279,11 @@ extension SimpleEditorViewModel {
                           let path = comp["path"] as? String else { return nil }
                     return ComponentFile(index: index, path: path)
                 }
+
+                // Auto-sort in same update to avoid flash of gray (unsorted) components
+                autoSortComponents()
             }
         }
-    }
-
-    func deleteSelectedComponents() async {
-        guard !selectedComponentIndices.isEmpty,
-              let modelURL = currentMeshURL else { return }
-
-        let indicesToDelete = selectedComponentIndices.sorted()
-        let outputPath = NSTemporaryDirectory() + "processed_mesh_\(UUID().uuidString).obj"
-
-        await MainActor.run {
-            isProcessingMesh = true
-        }
-
-        let result = await runMeshProcessor(
-            command: "delete",
-            inputPath: modelURL.path,
-            outputPath: outputPath,
-            indices: indicesToDelete
-        )
-
-        await MainActor.run {
-            isProcessingMesh = false
-            if let result = result,
-               result["success"] as? Bool == true,
-               let outputPathStr = result["output_path"] as? String {
-                processedModelURL = URL(fileURLWithPath: outputPathStr)
-                selectedComponentIndices.removeAll()
-            }
-        }
-
-        await analyzeMesh()
-    }
-
-    func keepLargestComponent() async {
-        await keepLargestComponents(count: 1)
-    }
-
-    func keepLargestComponents(count: Int) async {
-        guard let modelURL = currentMeshURL else { return }
-
-        let outputPath = NSTemporaryDirectory() + "processed_mesh_\(UUID().uuidString).obj"
-
-        await MainActor.run {
-            isProcessingMesh = true
-        }
-
-        // Delete all components except the first `count` (they're already sorted by size)
-        let indicesToDelete = Array(count..<meshComponents.count)
-
-        let result: [String: Any]?
-        if indicesToDelete.isEmpty {
-            // Nothing to delete
-            await MainActor.run { isProcessingMesh = false }
-            return
-        } else {
-            result = await runMeshProcessor(
-                command: "delete",
-                inputPath: modelURL.path,
-                outputPath: outputPath,
-                indices: indicesToDelete
-            )
-        }
-
-        await MainActor.run {
-            isProcessingMesh = false
-            if let result = result,
-               result["success"] as? Bool == true,
-               let outputPathStr = result["output_path"] as? String {
-                processedModelURL = URL(fileURLWithPath: outputPathStr)
-                selectedComponentIndices.removeAll()
-            }
-        }
-
-        await analyzeMesh()
-    }
-
-    func keepSelectedComponents() async {
-        guard !selectedComponentIndices.isEmpty,
-              let modelURL = currentMeshURL else { return }
-
-        // Delete everything NOT selected
-        let indicesToDelete = meshComponents.map { $0.index }.filter { !selectedComponentIndices.contains($0) }
-
-        guard !indicesToDelete.isEmpty else { return }
-
-        let outputPath = NSTemporaryDirectory() + "processed_mesh_\(UUID().uuidString).obj"
-
-        await MainActor.run {
-            isProcessingMesh = true
-        }
-
-        let result = await runMeshProcessor(
-            command: "delete",
-            inputPath: modelURL.path,
-            outputPath: outputPath,
-            indices: indicesToDelete
-        )
-
-        await MainActor.run {
-            isProcessingMesh = false
-            if let result = result,
-               result["success"] as? Bool == true,
-               let outputPathStr = result["output_path"] as? String {
-                processedModelURL = URL(fileURLWithPath: outputPathStr)
-                selectedComponentIndices.removeAll()
-            }
-        }
-
-        await analyzeMesh()
     }
 
     func exportMesh(to url: URL) async -> Bool {
@@ -221,20 +307,100 @@ extension SimpleEditorViewModel {
         return result?["success"] as? Bool == true
     }
 
-    func toggleComponentSelection(_ index: Int) {
-        if selectedComponentIndices.contains(index) {
-            selectedComponentIndices.remove(index)
-        } else {
-            selectedComponentIndices.insert(index)
+    // MARK: - Two-List Management
+
+    /// Auto-sort components: main meshes (>= 1000 faces) to keep, artifacts to delete
+    func autoSortComponents() {
+        keepIndices.removeAll()
+        deleteIndices.removeAll()
+
+        for component in meshComponents {
+            if component.faceCount >= 1000 {
+                keepIndices.insert(component.index)
+            } else {
+                deleteIndices.insert(component.index)
+            }
         }
     }
 
-    func selectAllComponents() {
-        selectedComponentIndices = Set(meshComponents.map { $0.index })
+    /// Move a component from delete list to keep list
+    func moveToKeep(_ index: Int) {
+        deleteIndices.remove(index)
+        keepIndices.insert(index)
     }
 
-    func deselectAllComponents() {
-        selectedComponentIndices.removeAll()
+    /// Move a component from keep list to delete list
+    func moveToDelete(_ index: Int) {
+        keepIndices.remove(index)
+        deleteIndices.insert(index)
+    }
+
+    /// Highlight a component in the viewer (for click selection)
+    func highlightComponent(_ index: Int?) {
+        highlightedComponentIndex = index
+    }
+
+    /// Check if there are pending changes (items in delete list)
+    var hasPendingDeletions: Bool {
+        !deleteIndices.isEmpty
+    }
+
+    /// Apply changes: delete all components in the delete list
+    func applyChanges() async {
+        guard hasPendingDeletions, let modelURL = currentMeshURL else { return }
+
+        let indicesToDelete = Array(deleteIndices).sorted()
+        let outputPath = NSTemporaryDirectory() + "processed_mesh_\(UUID().uuidString).obj"
+
+        await MainActor.run {
+            isProcessingMesh = true
+        }
+
+        let result = await runMeshProcessor(
+            command: "delete",
+            inputPath: modelURL.path,
+            outputPath: outputPath,
+            indices: indicesToDelete
+        )
+
+        await MainActor.run {
+            isProcessingMesh = false
+            if let result = result,
+               result["success"] as? Bool == true,
+               let outputPathStr = result["output_path"] as? String {
+                processedModelURL = URL(fileURLWithPath: outputPathStr)
+                highlightedComponentIndex = nil
+            }
+        }
+
+        await analyzeMesh()
+    }
+
+    /// Keep only the largest component (quick action)
+    func keepLargestOnly() {
+        guard let largest = meshComponents.first else { return }
+        keepIndices = [largest.index]
+        deleteIndices = Set(meshComponents.dropFirst().map { $0.index })
+    }
+
+    /// Isolate a component (show only this one in viewer)
+    func isolateComponent(_ index: Int) {
+        isolatedComponentIndex = index
+        highlightedComponentIndex = index
+    }
+
+    /// Exit isolation mode (show all components)
+    func exitIsolation() {
+        isolatedComponentIndex = nil
+    }
+
+    /// Toggle isolation for a component
+    func toggleIsolation(_ index: Int) {
+        if isolatedComponentIndex == index {
+            exitIsolation()
+        } else {
+            isolateComponent(index)
+        }
     }
 
     func runMeshProcessor(

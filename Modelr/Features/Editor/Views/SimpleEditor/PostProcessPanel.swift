@@ -1,6 +1,7 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
-/// Post-process panel for mesh component management and export
+/// Post-process panel with two-list drag-and-drop interface
 struct PostProcessPanel: View {
     @ObservedObject var viewModel: SimpleEditorViewModel
 
@@ -11,48 +12,345 @@ struct PostProcessPanel: View {
             } else if viewModel.meshComponents.isEmpty {
                 noComponentsView
             } else {
-                componentListView
-
-                // Only show action buttons section when multiple components
-                if viewModel.meshComponents.count > 1 {
-                    Divider().padding(.vertical, AppDesign.Spacing.p4)
-                    actionButtonsView
+                // Isolation banner (if active)
+                if viewModel.isolatedComponentIndex != nil {
+                    isolationBanner
                 }
 
+                // Two-list interface
+                twoListView
+
                 Divider().padding(.vertical, AppDesign.Spacing.p4)
+
+                // Export section
                 exportSection
             }
         }
-        // Confirmation alerts
-        .alert("Delete Components?", isPresented: $viewModel.showDeleteSelectedConfirmation) {
+        .alert("Apply Changes?", isPresented: $viewModel.showApplyChangesConfirmation) {
             Button("Cancel", role: .cancel) { }
-            Button("Delete", role: .destructive) {
-                Task { await viewModel.deleteSelectedComponents() }
+            Button("Delete \(viewModel.deleteIndices.count)", role: .destructive) {
+                Task { await viewModel.applyChanges() }
             }
         } message: {
-            let count = viewModel.selectedComponentIndices.count
-            Text("This will permanently delete \(count) component\(count == 1 ? "" : "s") from the mesh.")
-        }
-        .alert("Keep Only Selected?", isPresented: $viewModel.showKeepSelectedConfirmation) {
-            Button("Cancel", role: .cancel) { }
-            Button("Keep Only Selected", role: .destructive) {
-                Task { await viewModel.keepSelectedComponents() }
-            }
-        } message: {
-            let keepCount = viewModel.selectedComponentIndices.count
-            let deleteCount = viewModel.meshComponents.count - keepCount
-            Text("This will delete \(deleteCount) component\(deleteCount == 1 ? "" : "s") and keep only the \(keepCount) selected.")
-        }
-        .alert("Keep Largest \(viewModel.keepLargestCount)?", isPresented: $viewModel.showKeepLargestConfirmation) {
-            Button("Cancel", role: .cancel) { }
-            Button("Keep Largest", role: .destructive) {
-                Task { await viewModel.keepLargestComponents(count: viewModel.keepLargestCount) }
-            }
-        } message: {
-            let deleteCount = viewModel.meshComponents.count - viewModel.keepLargestCount
-            Text("This will delete \(deleteCount) smaller component\(deleteCount == 1 ? "" : "s") and keep the \(viewModel.keepLargestCount) largest.")
+            Text("This will permanently delete \(viewModel.deleteIndices.count) component\(viewModel.deleteIndices.count == 1 ? "" : "s").")
         }
     }
+
+    // MARK: - Isolation Banner
+
+    @ViewBuilder
+    private var isolationBanner: some View {
+        if let isolatedIndex = viewModel.isolatedComponentIndex,
+           let component = viewModel.meshComponents.first(where: { $0.index == isolatedIndex }) {
+            HStack(spacing: AppDesign.Spacing.p8) {
+                Image(systemName: "eye.circle.fill")
+                    .foregroundStyle(AppDesign.accent)
+                Text("Isolating: \(componentLabel(for: component))")
+                    .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                Spacer()
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        viewModel.exitIsolation()
+                    }
+                } label: {
+                    Text("Show All")
+                        .font(.system(size: AppDesign.FontSize.xs, weight: .medium))
+                        .foregroundStyle(AppDesign.accent)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, AppDesign.Spacing.p10)
+            .padding(.vertical, AppDesign.Spacing.p8)
+            .background(AppDesign.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(AppDesign.accent.opacity(0.3), lineWidth: 1)
+            )
+        }
+    }
+
+    // MARK: - Two List Interface
+
+    @ViewBuilder
+    private var twoListView: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+            // Keep List (green)
+            keepListSection
+
+            // Delete List (red)
+            deleteListSection
+
+            // Apply button
+            if viewModel.hasPendingDeletions {
+                applyButton
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var keepListSection: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p6) {
+            HStack {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(AppDesign.success)
+                Text("Keep")
+                    .font(.system(size: AppDesign.FontSize.caption, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .textCase(.uppercase)
+                    .tracking(0.5)
+                Text("(\(viewModel.keepIndices.count))")
+                    .font(.system(size: AppDesign.FontSize.xs))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+
+            if viewModel.keepIndices.isEmpty {
+                emptyListPlaceholder(text: "Drag items here to keep")
+            } else {
+                ForEach(keepComponents, id: \.index) { component in
+                    componentRow(component, isKeep: true)
+                }
+            }
+        }
+        .padding(AppDesign.Spacing.p10)
+        .background(AppDesign.success.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(AppDesign.success.opacity(0.2), lineWidth: 1)
+        )
+        .onDrop(of: [.text], delegate: KeepListDropDelegate(viewModel: viewModel))
+    }
+
+    @ViewBuilder
+    private var deleteListSection: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p6) {
+            HStack {
+                Image(systemName: "trash.fill")
+                    .foregroundStyle(AppDesign.destructive)
+                Text("Delete")
+                    .font(.system(size: AppDesign.FontSize.caption, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .textCase(.uppercase)
+                    .tracking(0.5)
+                Text("(\(viewModel.deleteIndices.count))")
+                    .font(.system(size: AppDesign.FontSize.xs))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+
+            if viewModel.deleteIndices.isEmpty {
+                emptyListPlaceholder(text: "Drag items here to delete")
+            } else {
+                ForEach(deleteComponents, id: \.index) { component in
+                    componentRow(component, isKeep: false)
+                }
+            }
+        }
+        .padding(AppDesign.Spacing.p10)
+        .background(AppDesign.destructive.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(AppDesign.destructive.opacity(0.2), lineWidth: 1)
+        )
+        .onDrop(of: [.text], delegate: DeleteListDropDelegate(viewModel: viewModel))
+    }
+
+    @ViewBuilder
+    private func emptyListPlaceholder(text: String) -> some View {
+        Text(text)
+            .font(.system(size: AppDesign.FontSize.caption))
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, AppDesign.Spacing.p12)
+    }
+
+    @ViewBuilder
+    private var applyButton: some View {
+        AppDesign.GlassButtonSecondary(
+            "Delete \(viewModel.deleteIndices.count) Component\(viewModel.deleteIndices.count == 1 ? "" : "s")",
+            icon: "trash",
+            destructive: true
+        ) {
+            viewModel.showApplyChangesConfirmation = true
+        }
+        .disabled(viewModel.isProcessingMesh)
+    }
+
+    // MARK: - Component Row
+
+    @ViewBuilder
+    private func componentRow(_ component: MeshComponent, isKeep: Bool) -> some View {
+        let isHighlighted = viewModel.highlightedComponentIndex == component.index
+        let isIsolated = viewModel.isolatedComponentIndex == component.index
+        let baseColor = isKeep ? AppDesign.success : AppDesign.destructive
+        let label = componentLabel(for: component)
+
+        // Check if this is the only item in keep list (can't move to delete)
+        let canMoveToDelete = isKeep && viewModel.keepIndices.count > 1
+
+        HStack(spacing: AppDesign.Spacing.p8) {
+            // Color indicator
+            RoundedRectangle(cornerRadius: 3)
+                .fill(isHighlighted ? Color.yellow : baseColor)
+                .frame(width: 4)
+                .frame(maxHeight: .infinity)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(label)
+                        .font(.system(size: AppDesign.FontSize.subheadline, weight: isHighlighted ? .semibold : .regular))
+                        .foregroundStyle(isHighlighted ? Color.yellow : .primary)
+
+                    if isIsolated {
+                        Image(systemName: "eye.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(AppDesign.accent)
+                    }
+                }
+
+                HStack(spacing: 6) {
+                    Text("\(formatNumber(component.faceCount)) faces")
+                        .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
+                        .foregroundStyle(.secondary)
+
+                    watertightBadge(component.isWatertight)
+                }
+            }
+
+            Spacer()
+
+            // Move button (larger click area)
+            Button {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    if isKeep {
+                        if canMoveToDelete {
+                            viewModel.moveToDelete(component.index)
+                        }
+                    } else {
+                        viewModel.moveToKeep(component.index)
+                    }
+                }
+            } label: {
+                Image(systemName: isKeep ? "arrow.down" : "arrow.up")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(isKeep ? (canMoveToDelete ? AppDesign.destructive : Color.secondary.opacity(0.3)) : AppDesign.success)
+                    .frame(width: 32, height: 32)
+                    .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+            }
+            .buttonStyle(.plain)
+            .disabled(isKeep && !canMoveToDelete)
+            .help(isKeep ? (canMoveToDelete ? "Move to Delete" : "Cannot delete last item") : "Move to Keep")
+        }
+        .padding(.vertical, AppDesign.Spacing.p8)
+        .padding(.horizontal, AppDesign.Spacing.p10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isHighlighted ? Color.yellow.opacity(0.15) : Color.primary.opacity(0.03))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(isHighlighted ? Color.yellow.opacity(0.5) : Color.clear, lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeOut(duration: 0.15)) {
+                if viewModel.highlightedComponentIndex == component.index {
+                    viewModel.highlightComponent(nil)
+                } else {
+                    viewModel.highlightComponent(component.index)
+                }
+            }
+        }
+        .contextMenu {
+            // Isolate option
+            Button {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    viewModel.toggleIsolation(component.index)
+                }
+            } label: {
+                Label(isIsolated ? "Show All Components" : "Isolate Component", systemImage: isIsolated ? "eye.slash" : "eye")
+            }
+
+            Divider()
+
+            // Move options
+            if isKeep {
+                Button(role: .destructive) {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        viewModel.moveToDelete(component.index)
+                    }
+                } label: {
+                    Label("Move to Delete", systemImage: "trash")
+                }
+                .disabled(!canMoveToDelete)
+            } else {
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        viewModel.moveToKeep(component.index)
+                    }
+                } label: {
+                    Label("Move to Keep", systemImage: "checkmark.circle")
+                }
+            }
+        }
+        .onDrag {
+            NSItemProvider(object: String(component.index) as NSString)
+        }
+    }
+
+    // MARK: - Helpers
+
+    private var keepComponents: [MeshComponent] {
+        viewModel.meshComponents.filter { viewModel.keepIndices.contains($0.index) }
+    }
+
+    private var deleteComponents: [MeshComponent] {
+        viewModel.meshComponents.filter { viewModel.deleteIndices.contains($0.index) }
+    }
+
+    private func componentLabel(for component: MeshComponent) -> String {
+        let isMainMesh = component.faceCount >= 1000
+
+        if isMainMesh {
+            let mainMeshes = viewModel.meshComponents.filter { $0.faceCount >= 1000 }
+            if mainMeshes.count == 1 {
+                return "Main Mesh"
+            } else {
+                let index = mainMeshes.firstIndex(where: { $0.index == component.index }) ?? 0
+                return "Main Mesh \(index + 1)"
+            }
+        } else {
+            let artifacts = viewModel.meshComponents.filter { $0.faceCount < 1000 }
+            if artifacts.count == 1 {
+                return "Artifact"
+            } else {
+                let index = artifacts.firstIndex(where: { $0.index == component.index }) ?? 0
+                return "Artifact \(index + 1)"
+            }
+        }
+    }
+
+    private func formatNumber(_ num: Int) -> String {
+        if num >= 1_000_000 {
+            return String(format: "%.1fM", Double(num) / 1_000_000)
+        } else if num >= 1_000 {
+            return String(format: "%.1fK", Double(num) / 1_000)
+        }
+        return "\(num)"
+    }
+
+    @ViewBuilder
+    private func watertightBadge(_ isWatertight: Bool) -> some View {
+        HStack(spacing: 2) {
+            Image(systemName: isWatertight ? "checkmark.seal.fill" : "xmark.seal")
+                .font(.system(size: 8))
+            Text(isWatertight ? "Watertight" : "Open")
+                .font(.system(size: 9))
+        }
+        .foregroundStyle(isWatertight ? AnyShapeStyle(AppDesign.success) : AnyShapeStyle(Color.secondary.opacity(0.6)))
+    }
+
+    // MARK: - Other Views
 
     @ViewBuilder
     private var analyzingView: some View {
@@ -88,290 +386,10 @@ struct PostProcessPanel: View {
     }
 
     @ViewBuilder
-    private var componentListView: some View {
-        VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-            HStack {
-                AppDesign.SectionLabel("Components (\(viewModel.meshComponents.count))")
-                Spacer()
-                if !viewModel.selectedComponentIndices.isEmpty {
-                    Text("\(viewModel.selectedComponentIndices.count) selected")
-                        .font(.system(size: AppDesign.FontSize.xs, weight: .medium))
-                        .foregroundStyle(AppDesign.accent)
-                }
-            }
-
-            ForEach(viewModel.meshComponents) { component in
-                componentRow(component)
-            }
-
-            if viewModel.meshComponents.count > 1 {
-                HStack(spacing: AppDesign.Spacing.p12) {
-                    AppDesign.InlineButton("Select All", icon: "checkmark.circle") {
-                        viewModel.selectAllComponents()
-                    }
-                    AppDesign.InlineButton("Deselect", icon: "circle") {
-                        viewModel.deselectAllComponents()
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func componentRow(_ component: MeshComponent) -> some View {
-        let isSelected = viewModel.selectedComponentIndices.contains(component.index)
-        let color = AppDesign.neonColors[component.index % AppDesign.neonColors.count]
-
-        Button {
-            withAnimation(.easeOut(duration: 0.15)) {
-                viewModel.toggleComponentSelection(component.index)
-            }
-        } label: {
-            HStack(alignment: .top, spacing: AppDesign.Spacing.p10) {
-                // Color indicator - stretches vertically with content
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(color)
-                    .frame(width: 6)
-                    .frame(maxHeight: .infinity)
-
-                // Component info
-                VStack(alignment: .leading, spacing: 4) {
-                    // Header with component name and badges
-                    HStack(spacing: AppDesign.Spacing.p4) {
-                        Text("Component \(component.index + 1)")
-                            .font(.system(size: AppDesign.FontSize.subheadline, weight: isSelected ? .semibold : .regular))
-                            .foregroundStyle(isSelected ? color : .primary)
-
-                        if component.index == 0 {
-                            Text("Largest")
-                                .font(.system(size: AppDesign.FontSize.xs, weight: .medium))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(color.opacity(0.8), in: Capsule())
-                        }
-
-                        Spacer(minLength: 0)
-
-                        // Selection indicator
-                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                            .font(.system(size: AppDesign.FontSize.title3))
-                            .foregroundStyle(isSelected ? color : Color.secondary.opacity(0.5))
-                    }
-
-                    // Stats - wraps to multiple lines using flexible layout
-                    FlowLayout(spacing: AppDesign.Spacing.p6) {
-                        Label("\(formatNumber(component.vertexCount))", systemImage: "circle.grid.3x3")
-                        Label("\(formatNumber(component.faceCount))", systemImage: "triangle")
-                        if component.isWatertight {
-                            Label("Watertight", systemImage: "checkmark.seal")
-                                .foregroundStyle(AppDesign.success)
-                        }
-                    }
-                    .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                }
-            }
-            .padding(.vertical, AppDesign.Spacing.p8)
-            .padding(.horizontal, AppDesign.Spacing.p10)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(isSelected ? color.opacity(0.15) : Color.primary.opacity(0.03))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(isSelected ? color.opacity(0.5) : Color.primary.opacity(0.1), lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-
-    @ViewBuilder
-    private var actionButtonsView: some View {
-        VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-            // Keep Largest section with edit mode
-            keepLargestSection
-
-            // Divider when expanded
-            if viewModel.isEditingKeepLargest {
-                Divider()
-                    .padding(.vertical, AppDesign.Spacing.p2)
-            }
-
-            // Selection-based actions
-            if !viewModel.selectedComponentIndices.isEmpty {
-                let count = viewModel.selectedComponentIndices.count
-                let canDelete = count < viewModel.meshComponents.count
-                let canKeep = count > 0 && count < viewModel.meshComponents.count
-
-                VStack(alignment: .leading, spacing: AppDesign.Spacing.p6) {
-                    // Only Keep Selected
-                    if canKeep {
-                        AppDesign.GlassButtonSecondary(
-                            "Keep Only Selected",
-                            icon: "checkmark.circle"
-                        ) {
-                            viewModel.showKeepSelectedConfirmation = true
-                        }
-                        .disabled(viewModel.isProcessingMesh)
-                    }
-
-                    // Delete Selected
-                    if canDelete {
-                        AppDesign.GlassButtonSecondary(
-                            "Delete Selected",
-                            icon: "trash",
-                            destructive: true
-                        ) {
-                            viewModel.showDeleteSelectedConfirmation = true
-                        }
-                        .disabled(viewModel.isProcessingMesh)
-                    }
-                }
-
-                if !canDelete && !canKeep {
-                    AppDesign.HintText("Cannot delete all components")
-                }
-            }
-
-            if viewModel.isProcessingMesh {
-                HStack(spacing: AppDesign.Spacing.p8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Processing...")
-                        .font(.system(size: AppDesign.FontSize.caption))
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var keepLargestSection: some View {
-        if viewModel.isEditingKeepLargest {
-            // Expanded edit mode
-            VStack(alignment: .leading, spacing: AppDesign.Spacing.p10) {
-                // Inline stepper row
-                HStack(spacing: AppDesign.Spacing.p6) {
-                    Text("Keep largest")
-                        .font(.system(size: AppDesign.FontSize.caption))
-                        .foregroundStyle(.secondary)
-
-                    // Compact stepper
-                    HStack(spacing: 0) {
-                        // Minus button
-                        Button {
-                            if viewModel.keepLargestCount > 1 {
-                                viewModel.keepLargestCount -= 1
-                            }
-                        } label: {
-                            Image(systemName: "minus")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundStyle(viewModel.keepLargestCount > 1 ? .primary : .tertiary)
-                                .frame(width: 22, height: 22)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(viewModel.keepLargestCount <= 1)
-
-                        Text("\(viewModel.keepLargestCount)")
-                            .font(.system(size: AppDesign.FontSize.caption, weight: .semibold, design: .monospaced))
-                            .frame(width: 20)
-
-                        // Plus button
-                        Button {
-                            let maxCount = viewModel.meshComponents.count - 1
-                            if viewModel.keepLargestCount < maxCount {
-                                viewModel.keepLargestCount += 1
-                            }
-                        } label: {
-                            Image(systemName: "plus")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundStyle(viewModel.keepLargestCount < viewModel.meshComponents.count - 1 ? .primary : .tertiary)
-                                .frame(width: 22, height: 22)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(viewModel.keepLargestCount >= viewModel.meshComponents.count - 1)
-                    }
-                    .padding(.horizontal, 2)
-                    .padding(.vertical, 2)
-                    .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-
-                    Text("of \(viewModel.meshComponents.count)")
-                        .font(.system(size: AppDesign.FontSize.caption))
-                        .foregroundStyle(.tertiary)
-
-                    Spacer(minLength: 0)
-
-                    // Cancel
-                    Button {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            viewModel.isEditingKeepLargest = false
-                            viewModel.keepLargestCount = 1
-                        }
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 20, height: 20)
-                            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.borderless)
-                }
-
-                // Apply button - full width
-                Button {
-                    viewModel.showKeepLargestConfirmation = true
-                } label: {
-                    Text("Keep \(viewModel.keepLargestCount) Largest")
-                        .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, AppDesign.Spacing.p6)
-                        .background(AppDesign.accent, in: RoundedRectangle(cornerRadius: 6))
-                        .foregroundStyle(.white)
-                }
-                .buttonStyle(.borderless)
-                .disabled(viewModel.isProcessingMesh || viewModel.keepLargestCount >= viewModel.meshComponents.count)
-            }
-        } else {
-            // Collapsed mode
-            HStack(spacing: AppDesign.Spacing.p6) {
-                AppDesign.GlassButtonSecondary("Keep Largest Only", icon: "star.fill") {
-                    viewModel.keepLargestCount = 1
-                    viewModel.showKeepLargestConfirmation = true
-                }
-                .disabled(viewModel.isProcessingMesh || viewModel.meshComponents.count <= 1)
-
-                // Edit button to customize count
-                if viewModel.meshComponents.count > 2 {
-                    Button {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            viewModel.isEditingKeepLargest = true
-                            viewModel.keepLargestCount = 1
-                        }
-                    } label: {
-                        Image(systemName: "slider.horizontal.3")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 24, height: 24)
-                            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.borderless)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
     private var exportSection: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
             AppDesign.SectionLabel("Export")
 
-            // Format picker - wraps to multiple lines on narrow sidebar
             FlowLayout(spacing: AppDesign.Spacing.p6) {
                 ForEach(ExportFormat.allCases) { format in
                     formatButton(format)
@@ -409,15 +427,6 @@ struct PostProcessPanel: View {
         .foregroundStyle(isSelected ? AppDesign.accent : .primary)
     }
 
-    private func formatNumber(_ num: Int) -> String {
-        if num >= 1_000_000 {
-            return String(format: "%.1fM", Double(num) / 1_000_000)
-        } else if num >= 1_000 {
-            return String(format: "%.1fK", Double(num) / 1_000)
-        }
-        return "\(num)"
-    }
-
     private func exportMesh() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.item]
@@ -432,5 +441,56 @@ struct PostProcessPanel: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Drop Delegates
+
+struct KeepListDropDelegate: DropDelegate {
+    let viewModel: SimpleEditorViewModel
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let item = info.itemProviders(for: [.text]).first else { return false }
+
+        item.loadObject(ofClass: NSString.self) { object, _ in
+            if let indexString = object as? String, let index = Int(indexString) {
+                DispatchQueue.main.async {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        viewModel.moveToKeep(index)
+                    }
+                }
+            }
+        }
+        return true
+    }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [.text])
+    }
+}
+
+struct DeleteListDropDelegate: DropDelegate {
+    let viewModel: SimpleEditorViewModel
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let item = info.itemProviders(for: [.text]).first else { return false }
+
+        item.loadObject(ofClass: NSString.self) { object, _ in
+            if let indexString = object as? String, let index = Int(indexString) {
+                DispatchQueue.main.async {
+                    // Only allow if it won't leave keep list empty
+                    if viewModel.keepIndices.count > 1 || !viewModel.keepIndices.contains(index) {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            viewModel.moveToDelete(index)
+                        }
+                    }
+                }
+            }
+        }
+        return true
+    }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [.text])
     }
 }

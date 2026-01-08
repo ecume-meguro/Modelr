@@ -99,6 +99,36 @@ class HunyuanProcessManager {
         print("[Hunyuan] Server started with PID \(process?.processIdentifier ?? -1)")
     }
 
+    /// Cancel current generation.
+    ///
+    /// IMPORTANT: The Hunyuan server is started via `uv run ...`, so the `Process.processIdentifier`
+    /// we see here is `uv`'s PID, not necessarily the Python process PID. Relying on a PID-named
+    /// cancel file can therefore fail to cancel the actual generation.
+    ///
+    /// The server supports an explicit `{ "command": "cancel" }` message over stdin, which is
+    /// reliable regardless of intermediate launcher processes.
+    func cancelGeneration() {
+        guard isRunning else { return }
+
+        if let stdin = stdinPipe?.fileHandleForWriting {
+            let cancelCommand = "{\"command\":\"cancel\"}\n"
+            do {
+                try stdin.write(contentsOf: Data(cancelCommand.utf8))
+                print("[Hunyuan] Sent cancel command over stdin")
+            } catch {
+                print("[Hunyuan] Failed to send cancel command: \(error)")
+            }
+        }
+
+        // Back-compat fallback: keep the cancel-file behavior as well.
+        // This may not work when launched via uv (PID mismatch), but is harmless.
+        if let pid = process?.processIdentifier {
+            let cancelFile = "/tmp/modelr_cancel_\(pid)"
+            FileManager.default.createFile(atPath: cancelFile, contents: nil)
+            print("[Hunyuan] Created cancel file: \(cancelFile)")
+        }
+    }
+
     /// Stop the server
     func stopServer() {
         guard isRunning else { return }

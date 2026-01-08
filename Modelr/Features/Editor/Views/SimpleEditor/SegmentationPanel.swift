@@ -181,14 +181,9 @@ struct SegmentationEntryView: View {
                     viewModel.expandSegmentation(at: index)
                 }
             } label: {
-                HStack(spacing: AppDesign.Spacing.p6) {
-                    Circle()
-                        .fill(segmentationColor)
-                        .frame(width: 8, height: 8)
-                    Text(entry.name)
-                        .font(.system(size: AppDesign.FontSize.subheadline, weight: isActive ? .bold : .semibold))
-                        .foregroundStyle(isActive ? segmentationColor : .primary)
-                }
+                Text(entry.textPrompt.isEmpty ? "Object \(index + 1)" : entry.textPrompt)
+                    .font(.system(size: AppDesign.FontSize.subheadline, weight: isActive ? .bold : .semibold))
+                    .foregroundStyle(.primary)
             }
             .buttonStyle(.plain)
 
@@ -207,10 +202,6 @@ struct SegmentationEntryView: View {
                         .aspectRatio(contentMode: .fit)
                         .frame(width: 24, height: 24)
                         .clipShape(RoundedRectangle(cornerRadius: 4))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 4)
-                                .strokeBorder(segmentationColor, lineWidth: 2)
-                        )
                 }
                 Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: AppDesign.FontSize.caption))
@@ -236,20 +227,47 @@ struct SegmentationEntryView: View {
     @ViewBuilder
     private var entryContent: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-            // Text prompt input
-            HStack(spacing: AppDesign.Spacing.p8) {
-                TextField("e.g. dog, tree, person", text: textPromptBinding)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($isTextFieldFocused)
-                    .onSubmit {
-                        viewModel.runTextPrediction()
-                    }
+            // Text-guided detection section
+            VStack(alignment: .leading, spacing: AppDesign.Spacing.p6) {
+                HStack(spacing: AppDesign.Spacing.p8) {
+                    TextField("what to detect? e.g. alpaca", text: textPromptBinding)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($isTextFieldFocused)
+                        .onSubmit {
+                            viewModel.runTextPrediction()
+                        }
 
-                Button(action: viewModel.runTextPrediction) {
-                    Image(systemName: "magnifyingglass")
+                    Button {
+                        viewModel.runTextPrediction()
+                    } label: {
+                        HStack(spacing: 4) {
+                            if entry.isProcessing {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .scaleEffect(0.7)
+                            } else {
+                                Image(systemName: "sparkle.magnifyingglass")
+                            }
+                            Text("Detect")
+                        }
+                        .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(entry.textPrompt.isEmpty || entry.isProcessing)
                 }
-                .buttonStyle(.bordered)
-                .disabled(entry.textPrompt.isEmpty || entry.isProcessing)
+
+                AppDesign.HintText("AI will find and segment the object you describe")
+            }
+
+            Divider().padding(.vertical, 2)
+
+            // Alternative: click detection
+            VStack(alignment: .leading, spacing: AppDesign.Spacing.p4) {
+                Text("Or click directly on the object")
+                    .font(.system(size: AppDesign.FontSize.caption))
+                    .foregroundStyle(.secondary)
+                AppDesign.HintText("Right-click to add, Option-click to remove")
             }
             .onAppear {
                 // Auto-focus when this entry appears expanded and active
@@ -259,8 +277,6 @@ struct SegmentationEntryView: View {
                     }
                 }
             }
-
-            AppDesign.HintText("Or right-click on the object in view")
 
             // Warning if no results
             if entry.isSearchPerformed && entry.allMasks.isEmpty && !entry.isProcessing {

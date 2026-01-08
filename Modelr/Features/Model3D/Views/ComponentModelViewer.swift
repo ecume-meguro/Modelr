@@ -3,10 +3,16 @@ import SceneKit
 import ModelIO
 import SceneKit.ModelIO
 
-/// A 3D viewer that displays mesh components with different colors and highlights selected ones
+/// A 3D viewer that displays mesh components with keep/delete coloring and highlighting
 struct ComponentModelViewer: NSViewRepresentable {
     let componentFiles: [ComponentFile]
-    let selectedIndices: Set<Int>
+    let keepIndices: Set<Int>
+    let deleteIndices: Set<Int>
+    let highlightedIndex: Int?
+    let isolatedIndex: Int?
+    let displayMode: SimpleEditorViewModel.MeshDisplayMode
+    /// Pre-loaded SceneKit nodes for instant rendering (optional - falls back to loading from disk if empty)
+    var preloadedNodes: [Int: SCNNode] = [:]
 
     struct ComponentFile: Identifiable {
         let id = UUID()
@@ -25,7 +31,17 @@ struct ComponentModelViewer: NSViewRepresentable {
         scnView.scene = scene
 
         setupCameraAndLighting(scene: scene, view: scnView)
-        context.coordinator.loadComponents(componentFiles, selectedIndices: selectedIndices, into: scene, view: scnView)
+        context.coordinator.loadComponents(
+            componentFiles,
+            keepIndices: keepIndices,
+            deleteIndices: deleteIndices,
+            highlightedIndex: highlightedIndex,
+            isolatedIndex: isolatedIndex,
+            displayMode: displayMode,
+            preloadedNodes: preloadedNodes,
+            into: scene,
+            view: scnView
+        )
 
         return scnView
     }
@@ -33,8 +49,15 @@ struct ComponentModelViewer: NSViewRepresentable {
     func updateNSView(_ scnView: SCNView, context: Context) {
         guard let scene = scnView.scene else { return }
 
-        // Update component colors based on selection
-        context.coordinator.updateColors(selectedIndices: selectedIndices, in: scene)
+        // Update component colors and visibility based on state
+        context.coordinator.updateAppearance(
+            keepIndices: keepIndices,
+            deleteIndices: deleteIndices,
+            highlightedIndex: highlightedIndex,
+            isolatedIndex: isolatedIndex,
+            displayMode: displayMode,
+            in: scene
+        )
     }
 
     func makeCoordinator() -> Coordinator {
@@ -93,7 +116,22 @@ struct ComponentModelViewer: NSViewRepresentable {
     class Coordinator {
         private var componentNodes: [Int: SCNNode] = [:]
 
-        func loadComponents(_ files: [ComponentFile], selectedIndices: Set<Int>, into scene: SCNScene, view: SCNView) {
+        // Color constants
+        private let keepColor = NSColor(red: 0.2, green: 0.85, blue: 0.4, alpha: 1.0)      // Green
+        private let deleteColor = NSColor(red: 0.95, green: 0.3, blue: 0.3, alpha: 1.0)   // Red
+        private let highlightColor = NSColor(red: 1.0, green: 0.9, blue: 0.2, alpha: 1.0) // Yellow
+
+        func loadComponents(
+            _ files: [ComponentFile],
+            keepIndices: Set<Int>,
+            deleteIndices: Set<Int>,
+            highlightedIndex: Int?,
+            isolatedIndex: Int?,
+            displayMode: SimpleEditorViewModel.MeshDisplayMode,
+            preloadedNodes: [Int: SCNNode],
+            into scene: SCNScene,
+            view: SCNView
+        ) {
             // Remove existing components
             scene.rootNode.childNode(withName: "componentsContainer", recursively: true)?.removeFromParentNode()
             componentNodes.removeAll()
@@ -101,110 +139,280 @@ struct ComponentModelViewer: NSViewRepresentable {
             let containerNode = SCNNode()
             containerNode.name = "componentsContainer"
 
-            DispatchQueue.global(qos: .userInitiated).async {
-                var allNodes: [(Int, SCNNode)] = []
+            // Check if we have preloaded nodes available
+            let hasPreloadedNodes = !preloadedNodes.isEmpty
 
+            if hasPreloadedNodes {
+                // Use pre-loaded nodes for instant rendering (main thread)
+                // Materials are already applied during preload, so this is very fast
                 for file in files {
-                    let url = URL(fileURLWithPath: file.path)
-                    guard FileManager.default.fileExists(atPath: file.path) else { continue }
+                    guard let preloadedNode = preloadedNodes[file.index] else { continue }
 
-                    let asset = MDLAsset(url: url)
-                    asset.loadTextures()
-
-                    guard asset.count > 0 else { continue }
-
-                    let loadedScene = SCNScene(mdlAsset: asset)
-
-                    let componentNode = SCNNode()
+                    // Clone the pre-loaded node (materials are preserved in clone)
+                    let componentNode = preloadedNode.clone()
                     componentNode.name = "component_\(file.index)"
 
-                    for child in loadedScene.rootNode.childNodes {
-                        let cloned = child.clone()
-                        self.applyMaterial(node: cloned, index: file.index, isSelected: selectedIndices.contains(file.index))
-                        componentNode.addChildNode(cloned)
+                    // Only re-apply materials if highlighted (yellow override) or display mode changed
+                    // Otherwise use the pre-baked materials for instant display
+                    if highlightedIndex == file.index {
+                        self.applyMaterialToNode(
+                            node: componentNode,
+                            index: file.index,
+                            keepIndices: keepIndices,
+                            deleteIndices: deleteIndices,
+                            highlightedIndex: highlightedIndex,
+                            isolatedIndex: isolatedIndex,
+                            displayMode: displayMode
+                        )
                     }
 
-                    allNodes.append((file.index, componentNode))
+                    // Set initial visibility based on isolation
+                    if let isolated = isolatedIndex {
+                        componentNode.isHidden = file.index != isolated
+                    }
+
+                    containerNode.addChildNode(componentNode)
+                    self.componentNodes[file.index] = componentNode
                 }
 
-                DispatchQueue.main.async {
-                    for (index, node) in allNodes {
-                        containerNode.addChildNode(node)
-                        self.componentNodes[index] = node
+                scene.rootNode.addChildNode(containerNode)
+                self.centerAndScaleContainer(containerNode)
+            } else {
+                // Fall back to loading from disk (background thread)
+                DispatchQueue.global(qos: .userInitiated).async {
+                    var allNodes: [(Int, SCNNode)] = []
+
+                    for file in files {
+                        let url = URL(fileURLWithPath: file.path)
+                        guard FileManager.default.fileExists(atPath: file.path) else { continue }
+
+                        let asset = MDLAsset(url: url)
+                        asset.loadTextures()
+
+                        guard asset.count > 0 else { continue }
+
+                        let loadedScene = SCNScene(mdlAsset: asset)
+
+                        let componentNode = SCNNode()
+                        componentNode.name = "component_\(file.index)"
+
+                        for child in loadedScene.rootNode.childNodes {
+                            let cloned = child.clone()
+                            self.applyMaterial(
+                                node: cloned,
+                                index: file.index,
+                                keepIndices: keepIndices,
+                                deleteIndices: deleteIndices,
+                                highlightedIndex: highlightedIndex,
+                                isolatedIndex: isolatedIndex,
+                                displayMode: displayMode
+                            )
+                            componentNode.addChildNode(cloned)
+                        }
+
+                        // Set initial visibility based on isolation
+                        if let isolated = isolatedIndex {
+                            componentNode.isHidden = file.index != isolated
+                        }
+
+                        allNodes.append((file.index, componentNode))
                     }
 
-                    scene.rootNode.addChildNode(containerNode)
+                    DispatchQueue.main.async {
+                        for (index, node) in allNodes {
+                            containerNode.addChildNode(node)
+                            self.componentNodes[index] = node
+                        }
 
-                    // Center and scale
-                    let (min, max) = containerNode.boundingBox
-                    let size = SCNVector3(max.x - min.x, max.y - min.y, max.z - min.z)
-                    let maxDim = Swift.max(size.x, Swift.max(size.y, size.z))
-
-                    if maxDim > 0 {
-                        let scale = 1.5 / maxDim
-                        containerNode.scale = SCNVector3(scale, scale, scale)
-
-                        let center = SCNVector3((min.x + max.x) / 2, (min.y + max.y) / 2, (min.z + max.z) / 2)
-                        containerNode.pivot = SCNMatrix4MakeTranslation(center.x, center.y, center.z)
-                        containerNode.position = SCNVector3(0, 0, 0)
+                        scene.rootNode.addChildNode(containerNode)
+                        self.centerAndScaleContainer(containerNode)
                     }
                 }
             }
         }
 
-        func updateColors(selectedIndices: Set<Int>, in scene: SCNScene) {
+        /// Apply material recursively to a node and all its children
+        private func applyMaterialToNode(
+            node: SCNNode,
+            index: Int,
+            keepIndices: Set<Int>,
+            deleteIndices: Set<Int>,
+            highlightedIndex: Int?,
+            isolatedIndex: Int?,
+            displayMode: SimpleEditorViewModel.MeshDisplayMode
+        ) {
+            applyMaterial(
+                node: node,
+                index: index,
+                keepIndices: keepIndices,
+                deleteIndices: deleteIndices,
+                highlightedIndex: highlightedIndex,
+                isolatedIndex: isolatedIndex,
+                displayMode: displayMode
+            )
+        }
+
+        /// Center and scale the container node
+        private func centerAndScaleContainer(_ containerNode: SCNNode) {
+            let (min, max) = containerNode.boundingBox
+            let size = SCNVector3(max.x - min.x, max.y - min.y, max.z - min.z)
+            let maxDim = Swift.max(size.x, Swift.max(size.y, size.z))
+
+            if maxDim > 0 {
+                let scale = 1.5 / maxDim
+                containerNode.scale = SCNVector3(scale, scale, scale)
+
+                let center = SCNVector3((min.x + max.x) / 2, (min.y + max.y) / 2, (min.z + max.z) / 2)
+                containerNode.pivot = SCNMatrix4MakeTranslation(center.x, center.y, center.z)
+                containerNode.position = SCNVector3(0, 0, 0)
+            }
+        }
+
+        func updateAppearance(
+            keepIndices: Set<Int>,
+            deleteIndices: Set<Int>,
+            highlightedIndex: Int?,
+            isolatedIndex: Int?,
+            displayMode: SimpleEditorViewModel.MeshDisplayMode,
+            in scene: SCNScene
+        ) {
             for (index, node) in componentNodes {
-                let isSelected = selectedIndices.contains(index)
-                updateNodeMaterial(node: node, index: index, isSelected: isSelected)
+                // Update visibility based on isolation
+                if let isolated = isolatedIndex {
+                    node.isHidden = index != isolated
+                } else {
+                    node.isHidden = false
+                }
+
+                // Update materials
+                updateNodeMaterial(
+                    node: node,
+                    index: index,
+                    keepIndices: keepIndices,
+                    deleteIndices: deleteIndices,
+                    highlightedIndex: highlightedIndex,
+                    isolatedIndex: isolatedIndex,
+                    displayMode: displayMode
+                )
             }
         }
 
-        private func applyMaterial(node: SCNNode, index: Int, isSelected: Bool) {
-            let color = colorForComponent(index: index, isSelected: isSelected)
+        private func applyMaterial(
+            node: SCNNode,
+            index: Int,
+            keepIndices: Set<Int>,
+            deleteIndices: Set<Int>,
+            highlightedIndex: Int?,
+            isolatedIndex: Int?,
+            displayMode: SimpleEditorViewModel.MeshDisplayMode
+        ) {
+            let color = colorForComponent(
+                index: index,
+                keepIndices: keepIndices,
+                deleteIndices: deleteIndices,
+                highlightedIndex: highlightedIndex
+            )
 
             node.geometry?.materials.forEach { material in
                 material.isDoubleSided = true
                 material.diffuse.contents = color
-                material.lightingModel = .physicallyBased
+                configureMaterial(material, for: displayMode)
             }
 
             for child in node.childNodes {
-                applyMaterial(node: child, index: index, isSelected: isSelected)
+                applyMaterial(
+                    node: child,
+                    index: index,
+                    keepIndices: keepIndices,
+                    deleteIndices: deleteIndices,
+                    highlightedIndex: highlightedIndex,
+                    isolatedIndex: isolatedIndex,
+                    displayMode: displayMode
+                )
             }
         }
 
-        private func updateNodeMaterial(node: SCNNode, index: Int, isSelected: Bool) {
-            let color = colorForComponent(index: index, isSelected: isSelected)
+        private func updateNodeMaterial(
+            node: SCNNode,
+            index: Int,
+            keepIndices: Set<Int>,
+            deleteIndices: Set<Int>,
+            highlightedIndex: Int?,
+            isolatedIndex: Int?,
+            displayMode: SimpleEditorViewModel.MeshDisplayMode
+        ) {
+            let color = colorForComponent(
+                index: index,
+                keepIndices: keepIndices,
+                deleteIndices: deleteIndices,
+                highlightedIndex: highlightedIndex
+            )
 
             node.geometry?.materials.forEach { material in
                 material.diffuse.contents = color
+                configureMaterial(material, for: displayMode)
             }
 
             for child in node.childNodes {
-                updateNodeMaterial(node: child, index: index, isSelected: isSelected)
+                updateNodeMaterial(
+                    node: child,
+                    index: index,
+                    keepIndices: keepIndices,
+                    deleteIndices: deleteIndices,
+                    highlightedIndex: highlightedIndex,
+                    isolatedIndex: isolatedIndex,
+                    displayMode: displayMode
+                )
             }
         }
 
-        private func colorForComponent(index: Int, isSelected: Bool) -> NSColor {
-            // Use neon colors matching AppDesign
-            let neonColors: [NSColor] = [
-                NSColor(red: 0.0, green: 1.0, blue: 0.8, alpha: 1.0),   // Cyan
-                NSColor(red: 1.0, green: 0.2, blue: 0.6, alpha: 1.0),   // Magenta
-                NSColor(red: 0.4, green: 1.0, blue: 0.2, alpha: 1.0),   // Lime
-                NSColor(red: 1.0, green: 0.6, blue: 0.0, alpha: 1.0),   // Orange
-                NSColor(red: 0.6, green: 0.4, blue: 1.0, alpha: 1.0),   // Purple
-                NSColor(red: 1.0, green: 1.0, blue: 0.2, alpha: 1.0),   // Yellow
-            ]
-
-            let baseColor = neonColors[index % neonColors.count]
-
-            if isSelected {
-                // Brighter when selected
-                return baseColor
-            } else {
-                // Dimmer when not selected
-                return baseColor.withAlphaComponent(0.4)
+        private func configureMaterial(_ material: SCNMaterial, for displayMode: SimpleEditorViewModel.MeshDisplayMode) {
+            switch displayMode {
+            case .solid:
+                material.fillMode = .fill
+                material.transparency = 1.0
+                material.transparencyMode = .default
+                material.blendMode = .replace
+                material.writesToDepthBuffer = true
+                material.lightingModel = .physicallyBased
+            case .wireframe:
+                material.fillMode = .lines
+                material.transparency = 1.0
+                material.transparencyMode = .default
+                material.blendMode = .replace
+                material.writesToDepthBuffer = true
+                material.lightingModel = .constant
+            case .transparent:
+                material.fillMode = .fill
+                material.transparency = 0.4  // Lower value = more transparent in SceneKit
+                material.transparencyMode = .dualLayer
+                material.blendMode = .alpha
+                material.writesToDepthBuffer = false
+                material.readsFromDepthBuffer = true
+                material.lightingModel = .physicallyBased
             }
+        }
+
+        private func colorForComponent(
+            index: Int,
+            keepIndices: Set<Int>,
+            deleteIndices: Set<Int>,
+            highlightedIndex: Int?
+        ) -> NSColor {
+            // Highlighted overrides everything - bright yellow
+            if highlightedIndex == index {
+                return highlightColor
+            }
+
+            // Keep = green, Delete = red
+            if keepIndices.contains(index) {
+                return keepColor
+            } else if deleteIndices.contains(index) {
+                return deleteColor
+            }
+
+            // Fallback (shouldn't happen) - gray
+            return NSColor.gray
         }
     }
 }
@@ -212,7 +420,12 @@ struct ComponentModelViewer: NSViewRepresentable {
 /// Container for component model viewer with controls
 struct ComponentModelViewerContainer: View {
     let componentFiles: [ComponentModelViewer.ComponentFile]
-    let selectedIndices: Set<Int>
+    let keepIndices: Set<Int>
+    let deleteIndices: Set<Int>
+    let highlightedIndex: Int?
+    let isolatedIndex: Int?
+    let displayMode: SimpleEditorViewModel.MeshDisplayMode
+    var preloadedNodes: [Int: SCNNode] = [:]
 
     var body: some View {
         ZStack {
@@ -221,13 +434,37 @@ struct ComponentModelViewerContainer: View {
                 .shadow(color: .black.opacity(0.3), radius: 20, y: 10)
 
             if !componentFiles.isEmpty {
-                ComponentModelViewer(componentFiles: componentFiles, selectedIndices: selectedIndices)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                ComponentModelViewer(
+                    componentFiles: componentFiles,
+                    keepIndices: keepIndices,
+                    deleteIndices: deleteIndices,
+                    highlightedIndex: highlightedIndex,
+                    isolatedIndex: isolatedIndex,
+                    displayMode: displayMode,
+                    preloadedNodes: preloadedNodes
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
                 VStack {
                     Spacer()
                     HStack {
+                        // Color legend
+                        HStack(spacing: AppDesign.Spacing.p12) {
+                            legendItem(color: .green, label: "Keep")
+                            legendItem(color: .red, label: "Delete")
+                            if highlightedIndex != nil {
+                                legendItem(color: .yellow, label: "Selected")
+                            }
+                        }
+                        .font(.system(size: AppDesign.FontSize.xs, weight: .medium))
+                        .foregroundColor(.white.opacity(0.8))
+                        .padding(.horizontal, AppDesign.Spacing.p12)
+                        .padding(.vertical, AppDesign.Spacing.p6)
+                        .background(.ultraThinMaterial.opacity(0.8))
+                        .clipShape(Capsule())
+
                         Spacer()
+
                         HStack(spacing: AppDesign.Spacing.p6) {
                             Image(systemName: "hand.draw")
                             Text("Drag to rotate")
@@ -254,5 +491,15 @@ struct ComponentModelViewerContainer: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(Color.white.opacity(0.1), lineWidth: 1)
         )
+    }
+
+    @ViewBuilder
+    private func legendItem(color: Color, label: String) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+            Text(label)
+        }
     }
 }
