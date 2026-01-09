@@ -79,7 +79,7 @@ extension SimpleEditorViewModel {
         prepareCompositeImage()
 
         // Transition to settings step
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+        withFastSpring {
             currentStep = .generateSettings
         }
     }
@@ -343,14 +343,12 @@ extension SimpleEditorViewModel {
         let stepDetail = extractStepDetail(from: status)
 
         if status.contains("Downloading") || status.contains("Fetching") {
-            let needsDownload = (selectedPreset.usesLargeModel && !isLargeModelDownloaded) ||
-                               (!selectedPreset.usesLargeModel && !isSmallModelDownloaded)
-            if needsDownload {
+            if !isSmallModelDownloaded {
                 let info = ProgressParser.parseDetailedProgress(status)
                 let progress = info.percentComplete / 100.0
                 let detail = info.currentStep > 0 ? "\(info.currentStep)/\(info.totalSteps)" : "Downloading..."
 
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                withFastSpring {
                     generationStages[.downloading] = StageProgress(status: .inProgress, progress: progress, detail: detail)
                 }
 
@@ -359,9 +357,9 @@ extension SimpleEditorViewModel {
                     // Determine the correct directory and total bytes for the monitor
                     let modelrDir = PathManager.appSupportDirectory
                     let hfCacheDir = modelrDir.appendingPathComponent("Cache/hf_cache/hub")
-                    let modelCacheName = selectedPreset.usesLargeModel ? "models--tencent--Hunyuan3D-2.1" : "models--tencent--Hunyuan3D-2mini"
+                    let modelCacheName = "models--tencent--Hunyuan3D-2mini"
                     let modelCacheDir = hfCacheDir.appendingPathComponent(modelCacheName)
-                    let total = selectedPreset.usesLargeModel ? AppConstants.hunyuanStandardModelBytes : AppConstants.hunyuanMiniModelBytes
+                    let total = AppConstants.hunyuanMiniModelBytes
 
                     downloadMonitor.startMonitoring(directory: modelCacheDir, totalBytes: Int64(total)) { [weak self] (monitor: DownloadMonitor) in
                         guard let self = self else { return }
@@ -375,14 +373,14 @@ extension SimpleEditorViewModel {
                 }
             }
         } else if status.contains("Extracting") {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            withFastSpring {
                 if generationStages[.downloading] != nil {
                     generationStages[.downloading] = StageProgress(status: .completed, progress: 1.0, detail: "")
                 }
                 generationStages[.extracting] = StageProgress(status: .inProgress, progress: 0, detail: "")
             }
         } else if status.contains("Loading") && !status.contains("Volume") {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            withFastSpring {
                 markPreviousStagesCompleted(before: .loading)
                 generationStages[.extracting] = StageProgress(status: .completed, progress: 1.0, detail: "")
                 generationStages[.loading] = StageProgress(status: .inProgress, progress: 0, detail: "")
@@ -405,7 +403,7 @@ extension SimpleEditorViewModel {
             } else {
                 stageProgress = 0
             }
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            withFastSpring {
                 markPreviousStagesCompleted(before: .volumeDecoding)
                 generationStages[.diffusion] = StageProgress(status: .completed, progress: 1.0, detail: "")
                 generationStages[.volumeDecoding] = StageProgress(status: .inProgress, progress: stageProgress, detail: detail)
@@ -420,13 +418,13 @@ extension SimpleEditorViewModel {
             } else {
                 stageProgress = 0
             }
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            withFastSpring {
                 markPreviousStagesCompleted(before: .diffusion)
                 generationStages[.diffusion] = StageProgress(status: .inProgress, progress: stageProgress, detail: detail)
             }
         } else if status.contains("Exporting") || status.contains("export") {
             // Transition from diffusion to saving when exporting starts
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            withFastSpring {
                 markPreviousStagesCompleted(before: .saving)
                 generationStages[.diffusion] = StageProgress(status: .completed, progress: 1.0, detail: "")
                 generationStages[.volumeDecoding] = StageProgress(status: .completed, progress: 1.0, detail: "")
@@ -438,7 +436,7 @@ extension SimpleEditorViewModel {
             let progress = info.percentComplete / 100.0
             let detail = stepDetail
 
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            withFastSpring {
                 // Determine stage based on progress value
                 if progress < 0.85 {
                     // Still in diffusion phase
@@ -453,7 +451,7 @@ extension SimpleEditorViewModel {
             }
         } else if status.contains("Saving") {
             let detail = extractDetailText(from: status)
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            withFastSpring {
                 markPreviousStagesCompleted(before: .saving)
                 generationStages[.volumeDecoding] = StageProgress(status: .completed, progress: 1.0, detail: "")
                 generationStages[.saving] = StageProgress(status: .inProgress, progress: 0, detail: detail)

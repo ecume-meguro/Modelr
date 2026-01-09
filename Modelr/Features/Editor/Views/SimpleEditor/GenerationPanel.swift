@@ -70,10 +70,8 @@ struct GenerationPanel: View {
     private var visibleStages: [GenerationStage] {
         GenerationStage.allCases.filter { stage in
             if stage == .downloading {
-                // Show downloading stage if the needed model isn't downloaded
-                let needsLargeModel = viewModel.selectedPreset.usesLargeModel && !viewModel.isLargeModelDownloaded
-                let needsSmallModel = viewModel.selectedPreset.usesMiniRepo && !viewModel.isSmallModelDownloaded
-                return needsLargeModel || needsSmallModel
+                // Show downloading stage if the model isn't downloaded
+                return !viewModel.isSmallModelDownloaded
             }
             return true
         }

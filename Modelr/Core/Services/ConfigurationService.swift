@@ -22,13 +22,11 @@ class ConfigurationService: ObservableObject {
             struct Hunyuan3D: Codable {
                 let defaultSteps: Int
                 let defaultResolution: Int
-                let largeModelSizeGb: Double
                 let miniModelSizeGb: Double
-                
+
                 enum CodingKeys: String, CodingKey {
                     case defaultSteps = "default_steps"
                     case defaultResolution = "default_resolution"
-                    case largeModelSizeGb = "large_model_size_gb"
                     case miniModelSizeGb = "mini_model_size_gb"
                 }
             }
@@ -107,9 +105,5 @@ class ConfigurationService: ObservableObject {
 
     var hunyuanMiniModelSizeGb: Double {
         config?.models.hunyuan3d.miniModelSizeGb ?? 3.84
-    }
-
-    var hunyuanLargeModelSizeGb: Double {
-        config?.models.hunyuan3d.largeModelSizeGb ?? 7.4
     }
 }

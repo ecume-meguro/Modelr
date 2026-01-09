@@ -45,6 +45,8 @@ struct PathManager {
         try SecureFileManager.shared.ensureDirectoryExists(at: outputs3DDirectory)
         try SecureFileManager.shared.ensureDirectoryExists(at: outputsImagesDirectory)
 
+        try SecureFileManager.shared.ensureDirectoryExists(at: projectsDirectory)
+
         try SecureFileManager.shared.ensureDirectoryExists(at: configDirectory)
         try SecureFileManager.shared.ensureDirectoryExists(at: cacheDirectory)
         try SecureFileManager.shared.ensureDirectoryExists(at: uvCacheDirectory)
@@ -307,6 +309,46 @@ struct PathManager {
 
     static var outputsImagesDirectory: URL {
         outputsDirectory.appendingPathComponent("images", isDirectory: true)
+    }
+
+    /// App Support subfolder for user projects
+    static var projectsDirectory: URL {
+        appSupportDirectory.appendingPathComponent("Projects", isDirectory: true)
+    }
+
+    /// Get the directory for a specific project
+    static func projectDirectory(for projectId: UUID) -> URL {
+        projectsDirectory.appendingPathComponent(projectId.uuidString, isDirectory: true)
+    }
+
+    /// Get the path to a project's manifest file
+    static func projectManifestPath(for projectId: UUID) -> URL {
+        projectDirectory(for: projectId).appendingPathComponent("project.json")
+    }
+
+    /// Get the path to a project's metadata file
+    static func projectMetadataPath(for projectId: UUID) -> URL {
+        projectDirectory(for: projectId).appendingPathComponent("metadata.json")
+    }
+
+    /// Get the path to a project's source image
+    static func projectSourceImagePath(for projectId: UUID) -> URL {
+        projectDirectory(for: projectId).appendingPathComponent("source.png")
+    }
+
+    /// Get the path to a project's thumbnail
+    static func projectThumbnailPath(for projectId: UUID) -> URL {
+        projectDirectory(for: projectId).appendingPathComponent("thumbnail.png")
+    }
+
+    /// Get the path to a project's mask image
+    static func projectMaskPath(for projectId: UUID) -> URL {
+        projectDirectory(for: projectId).appendingPathComponent("mask.png")
+    }
+
+    /// Get the path to a project's generated 3D model
+    static func projectModelPath(for projectId: UUID) -> URL {
+        projectDirectory(for: projectId).appendingPathComponent("model.obj")
     }
 
     /// App Support subfolder for logs
@@ -605,9 +647,9 @@ struct PathManager {
     
     /// Check if self-test setup is complete
     
-    /// Check if a Hunyuan3D model variant is downloaded
+    /// Check if a Hunyuan3D model variant is downloaded (only mini is supported)
     static func isHunyuanModelDownloaded(variant: String) -> Bool {
-        let modelDirName = variant == "mini" ? "models--tencent--Hunyuan3D-2mini" : "models--tencent--Hunyuan3D-2.1"
+        let modelDirName = "models--tencent--Hunyuan3D-2mini"
 
         // When Swift sets HUGGINGFACE_HUB_CACHE to Models/hub, the models--... dirs are created directly under that folder.
         // Also allow the HF_HOME default layout (Models/hub/hub) and legacy locations.

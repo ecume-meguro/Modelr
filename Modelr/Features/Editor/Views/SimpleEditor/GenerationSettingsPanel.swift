@@ -6,60 +6,26 @@ struct GenerationSettingsPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
-            // Quality Preset Section (unified model + quality dropdown)
+            // Quality Preset Section
             VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
                 AppDesign.SectionLabel("Quality")
 
                 Menu {
-                    // Fast model presets (mini)
-                    Section("Fast (Mini)") {
-                        ForEach(GenerationPreset.fastPresets, id: \.self) { preset in
-                            Button {
-                                viewModel.selectedPreset = preset
-                                viewModel.customSteps = CGFloat(preset.steps)
-                                viewModel.customResolution = CGFloat(preset.resolution)
-                            } label: {
-                                HStack {
-                                    Text(preset.rawValue)
-                                    if !viewModel.isSmallModelDownloaded {
-                                        Image(systemName: "arrow.down.circle")
-                                            .foregroundStyle(.orange)
-                                    }
-                                    Spacer()
-                                    Text(preset.estimatedTime)
-                                        .foregroundStyle(.secondary)
+                    ForEach(GenerationPreset.allCases, id: \.self) { preset in
+                        Button {
+                            viewModel.selectedPreset = preset
+                            viewModel.customSteps = CGFloat(preset.steps)
+                            viewModel.customResolution = CGFloat(preset.resolution)
+                        } label: {
+                            HStack {
+                                Text(preset.rawValue)
+                                if !viewModel.isSmallModelDownloaded {
+                                    Image(systemName: "arrow.down.circle")
+                                        .foregroundStyle(.orange)
                                 }
-                            }
-                        }
-                    }
-
-                    Divider()
-
-                    // Quality model presets (2.1)
-                    Section("Quality (2.1)") {
-                        // Info row explaining the download icon
-                        if !viewModel.isLargeModelDownloaded {
-                            Label("Requires \(SetupModelChoice.quality.downloadSize) download on first use", systemImage: "info.circle")
-                                .foregroundStyle(.secondary)
-                                .font(.caption)
-                        }
-
-                        ForEach(GenerationPreset.qualityPresets, id: \.self) { preset in
-                            Button {
-                                viewModel.selectedPreset = preset
-                                viewModel.customSteps = CGFloat(preset.steps)
-                                viewModel.customResolution = CGFloat(preset.resolution)
-                            } label: {
-                                HStack {
-                                    Text(preset.rawValue)
-                                    if !viewModel.isLargeModelDownloaded {
-                                        Image(systemName: "arrow.down.circle")
-                                            .foregroundStyle(.orange)
-                                    }
-                                    Spacer()
-                                    Text(preset.estimatedTime)
-                                        .foregroundStyle(.secondary)
-                                }
+                                Spacer()
+                                Text(preset.estimatedTime)
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -67,9 +33,8 @@ struct GenerationSettingsPanel: View {
                     HStack {
                         Text(viewModel.selectedPreset.rawValue)
                             .font(.system(size: AppDesign.FontSize.body))
-                        // Show download icon if needed model isn't downloaded
-                        if (viewModel.selectedPreset.usesLargeModel && !viewModel.isLargeModelDownloaded) ||
-                           (viewModel.selectedPreset.usesMiniRepo && !viewModel.isSmallModelDownloaded) {
+                        // Show download icon if model isn't downloaded
+                        if !viewModel.isSmallModelDownloaded {
                             Image(systemName: "arrow.down.circle")
                                 .font(.system(size: AppDesign.FontSize.caption))
                                 .foregroundStyle(.orange)
@@ -100,16 +65,7 @@ struct GenerationSettingsPanel: View {
                 }
 
                 // Show download warning when model needs downloading
-                if viewModel.selectedPreset.usesLargeModel && !viewModel.isLargeModelDownloaded {
-                    HStack(spacing: AppDesign.Spacing.p4) {
-                        Image(systemName: "arrow.down.circle")
-                            .font(.system(size: AppDesign.FontSize.caption))
-                            .foregroundStyle(AppDesign.warning)
-                        Text("Will download \(SetupModelChoice.quality.downloadSize) on first use")
-                            .font(.system(size: AppDesign.FontSize.caption))
-                            .foregroundStyle(AppDesign.warning)
-                    }
-                } else if viewModel.selectedPreset.usesMiniRepo && !viewModel.isSmallModelDownloaded {
+                if !viewModel.isSmallModelDownloaded {
                     HStack(spacing: AppDesign.Spacing.p4) {
                         Image(systemName: "arrow.down.circle")
                             .font(.system(size: AppDesign.FontSize.caption))

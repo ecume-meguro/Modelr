@@ -29,7 +29,7 @@ from modelr_core.exceptions import ModelLoadError
 # Default model and prompt
 MODEL_ID = "mlx-community/Qwen3-VL-2B-Instruct-4bit"
 # For Qwen3-VL, the prompt needs image tokens inserted via chat template
-DEFAULT_PROMPT = "State the common name of the item shown. Max 2 words."
+DEFAULT_PROMPT = "State the common name of the item shown. Max 2 words. Do not be specific. Do not denote items by brand, name, etc. E.g Tesla should be Car, Bumblebee (transformers) should be robot, do not use names."
 
 # Qwen3-VL specific tokens
 VISION_START = "<|vision_start|>"

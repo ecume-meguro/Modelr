@@ -17,7 +17,7 @@ extension SimpleEditorViewModel {
             : preloadManager.preloadedMergedMask
 
         // Animate step change FIRST for immediate UI response
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+        withFastSpring {
             currentStep = .touchup
         }
 

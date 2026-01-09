@@ -6,22 +6,26 @@ import Foundation
 class BaseEditorViewModel: ObservableObject {
     // MARK: - Dependencies
     let env: PythonEnvironment
-    
+
+    // MARK: - Project Context
+    let projectId: UUID?
+
     // MARK: - Common Image State
     @Published var inputImage: NSImage?
     @Published var inputImagePath: String?
     @Published var imagePixelSize: CGSize = .zero
-    
+
     // MARK: - Common Workflow State
     @Published var isGenerating = false
     @Published var generated3DModelURL: URL?
     @Published var generationStartTime: Date?
-    
+
     // MARK: - UI State
     @Published var isDragging = false
-    
-    init(env: PythonEnvironment = PythonEnvironment()) {
+
+    init(env: PythonEnvironment = PythonEnvironment(), projectId: UUID? = nil) {
         self.env = env
+        self.projectId = projectId
     }
     
     // MARK: - Shared Logic

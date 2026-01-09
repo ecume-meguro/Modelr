@@ -13,7 +13,7 @@ extension SimpleEditorViewModel {
 
     /// Update handoff progress during preloading
     func updateHandoffProgress(progress: Double, detail: String) {
-        withAnimation(.spring(response: 0.2, dampingFraction: 0.8)) {
+        withFastSpring {
             generationStages[.handoff] = StageProgress(status: .inProgress, progress: progress, detail: detail)
         }
     }

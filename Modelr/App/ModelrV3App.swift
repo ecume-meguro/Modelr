@@ -1,8 +1,15 @@
 import SwiftUI
 
+/// Navigation state for the app
+enum AppView: Equatable {
+    case projectBrowser
+    case editor(projectId: UUID)
+}
+
 @main
 struct ModelrApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    @State private var currentView: AppView = .projectBrowser
 
     // Check for debug mode via command line argument or environment variable
     // Launch with: --debug-3d-viewer or set DEBUG_3D_VIEWER=1
@@ -36,8 +43,23 @@ struct ModelrApp: App {
 
     var body: some Scene {
         WindowGroup {
-            // Setup is now integrated into SimpleEditorView as the first step
-            SimpleEditorView()
+            Group {
+                switch currentView {
+                case .projectBrowser:
+                    ProjectBrowserView { projectId in
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                            currentView = .editor(projectId: projectId)
+                        }
+                    }
+                case .editor(let projectId):
+                    ProjectEditorView(projectId: projectId) {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                            currentView = .projectBrowser
+                        }
+                    }
+                    .id(projectId) // Force new view for each project - prevents state bleeding between projects
+                }
+            }
         }
     }
 }

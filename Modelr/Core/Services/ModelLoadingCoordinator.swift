@@ -118,17 +118,12 @@ class ModelLoadingCoordinator: ObservableObject {
             return "mini"
         }
 
-        let stdDownloaded = PathManager.isHunyuanModelDownloaded(variant: "std")
-        print("[ModelLoadingCoordinator] Standard model has safetensors: \(stdDownloaded)")
-        if stdDownloaded {
-            return "std"
-        }
-
-        print("[ModelLoadingCoordinator] No Hunyuan models with complete weights found - skipping preload")
+        print("[ModelLoadingCoordinator] Hunyuan model not found - skipping preload")
         return nil
     }
 
-    /// Called when SAM model is ready - triggers async Hunyuan and VLM server starts
+    /// Called when SAM model is ready - starts VLM server only
+    /// NOTE: Hunyuan is started separately via startHunyuanInBackground() to avoid blocking SAM/VLM
     func onSAMModelReady(env: PythonEnvironment) {
         // Start VLM server (lightweight MLX model, always start alongside SAM)
         if !isVLMReady && !isStartingVLM {
@@ -138,12 +133,21 @@ class ModelLoadingCoordinator: ObservableObject {
                 await startVLMServer(env: env)
             }
         }
+        // NOTE: Hunyuan is NOT started here to ensure SAM/VLM have full priority
+        // Use startHunyuanInBackground() after VLM is ready
+    }
 
-        // Start Hunyuan server (only for aggressive strategy)
-        guard strategy == .aggressive && !isHunyuanReady && !isStartingHunyuan else {
-            if strategy == .conservative {
-                print("[ModelLoadingCoordinator] Conservative strategy - Hunyuan will start on-demand")
-            }
+    /// Start Hunyuan server in background with low priority
+    /// Should only be called AFTER SAM and VLM are ready
+    func startHunyuanInBackground(env: PythonEnvironment) {
+        // Only for aggressive strategy
+        guard strategy == .aggressive else {
+            print("[ModelLoadingCoordinator] Conservative strategy - Hunyuan will start on-demand")
+            return
+        }
+
+        // Already running or starting
+        guard !isHunyuanReady && !isStartingHunyuan else {
             return
         }
 
@@ -153,11 +157,12 @@ class ModelLoadingCoordinator: ObservableObject {
             return
         }
 
-        print("[ModelLoadingCoordinator] Starting persistent Hunyuan server (variant: \(variant))...")
+        print("[ModelLoadingCoordinator] Starting Hunyuan server in background (low priority, variant: \(variant))...")
         isStartingHunyuan = true
 
-        startupTask = Task {
-            await startHunyuanServer(env: env, variant: variant)
+        // Use detached task with background priority so it doesn't block main actor
+        startupTask = Task.detached(priority: .background) { [weak self] in
+            await self?.startHunyuanServer(env: env, variant: variant)
         }
     }
 

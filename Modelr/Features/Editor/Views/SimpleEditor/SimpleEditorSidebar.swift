@@ -3,6 +3,7 @@ import SwiftUI
 /// Sidebar for ContentViewSimple
 struct SimpleEditorSidebar: View {
     @ObservedObject var viewModel: SimpleEditorViewModel
+    var onClose: (() -> Void)? = nil  // Optional callback to return to project browser
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -422,10 +423,33 @@ struct SimpleEditorSidebar: View {
 
     @ViewBuilder
     private var titleArea: some View {
-        AppDesign.HeaderText(text: "Modelr", size: AppDesign.FontSize.title2)
-            .padding(.horizontal, AppDesign.Spacing.p16)
-            .padding(.top, AppDesign.Spacing.p12)
-            .padding(.bottom, AppDesign.Spacing.p12)
+        HStack {
+            if let onClose = onClose {
+                Button {
+                    onClose()
+                } label: {
+                    HStack(spacing: AppDesign.Spacing.p4) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: AppDesign.FontSize.caption, weight: .semibold))
+                        Text("Projects")
+                            .font(.system(size: AppDesign.FontSize.subheadline, weight: .medium))
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+
+            Spacer()
+
+            AppDesign.HeaderText(text: "Modelr", size: AppDesign.FontSize.title2)
+
+            if onClose != nil {
+                Spacer()
+            }
+        }
+        .padding(.horizontal, AppDesign.Spacing.p16)
+        .padding(.top, AppDesign.Spacing.p12)
+        .padding(.bottom, AppDesign.Spacing.p12)
     }
 
     // MARK: - Step Content
@@ -678,7 +702,7 @@ struct SimpleEditorSidebar: View {
         .background(AppDesign.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
         .contentShape(Rectangle())
         .onTapGesture {
-            withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+            withStandardSpring {
                 viewModel.restoreCachedGeneration()
             }
         }
@@ -714,67 +738,23 @@ struct SimpleEditorSidebar: View {
                     .frame(width: 1)
                     .padding(.vertical, 4)
 
-                // Preset dropdown menu (same as GenerationPanel)
+                // Preset dropdown menu
                 Menu {
-                    // Fast model presets (mini)
-                    Section("Fast (Mini)") {
-                        ForEach(GenerationPreset.fastPresets, id: \.self) { preset in
-                            Button {
-                                viewModel.selectedPreset = preset
-                                viewModel.customSteps = CGFloat(preset.steps)
-                                viewModel.customResolution = CGFloat(preset.resolution)
-                            } label: {
-                                HStack {
-                                    Text(preset.rawValue)
-                                    if !viewModel.isSmallModelDownloaded {
-                                        Image(systemName: "arrow.down.circle")
-                                            .foregroundStyle(.orange)
-                                    }
-                                    Spacer()
-                                    Text(preset.estimatedTime)
-                                        .foregroundStyle(.secondary)
+                    ForEach(GenerationPreset.allCases, id: \.self) { preset in
+                        Button {
+                            viewModel.selectedPreset = preset
+                            viewModel.customSteps = CGFloat(preset.steps)
+                            viewModel.customResolution = CGFloat(preset.resolution)
+                        } label: {
+                            HStack {
+                                Text(preset.rawValue)
+                                if !viewModel.isSmallModelDownloaded {
+                                    Image(systemName: "arrow.down.circle")
+                                        .foregroundStyle(.orange)
                                 }
-                            }
-                        }
-                    }
-
-                    Divider()
-
-                    // Quality model presets (2.1)
-                    if !viewModel.isLargeModelDownloaded {
-                        Section("Quality (2.1) — Requires \(SetupModelChoice.quality.downloadSize) download") {
-                            ForEach(GenerationPreset.qualityPresets, id: \.self) { preset in
-                                Button {
-                                    viewModel.selectedPreset = preset
-                                    viewModel.customSteps = CGFloat(preset.steps)
-                                    viewModel.customResolution = CGFloat(preset.resolution)
-                                } label: {
-                                    HStack {
-                                        Text(preset.rawValue)
-                                        Image(systemName: "arrow.down.circle")
-                                            .foregroundStyle(.orange)
-                                        Spacer()
-                                        Text(preset.estimatedTime)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        Section("Quality (2.1)") {
-                            ForEach(GenerationPreset.qualityPresets, id: \.self) { preset in
-                                Button {
-                                    viewModel.selectedPreset = preset
-                                    viewModel.customSteps = CGFloat(preset.steps)
-                                    viewModel.customResolution = CGFloat(preset.resolution)
-                                } label: {
-                                    HStack {
-                                        Text(preset.rawValue)
-                                        Spacer()
-                                        Text(preset.estimatedTime)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
+                                Spacer()
+                                Text(preset.estimatedTime)
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -809,16 +789,7 @@ struct SimpleEditorSidebar: View {
             .allowsHitTesting(viewModel.totalValidMasks > 0)
 
             // Download warning if needed
-            if viewModel.selectedPreset.usesLargeModel && !viewModel.isLargeModelDownloaded {
-                HStack(spacing: AppDesign.Spacing.p4) {
-                    Image(systemName: "arrow.down.circle")
-                        .font(.system(size: AppDesign.FontSize.xs))
-                        .foregroundStyle(AppDesign.warning)
-                    Text("Will download \(SetupModelChoice.quality.downloadSize) on first use")
-                        .font(.system(size: AppDesign.FontSize.xs))
-                        .foregroundStyle(AppDesign.warning)
-                }
-            } else if viewModel.selectedPreset.usesMiniRepo && !viewModel.isSmallModelDownloaded {
+            if !viewModel.isSmallModelDownloaded {
                 HStack(spacing: AppDesign.Spacing.p4) {
                     Image(systemName: "arrow.down.circle")
                         .font(.system(size: AppDesign.FontSize.xs))

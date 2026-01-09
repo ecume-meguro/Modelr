@@ -20,23 +20,17 @@ class HuggingFaceModelSizeService: ObservableObject {
         FileSpec(repoId: "tencent/Hunyuan3D-2mini", path: "hunyuan3d-dit-v2-mini/model.fp16.safetensors")
     ]
 
-    static let hunyuanStdFiles: [FileSpec] = [
-        FileSpec(repoId: "tencent/Hunyuan3D-2.1", path: "hunyuan3d-dit-v2-1/model.fp16.safetensors")
-    ]
-
     static let sam3Files: [FileSpec] = [
         FileSpec(repoId: "mlx-community/sam3-image", path: "model.safetensors")
     ]
 
     // MARK: - Fallback sizes (used when HF query fails)
     private static let miniFallbackGb: Double = 3.84
-    private static let stdFallbackGb: Double = 7.4
     private static let samFallbackGb: Double = 3.4
 
     // MARK: - Cached Sizes
 
     @Published var hunyuanMiniBytes: Int64?
-    @Published var hunyuanStdBytes: Int64?
     @Published var sam3Bytes: Int64?
     @Published var isQuerying = false
 
@@ -59,13 +53,6 @@ class HuggingFaceModelSizeService: ObservableObject {
         return "~\(String(format: "%.1f", Self.miniFallbackGb)) GB"
     }
 
-    var hunyuanStdDisplaySize: String {
-        if isValidSize(hunyuanStdBytes) {
-            return formatBytes(hunyuanStdBytes!)
-        }
-        return "~\(String(format: "%.1f", Self.stdFallbackGb)) GB"
-    }
-
     var sam3DisplaySize: String {
         if isValidSize(sam3Bytes) {
             return formatBytes(sam3Bytes!)
@@ -78,8 +65,6 @@ class HuggingFaceModelSizeService: ObservableObject {
         switch choice {
         case .fast:
             return hunyuanMiniDisplaySize
-        case .quality:
-            return hunyuanStdDisplaySize
         }
     }
 
@@ -91,11 +76,6 @@ class HuggingFaceModelSizeService: ObservableObject {
                 return hunyuanMiniBytes!
             }
             return Int64(Self.miniFallbackGb * 1_000_000_000)
-        case .quality:
-            if isValidSize(hunyuanStdBytes) {
-                return hunyuanStdBytes!
-            }
-            return Int64(Self.stdFallbackGb * 1_000_000_000)
         }
     }
 
@@ -138,23 +118,20 @@ class HuggingFaceModelSizeService: ObservableObject {
 
         // Query in parallel
         async let miniTask = Self.totalBytes(for: Self.hunyuanMiniFiles)
-        async let stdTask = Self.totalBytes(for: Self.hunyuanStdFiles)
         async let samTask = Self.totalBytes(for: Self.sam3Files)
 
-        let (mini, std, sam) = await (miniTask, stdTask, samTask)
+        let (mini, sam) = await (miniTask, samTask)
 
         hunyuanMiniBytes = mini
-        hunyuanStdBytes = std
         sam3Bytes = sam
 
-        print("[HFSizeService] Query complete - mini: \(mini.map { "\($0)" } ?? "nil"), std: \(std.map { "\($0)" } ?? "nil"), sam: \(sam.map { "\($0)" } ?? "nil")")
+        print("[HFSizeService] Query complete - mini: \(mini.map { "\($0)" } ?? "nil"), sam: \(sam.map { "\($0)" } ?? "nil")")
     }
 
     /// Force refresh sizes (clears cache)
     func refreshSizes() async {
         hasQueried = false
         hunyuanMiniBytes = nil
-        hunyuanStdBytes = nil
         sam3Bytes = nil
         await queryAllSizes()
     }
