@@ -66,9 +66,32 @@ class PythonBridge {
     }
     
     func waitForResponse(timeout: TimeInterval) async throws -> SAMResponse {
+        // Use actor-isolated state to track if continuation was already resumed
+        final class ResumeTracker: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _hasResumed = false
+
+            var hasResumed: Bool {
+                lock.lock()
+                defer { lock.unlock() }
+                return _hasResumed
+            }
+
+            func markResumed() -> Bool {
+                lock.lock()
+                defer { lock.unlock() }
+                if _hasResumed { return false }
+                _hasResumed = true
+                return true
+            }
+        }
+
+        let tracker = ResumeTracker()
+
         return try await withCheckedThrowingContinuation { continuation in
             continuationLock.lock()
-            pendingContinuations.append { data in
+            pendingContinuations.append { [tracker] data in
+                guard tracker.markResumed() else { return }
                 do {
                     let response = try JSONDecoder().decode(SAMResponse.self, from: data)
                     continuation.resume(returning: response)
@@ -77,16 +100,20 @@ class PythonBridge {
                 }
             }
             continuationLock.unlock()
-            
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
+
+            // Schedule timeout handler
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self, tracker] in
+                guard tracker.markResumed() else { return }
+
+                // Remove the pending continuation since we're timing out
                 self?.continuationLock.lock()
-                // This is a bit risky if multiple are pending, but waitForResponse 
-                // is usually only called during startup
-                if !self!.pendingContinuations.isEmpty {
-                    // We don't remove here to avoid index shifts, 
-                    // handleStdoutData will handle empty results or we could use a better ID system
+                // Find and remove the continuation (it hasn't been called yet since we just marked resumed)
+                if let self = self, !self.pendingContinuations.isEmpty {
+                    self.pendingContinuations.removeFirst()
                 }
                 self?.continuationLock.unlock()
+
+                continuation.resume(throwing: PythonError.timeout)
             }
         }
     }

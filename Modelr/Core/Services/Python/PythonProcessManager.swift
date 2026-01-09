@@ -55,7 +55,6 @@ class PythonProcessManager {
         env["HUGGINGFACE_HUB_CACHE"] = PathManager.modelsHubDirectory.path
         env["TRANSFORMERS_CACHE"] = PathManager.modelsHubDirectory.path
         env["MODELR_CONFIG_PATH"] = PathManager.projectConfigPath.path
-        env["MODELR_CONFIG_PATH"] = PathManager.projectConfigPath.path
         env["MODELR_OUTPUTS_DIR"] = PathManager.outputsDirectory.path
         env["MODELR_WORKING_DIR"] = PathManager.workingDirectory.path
         env["MODELR_LOGS_DIR"] = PathManager.logsDirectory.path
@@ -227,7 +226,6 @@ class PythonProcessManager {
         env["HF_HOME"] = PathManager.modelsDirectory.path
         env["HUGGINGFACE_HUB_CACHE"] = PathManager.modelsHubDirectory.path
         env["TRANSFORMERS_CACHE"] = PathManager.modelsHubDirectory.path
-        env["MODELR_CONFIG_PATH"] = PathManager.projectConfigPath.path
         env["MODELR_CONFIG_PATH"] = PathManager.projectConfigPath.path
         env["MODELR_OUTPUTS_DIR"] = PathManager.outputsDirectory.path
         env["MODELR_WORKING_DIR"] = PathManager.workingDirectory.path

@@ -390,78 +390,81 @@ struct ImageCanvas: View {
     
     @ViewBuilder
     private func segmentationOverlays(size: CGSize) -> some View {
-        // Show selected masks from non-active (completed) segmentations with their unique neon color
-        ForEach(Array(viewModel.segmentations.enumerated()), id: \.element.id) { segIndex, entry in
-            if segIndex != viewModel.activeSegmentationIndex, let selectedMask = entry.selectedMask {
-                let color = viewModel.colorForSegmentation(segIndex)
+        // Hide all overlays when showing original image for comparison
+        if !viewModel.showingOriginal {
+            // Show selected masks from non-active (completed) segmentations with their unique neon color
+            ForEach(Array(viewModel.segmentations.enumerated()), id: \.element.id) { segIndex, entry in
+                if segIndex != viewModel.activeSegmentationIndex, let selectedMask = entry.selectedMask {
+                    let color = viewModel.colorForSegmentation(segIndex)
 
-                // Strong fill with 90% opacity
-                MaskOverlayView(
-                    mask: selectedMask,
-                    color: color,
-                    size: size,
-                    opacity: 0.9,
-                    showBorder: true
-                )
-                .transition(.opacity.combined(with: .scale(scale: 0.98)))
-            }
-        }
-
-        // Active segmentation - show all masks with selection
-        if viewModel.activeSegmentationIndex < viewModel.segmentations.count {
-            let activeEntry = viewModel.segmentations[viewModel.activeSegmentationIndex]
-            let activeColor = viewModel.colorForSegmentation(viewModel.activeSegmentationIndex)
-
-            // Non-selected masks in active segmentation (dimmer, for region selection)
-            ForEach(Array(activeEntry.allMasks.enumerated()).filter { !activeEntry.selectedMaskIndices.contains($0.offset) }, id: \.offset) { index, maskData in
-                let color = viewModel.colorForMask(index)
-                MaskOverlayView(
-                    mask: maskData.image,
-                    color: color,
-                    size: size,
-                    opacity: 0.4,
-                    showBorder: false
-                )
-                .transition(.opacity.animation(.easeOut(duration: 0.25)))
-            }
-
-            // All selected masks in active segmentation - use segmentation's neon color with 90% opacity
-            ForEach(Array(activeEntry.selectedMaskIndices.sorted()), id: \.self) { maskIndex in
-                if maskIndex < activeEntry.allMasks.count {
-                    let maskData = activeEntry.allMasks[maskIndex]
-
+                    // Semi-transparent fill to allow seeing underlying image details for edge verification
                     MaskOverlayView(
-                        mask: maskData.image,
-                        color: activeColor,
+                        mask: selectedMask,
+                        color: color,
                         size: size,
-                        opacity: 0.9,
+                        opacity: 0.5,
                         showBorder: true
                     )
-                    .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .scale(scale: 0.95)).animation(.spring(response: 0.35, dampingFraction: 0.8)),
-                        removal: .opacity.animation(.easeOut(duration: 0.2))
-                    ))
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
                 }
             }
 
-            // Bounding box overlay for active segmentation
-            if let box = activeEntry.boundingBox {
-                BoundingBoxOverlay(
-                    boxes: [box],
-                    currentBox: nil,
-                    displayedSize: size,
-                    imagePixelSize: viewModel.imagePixelSize
-                )
-            }
+            // Active segmentation - show all masks with selection
+            if viewModel.activeSegmentationIndex < viewModel.segmentations.count {
+                let activeEntry = viewModel.segmentations[viewModel.activeSegmentationIndex]
+                let activeColor = viewModel.colorForSegmentation(viewModel.activeSegmentationIndex)
 
-            // Current drawing box overlay
-            if let currentBox = viewModel.currentDrawingBox {
-                BoundingBoxOverlay(
-                    boxes: [],
-                    currentBox: currentBox,
-                    displayedSize: size,
-                    imagePixelSize: viewModel.imagePixelSize
-                )
+                // Non-selected masks in active segmentation (dimmer, for region selection)
+                ForEach(Array(activeEntry.allMasks.enumerated()).filter { !activeEntry.selectedMaskIndices.contains($0.offset) }, id: \.offset) { index, maskData in
+                    let color = viewModel.colorForMask(index)
+                    MaskOverlayView(
+                        mask: maskData.image,
+                        color: color,
+                        size: size,
+                        opacity: 0.4,
+                        showBorder: false
+                    )
+                    .transition(.opacity.animation(.easeOut(duration: 0.25)))
+                }
+
+                // All selected masks in active segmentation - semi-transparent for edge verification
+                ForEach(Array(activeEntry.selectedMaskIndices.sorted()), id: \.self) { maskIndex in
+                    if maskIndex < activeEntry.allMasks.count {
+                        let maskData = activeEntry.allMasks[maskIndex]
+
+                        MaskOverlayView(
+                            mask: maskData.image,
+                            color: activeColor,
+                            size: size,
+                            opacity: 0.5,
+                            showBorder: true
+                        )
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .scale(scale: 0.95)).animation(.spring(response: 0.35, dampingFraction: 0.8)),
+                            removal: .opacity.animation(.easeOut(duration: 0.2))
+                        ))
+                    }
+                }
+
+                // Bounding box overlay for active segmentation
+                if let box = activeEntry.boundingBox {
+                    BoundingBoxOverlay(
+                        boxes: [box],
+                        currentBox: nil,
+                        displayedSize: size,
+                        imagePixelSize: viewModel.imagePixelSize
+                    )
+                }
+
+                // Current drawing box overlay
+                if let currentBox = viewModel.currentDrawingBox {
+                    BoundingBoxOverlay(
+                        boxes: [],
+                        currentBox: currentBox,
+                        displayedSize: size,
+                        imagePixelSize: viewModel.imagePixelSize
+                    )
+                }
             }
         }
     }
@@ -479,46 +482,30 @@ private struct MaskOverlayView: View {
     @State private var isVisible = false
 
     var body: some View {
-        ZStack {
-            // Fill
-            Rectangle()
-                .fill(color)
-                .frame(width: size.width, height: size.height)
-                .mask(
+        // Single masked view with optional stroke effect via overlay
+        // This avoids creating duplicate mask views for the border
+        Image(nsImage: mask)
+            .resizable()
+            .frame(width: size.width, height: size.height)
+            .colorMultiply(color)
+            .opacity(isVisible ? opacity : 0)
+            .overlay {
+                // Border effect using stroke-style rendering
+                if showBorder {
                     Image(nsImage: mask)
                         .resizable()
                         .frame(width: size.width, height: size.height)
-                )
-                .opacity(isVisible ? opacity : 0)
-
-            // Border
-            if showBorder {
-                Rectangle()
-                    .fill(color)
-                    .frame(width: size.width, height: size.height)
-                    .mask(
-                        ZStack {
-                            Image(nsImage: mask)
-                                .resizable()
-                                .frame(width: size.width, height: size.height)
-                            Image(nsImage: mask)
-                                .resizable()
-                                .frame(width: size.width, height: size.height)
-                                .padding(4)
-                                .blur(radius: 1)
-                                .blendMode(.destinationOut)
-                        }
-                        .compositingGroup()
-                    )
-                    .opacity(isVisible ? 1.0 : 0)
+                        .colorMultiply(color)
+                        .blur(radius: 2)
+                        .opacity(isVisible ? 0.6 : 0)
+                }
             }
-        }
-        .allowsHitTesting(false)
-        .onAppear {
-            withAnimation(.easeOut(duration: 0.3)) {
-                isVisible = true
+            .allowsHitTesting(false)
+            .onAppear {
+                withAnimation(.easeOut(duration: 0.3)) {
+                    isVisible = true
+                }
             }
-        }
     }
 }
 
@@ -528,14 +515,14 @@ extension ImageCanvas {
     @ViewBuilder
     func touchupOverlays(size: CGSize) -> some View {
         if let maskImage = viewModel.editableMaskImage, !viewModel.showingOriginal {
-            // Use first neon color for merged mask with 90% opacity
-            let maskColor = AppDesign.neonColors[0]
+            // Use same color as active segmentation for consistency
+            let maskColor = viewModel.colorForSegmentation(viewModel.activeSegmentationIndex)
 
             MaskOverlayView(
                 mask: maskImage,
                 color: maskColor,
                 size: size,
-                opacity: 0.9,
+                opacity: 0.5,
                 showBorder: true
             )
 
@@ -601,9 +588,20 @@ extension ImageCanvas {
     }
 
 
+    /// Check if compare button should be shown (segment with masks or touchup with mask)
+    private var shouldShowCompareButton: Bool {
+        if viewModel.currentStep == .touchup && viewModel.editableMaskImage != nil {
+            return true
+        }
+        if viewModel.currentStep == .segment && viewModel.totalValidMasks > 0 {
+            return true
+        }
+        return false
+    }
+
     @ViewBuilder
     var toggleOriginalButton: some View {
-        if viewModel.currentStep == .touchup && viewModel.editableMaskImage != nil {
+        if shouldShowCompareButton {
             Button(action: {}) {
                 HStack(spacing: AppDesign.Spacing.p6) {
                     Image(systemName: viewModel.showingOriginal ? "eye.slash" : "eye")

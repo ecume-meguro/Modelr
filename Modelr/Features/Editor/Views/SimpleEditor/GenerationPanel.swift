@@ -4,6 +4,24 @@ import SwiftUI
 struct GenerationPanel: View {
     @ObservedObject var viewModel: SimpleEditorViewModel
 
+    /// Check if generation was stopped (has cancelled stages)
+    private var wasGenerationStopped: Bool {
+        viewModel.generationStages.values.contains { $0.status == .cancelled }
+    }
+
+    /// Check if generation failed (has failed stages)
+    private var didGenerationFail: Bool {
+        viewModel.generationStages.values.contains { $0.status == .failed }
+    }
+
+    /// Check if we're in an idle state (no generation started, no model, not generating)
+    private var isIdle: Bool {
+        !viewModel.isGenerating &&
+        !viewModel.isInHandoff &&
+        viewModel.generated3DModelURL == nil &&
+        viewModel.generationStages.isEmpty
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p16) {
             if viewModel.isGenerating || viewModel.isInHandoff {
@@ -11,8 +29,16 @@ struct GenerationPanel: View {
                 generationProgressView
             } else if let url = viewModel.generated3DModelURL {
                 generationCompletedView(url: url)
+            } else if wasGenerationStopped {
+                // Show stopped state with option to restart
+                generationStoppedView
+            } else if didGenerationFail {
+                // Show failed state with option to retry
+                generationFailedView
+            } else if isIdle {
+                // Show idle state - ready to generate
+                generationIdleView
             }
-            // Settings are now shown in GenerationSettingsPanel
         }
     }
 
@@ -67,6 +93,74 @@ struct GenerationPanel: View {
                         .font(.system(size: AppDesign.FontSize.caption))
                         .foregroundColor(.secondary)
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var generationStoppedView: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+            HStack(spacing: AppDesign.Spacing.p8) {
+                Image(systemName: "stop.circle.fill")
+                    .font(.system(size: AppDesign.FontSize.headline))
+                    .foregroundColor(AppDesign.warning)
+                Text("Generation Stopped")
+                    .font(.system(size: AppDesign.FontSize.body, weight: .medium))
+                    .foregroundColor(.primary)
+            }
+
+            Text("The generation was stopped before completing.")
+                .font(.system(size: AppDesign.FontSize.caption))
+                .foregroundColor(.secondary)
+
+            AppDesign.GlassButton("Try Again", icon: "arrow.clockwise") {
+                viewModel.restartGeneration()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var generationFailedView: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+            HStack(spacing: AppDesign.Spacing.p8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: AppDesign.FontSize.headline))
+                    .foregroundColor(AppDesign.destructive)
+                Text("Generation Failed")
+                    .font(.system(size: AppDesign.FontSize.body, weight: .medium))
+                    .foregroundColor(.primary)
+            }
+
+            if let error = viewModel.lastError {
+                Text(error.localizedDescription)
+                    .font(.system(size: AppDesign.FontSize.caption))
+                    .foregroundColor(.secondary)
+            }
+
+            AppDesign.GlassButton("Retry", icon: "arrow.clockwise") {
+                viewModel.restartGeneration()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var generationIdleView: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+            HStack(spacing: AppDesign.Spacing.p8) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: AppDesign.FontSize.headline))
+                    .foregroundColor(AppDesign.accent)
+                Text("Ready to Generate")
+                    .font(.system(size: AppDesign.FontSize.body, weight: .medium))
+                    .foregroundColor(.primary)
+            }
+
+            Text("Your image is ready for 3D generation.")
+                .font(.system(size: AppDesign.FontSize.caption))
+                .foregroundColor(.secondary)
+
+            AppDesign.GlassButton("Start Generation", icon: "sparkles") {
+                viewModel.startGeneration()
             }
         }
     }

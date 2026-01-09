@@ -17,22 +17,24 @@ struct SimpleEditorSidebar: View {
                     setupStepRow
 
                     // Workflow steps - greyed out during setup
-                    stepRow(stepNumber: 1, title: "Input", isLast: false, locked: !viewModel.isSetupComplete) {
+                    // Display numbers (1-6) map to workflow steps
+                    // Optional steps (Touchup, Settings) can be skipped
+                    workflowStepRow(displayNumber: 1, step: .input, title: "Input", isLast: false, isOptional: false) {
                         inputContent
                     }
-                    stepRow(stepNumber: 2, title: "Segment", isLast: false, locked: !viewModel.isSetupComplete) {
+                    workflowStepRow(displayNumber: 2, step: .segment, title: "Segment", isLast: false, isOptional: false) {
                         segmentContent
                     }
-                    stepRow(stepNumber: 3, title: "Touchup", isLast: false, locked: !viewModel.isSetupComplete, isOptional: true) {
+                    workflowStepRow(displayNumber: 3, step: .touchup, title: "Touchup", isLast: false, isOptional: true) {
                         touchupContent
                     }
-                    stepRow(stepNumber: 4, title: "Settings", isLast: false, locked: !viewModel.isSetupComplete, isOptional: true) {
+                    workflowStepRow(displayNumber: 4, step: .generateSettings, title: "Settings", isLast: false, isOptional: true) {
                         generateSettingsContent
                     }
-                    stepRow(stepNumber: 5, title: "Generate 3D", isLast: false, locked: !viewModel.isSetupComplete) {
+                    workflowStepRow(displayNumber: 5, step: .generate, title: "Generate 3D", isLast: false, isOptional: false) {
                         generateContent
                     }
-                    stepRow(stepNumber: 6, title: "Post-Process", isLast: true, locked: !viewModel.isSetupComplete) {
+                    workflowStepRow(displayNumber: 6, step: .postProcess, title: "Post-Process", isLast: true, isOptional: false) {
                         postProcessContent
                     }
                 }
@@ -197,30 +199,36 @@ struct SimpleEditorSidebar: View {
         }
     }
 
-    // MARK: - Step Row Layout
+    // MARK: - Workflow Step Row Layout
 
+    /// Workflow step row using Step enum for state logic with separate display number
     @ViewBuilder
-    private func stepRow(
-        stepNumber: Int,
+    private func workflowStepRow(
+        displayNumber: Int,
+        step: SimpleEditorViewModel.Step,
         title: String,
         isLast: Bool,
-        locked: Bool = false,
-        isOptional: Bool = false,
+        isOptional: Bool,
         @ViewBuilder content: () -> some View
     ) -> some View {
-        let isDone = locked ? false : isStepCompleted(stepNumber)
-        let isActive = locked ? false : isStepActive(stepNumber)
+        let locked = !viewModel.isSetupComplete
+        let isDone = locked ? false : isStepDone(step)
+        let isActive = locked ? false : (viewModel.currentStep == step)
+        let wasVisited = viewModel.visitedSteps.contains(step)
         // Optional steps only show content when active, not when done (they collapse immediately)
         let showContent = !locked && (isActive || (!isOptional && isDone))
-        let isSkippedOptional = isOptional && isDone && !isActive
-        let connectorColor = locked ? Color.secondary.opacity(0.1) : (isStepCompleted(stepNumber) ? AppDesign.success : Color.secondary.opacity(0.2))
-        let prevConnectorColor = locked ? Color.secondary.opacity(0.1) : (stepNumber == 1 ? (viewModel.isSetupComplete ? AppDesign.success : Color.secondary.opacity(0.2)) : (isStepCompleted(stepNumber - 1) ? AppDesign.success : Color.secondary.opacity(0.2)))
+        // An optional step is "skipped" if it's done (passed) but was never visited
+        let isSkippedOptional = isOptional && isDone && !isActive && !wasVisited
+        // Connector shows green if this step is done
+        let connectorColor = locked ? Color.secondary.opacity(0.1) : (isDone ? AppDesign.success : Color.secondary.opacity(0.2))
+        // Previous connector: for first step (Input), check setup complete; otherwise check if we're past the input step
+        let prevConnectorColor = locked ? Color.secondary.opacity(0.1) : (displayNumber == 1 ? (viewModel.isSetupComplete ? AppDesign.success : Color.secondary.opacity(0.2)) : (isStepDone(previousStep(for: step)) ? AppDesign.success : Color.secondary.opacity(0.2)))
 
         VStack(alignment: .leading, spacing: 0) {
             if isSkippedOptional {
                 // Skipped optional step - show circle with bypass arc around it
                 // Alternate sides: odd steps go left, even steps go right
-                let goesRight = stepNumber % 2 == 0
+                let goesRight = displayNumber % 2 == 0
 
                 // Top connector
                 Rectangle()
@@ -232,7 +240,7 @@ struct SimpleEditorSidebar: View {
                     // Circle with bypass arc overlay
                     ZStack {
                         // Greyed out circle
-                        stepCircle(stepNumber: stepNumber, isDone: isDone, isActive: isActive, locked: locked, isOptional: isOptional)
+                        workflowStepCircle(displayNumber: displayNumber, isDone: isDone, isActive: isActive, locked: locked, isOptional: isOptional)
 
                         // Bypass arc around the circle - same size as circle (24x24)
                         BypassArc(goesRight: goesRight)
@@ -270,7 +278,7 @@ struct SimpleEditorSidebar: View {
 
                 // Header: Circle + Title (always vertically centered together)
                 HStack(spacing: AppDesign.Spacing.p12) {
-                    stepCircle(stepNumber: stepNumber, isDone: isDone, isActive: isActive, locked: locked, isOptional: isOptional)
+                    workflowStepCircle(displayNumber: displayNumber, isDone: isDone, isActive: isActive, locked: locked, isOptional: isOptional)
 
                     HStack(spacing: AppDesign.Spacing.p4) {
                         Text(title)
@@ -278,7 +286,7 @@ struct SimpleEditorSidebar: View {
                             .foregroundStyle(locked ? .tertiary : (isActive ? .primary : (isOptional ? .tertiary : .secondary)))
                             .animation(.easeInOut(duration: 0.2), value: isActive)
 
-                        if isOptional && !isActive {
+                        if isOptional && !isActive && !isDone {
                             Text("(optional)")
                                 .font(.system(size: AppDesign.FontSize.xs))
                                 .foregroundStyle(.quaternary)
@@ -303,7 +311,7 @@ struct SimpleEditorSidebar: View {
                                 .fill(connectorColor)
                                 .frame(width: 2)
                                 .padding(.leading, 11)
-                                .animation(.easeInOut(duration: 0.25), value: isStepCompleted(stepNumber))
+                                .animation(.easeInOut(duration: 0.25), value: isDone)
                         } else {
                             // Match connector bar width (2px + 11px padding = 13px)
                             Color.clear
@@ -358,7 +366,7 @@ struct SimpleEditorSidebar: View {
     }
 
     @ViewBuilder
-    private func stepCircle(stepNumber: Int, isDone: Bool, isActive: Bool, locked: Bool = false, isOptional: Bool = false) -> some View {
+    private func workflowStepCircle(displayNumber: Int, isDone: Bool, isActive: Bool, locked: Bool = false, isOptional: Bool = false) -> some View {
         ZStack {
             Circle()
                 // Optional steps when done show grayed circle, not green checkmark
@@ -372,7 +380,7 @@ struct SimpleEditorSidebar: View {
                     .foregroundStyle(.white)
                     .transition(.scale.combined(with: .opacity))
             } else {
-                Text("\(stepNumber)")
+                Text("\(displayNumber)")
                     .font(.system(size: AppDesign.FontSize.caption, weight: .bold, design: .monospaced))
                     .foregroundStyle(locked ? Color.secondary.opacity(0.5) : (isActive ? Color.white : Color.secondary.opacity(isOptional && !isActive ? 0.4 : 1)))
             }
@@ -381,29 +389,31 @@ struct SimpleEditorSidebar: View {
         .animation(.spring(response: 0.2, dampingFraction: 0.75), value: isActive)
     }
 
-    // MARK: - Step State
+    // MARK: - Step State Helpers
 
-    private func isStepCompleted(_ stepNumber: Int) -> Bool {
-        switch stepNumber {
-        case 1: return viewModel.inputImage != nil
-        case 2: return viewModel.currentStep == .touchup || viewModel.currentStep == .generateSettings || viewModel.currentStep == .generate || viewModel.currentStep == .postProcess
-        case 3: return viewModel.currentStep == .generateSettings || viewModel.currentStep == .generate || viewModel.currentStep == .postProcess
-        case 4: return viewModel.currentStep == .generate || viewModel.currentStep == .postProcess
-        case 5: return viewModel.currentStep == .postProcess
-        case 6: return false
-        default: return false
+    /// Check if a step is done (current step is past this step)
+    private func isStepDone(_ step: SimpleEditorViewModel.Step) -> Bool {
+        switch step {
+        case .setup: return viewModel.isSetupComplete
+        case .input: return viewModel.inputImage != nil
+        case .segment: return viewModel.currentStep.rawValue > step.rawValue
+        case .touchup: return viewModel.currentStep.rawValue > step.rawValue
+        case .generateSettings: return viewModel.currentStep.rawValue > step.rawValue
+        case .generate: return viewModel.currentStep == .postProcess
+        case .postProcess: return false // Final step is never "done" in this sense
         }
     }
 
-    private func isStepActive(_ stepNumber: Int) -> Bool {
-        switch stepNumber {
-        case 1: return viewModel.currentStep == .input
-        case 2: return viewModel.currentStep == .segment
-        case 3: return viewModel.currentStep == .touchup
-        case 4: return viewModel.currentStep == .generateSettings
-        case 5: return viewModel.currentStep == .generate
-        case 6: return viewModel.currentStep == .postProcess
-        default: return false
+    /// Get the previous step in the workflow for connector color logic
+    private func previousStep(for step: SimpleEditorViewModel.Step) -> SimpleEditorViewModel.Step {
+        switch step {
+        case .setup: return .setup
+        case .input: return .setup
+        case .segment: return .input
+        case .touchup: return .segment
+        case .generateSettings: return .touchup
+        case .generate: return .generateSettings
+        case .postProcess: return .generate
         }
     }
 
@@ -457,7 +467,7 @@ struct SimpleEditorSidebar: View {
                         .opacity(viewModel.totalValidMasks == 0 ? 0.5 : 1)
                         .disabled(viewModel.totalValidMasks == 0)
 
-                        AppDesign.InlineButton("Back to Input", icon: "arrow.left") {
+                        AppDesign.InlineButton(viewModel.backButtonLabel, icon: "arrow.left") {
                             viewModel.handleBackAction()
                         }
 
@@ -498,7 +508,7 @@ struct SimpleEditorSidebar: View {
                         // Generate with preset row (same as segment tab)
                         generateWithPresetRow
 
-                        AppDesign.InlineButton("Back to Segment", icon: "arrow.left") {
+                        AppDesign.InlineButton(viewModel.backButtonLabel, icon: "arrow.left") {
                             viewModel.handleBackAction()
                         }
 
@@ -522,7 +532,7 @@ struct SimpleEditorSidebar: View {
             Button("Cancel", role: .cancel) { }
             Button("Go Back", role: .destructive) { viewModel.goBack() }
         } message: {
-            Text("You'll return to segmentation and can select a different region or add more points.")
+            Text("Your mask edits will be lost. You'll return to the previous step.")
         }
     }
 
@@ -536,7 +546,7 @@ struct SimpleEditorSidebar: View {
                     AppDesign.GlassButton("Generate Model", icon: "sparkles") {
                         viewModel.startGeneration()
                     }
-                    AppDesign.InlineButton("Back to Segment", icon: "arrow.left") {
+                    AppDesign.InlineButton(viewModel.backButtonLabel, icon: "arrow.left") {
                         viewModel.handleBackAction()
                     }
                 }
@@ -551,10 +561,24 @@ struct SimpleEditorSidebar: View {
             if viewModel.currentStep == .generate {
                 GenerationPanel(viewModel: viewModel)
 
-                if viewModel.isGenerating {
-                    sectionFooter {
+                sectionFooter {
+                    if viewModel.isGenerating {
+                        // During generation - only show stop button
                         AppDesign.GlassButtonSecondary("Stop Generation", icon: "stop.fill", destructive: true) {
                             viewModel.stopGeneration()
+                        }
+                    } else if let _ = viewModel.generated3DModelURL {
+                        // Has model (came back from PostProcess or generation complete but not yet transitioned)
+                        AppDesign.GlassButton("Continue to Post-Process", icon: "arrow.right") {
+                            viewModel.transitionToPostProcess()
+                        }
+                        AppDesign.InlineButton(viewModel.backButtonLabel, icon: "arrow.left") {
+                            viewModel.handleBackAction()
+                        }
+                    } else {
+                        // No model, not generating - show back option (stopped/failed/idle state)
+                        AppDesign.InlineButton(viewModel.backButtonLabel, icon: "arrow.left") {
+                            viewModel.handleBackAction()
                         }
                     }
                 }
@@ -566,7 +590,7 @@ struct SimpleEditorSidebar: View {
             Button("Cancel", role: .cancel) { }
             Button("Discard", role: .destructive) { viewModel.goBack() }
         } message: {
-            Text("The generated 3D model will be kept on disk, but you'll return to settings.")
+            Text("The generated 3D model will be kept on disk, but you'll return to the previous step.")
         }
     }
 
@@ -576,7 +600,7 @@ struct SimpleEditorSidebar: View {
             PostProcessPanel(viewModel: viewModel)
 
             sectionFooter {
-                AppDesign.InlineButton("Back to Generate", icon: "arrow.left") {
+                AppDesign.InlineButton(viewModel.backButtonLabel, icon: "arrow.left") {
                     viewModel.handleBackAction()
                 }
             }

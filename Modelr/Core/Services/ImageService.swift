@@ -21,38 +21,41 @@ class ImageService {
     }
 
     /// Checks if an image has a meaningful alpha channel (transparency)
+    /// Uses autoreleasepool to manage memory for CGContext
     func checkImageHasAlpha(_ image: NSImage) -> Bool {
-        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            return false
-        }
-
-        let alphaInfo = cgImage.alphaInfo
-        let hasAlphaChannel = alphaInfo == .first || alphaInfo == .last ||
-                              alphaInfo == .premultipliedFirst || alphaInfo == .premultipliedLast
-
-        guard hasAlphaChannel else {
-            return false
-        }
-
-        let width = cgImage.width
-        let height = cgImage.height
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-
-        guard let (context, data) = self.createRGBAContext(width: width, height: height, colorSpace: colorSpace) else { return false }
-
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        let pixels = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
-
-        // Sample pixels to see if any are actually transparent
-        let sampleStep = max(1, (width * height) / AppConstants.alphaCheckSampleStepDivider)
-        for i in stride(from: 0, to: width * height, by: sampleStep) {
-            let alpha = pixels[i * 4 + 3]
-            if alpha < AppConstants.imageAlphaThreshold {
-                return true
+        return autoreleasepool {
+            guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+                return false
             }
-        }
 
-        return false
+            let alphaInfo = cgImage.alphaInfo
+            let hasAlphaChannel = alphaInfo == .first || alphaInfo == .last ||
+                                  alphaInfo == .premultipliedFirst || alphaInfo == .premultipliedLast
+
+            guard hasAlphaChannel else {
+                return false
+            }
+
+            let width = cgImage.width
+            let height = cgImage.height
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+
+            guard let (context, data) = self.createRGBAContext(width: width, height: height, colorSpace: colorSpace) else { return false }
+
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+            let pixels = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
+
+            // Sample pixels to see if any are actually transparent
+            let sampleStep = max(1, (width * height) / AppConstants.alphaCheckSampleStepDivider)
+            for i in stride(from: 0, to: width * height, by: sampleStep) {
+                let alpha = pixels[i * 4 + 3]
+                if alpha < AppConstants.imageAlphaThreshold {
+                    return true
+                }
+            }
+
+            return false
+        }
     }
 
     /// Converts an NSImage to a PNG file at a temporary path, preserving alpha channel
@@ -212,126 +215,130 @@ class ImageService {
     }
 
     /// Apply a brush stroke (multiple points) to a mask image
+    /// Uses autoreleasepool to manage memory for CGContext during brush operations
     func applyStroke(to maskImage: NSImage, points: [CGPoint], size: CGFloat, isErasing: Bool) -> NSImage? {
         guard !points.isEmpty else { return maskImage }
-        guard let cgImage = maskImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
 
-        let width = cgImage.width
-        let height = cgImage.height
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        return autoreleasepool {
+            guard let cgImage = maskImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
 
-        guard let (context, data) = self.createRGBAContext(width: width, height: height, colorSpace: colorSpace) else { return maskImage }
+            let width = cgImage.width
+            let height = cgImage.height
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
 
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        let pixels = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
+            guard let (context, data) = self.createRGBAContext(width: width, height: height, colorSpace: colorSpace) else { return maskImage }
 
-        let brushRadius = max(1, Int(size * CGFloat(width)))
-        let radiusSquared = brushRadius * brushRadius
-        let value: UInt8 = isErasing ? 0 : 255
-        let pixelValue = UInt32(value) | (UInt32(value) << 8) | (UInt32(value) << 16) | (UInt32(value) << 24)
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+            let pixels = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
 
-        // Helper to draw a filled circle at a pixel position
-        func drawCircle(at pixelX: Int, _ pixelY: Int) {
-            guard pixelX >= 0, pixelX < width, pixelY >= 0, pixelY < height else { return }
+            let brushRadius = max(1, Int(size * CGFloat(width)))
+            let radiusSquared = brushRadius * brushRadius
+            let value: UInt8 = isErasing ? 0 : 255
+            let pixelValue = UInt32(value) | (UInt32(value) << 8) | (UInt32(value) << 16) | (UInt32(value) << 24)
 
-            let minY = max(0, pixelY - brushRadius)
-            let maxY = min(height - 1, pixelY + brushRadius)
-            let minX = max(0, pixelX - brushRadius)
-            let maxX = min(width - 1, pixelX + brushRadius)
+            // Helper to draw a filled circle at a pixel position
+            func drawCircle(at pixelX: Int, _ pixelY: Int) {
+                guard pixelX >= 0, pixelX < width, pixelY >= 0, pixelY < height else { return }
 
-            for py in minY...maxY {
-                let dySquared = (py - pixelY) * (py - pixelY)
-                let rowOffset = py * width
-                for px in minX...maxX {
-                    let dxSquared = (px - pixelX) * (px - pixelX)
-                    if dxSquared + dySquared <= radiusSquared {
-                        let offset = (rowOffset + px) * 4
-                        pixels.advanced(by: offset).withMemoryRebound(to: UInt32.self, capacity: 1) { ptr in
-                            ptr.pointee = pixelValue
+                let minY = max(0, pixelY - brushRadius)
+                let maxY = min(height - 1, pixelY + brushRadius)
+                let minX = max(0, pixelX - brushRadius)
+                let maxX = min(width - 1, pixelX + brushRadius)
+
+                for py in minY...maxY {
+                    let dySquared = (py - pixelY) * (py - pixelY)
+                    let rowOffset = py * width
+                    for px in minX...maxX {
+                        let dxSquared = (px - pixelX) * (px - pixelX)
+                        if dxSquared + dySquared <= radiusSquared {
+                            let offset = (rowOffset + px) * 4
+                            pixels.advanced(by: offset).withMemoryRebound(to: UInt32.self, capacity: 1) { ptr in
+                                ptr.pointee = pixelValue
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // Draw connected line segments between consecutive points
-        var prevPoint: CGPoint? = nil
-        for point in points {
-            let pixelX = Int(point.x * CGFloat(width))
-            let pixelY = Int(point.y * CGFloat(height))
+            // Draw connected line segments between consecutive points
+            var prevPoint: CGPoint? = nil
+            for point in points {
+                let pixelX = Int(point.x * CGFloat(width))
+                let pixelY = Int(point.y * CGFloat(height))
 
-            if let prev = prevPoint {
-                // Interpolate between previous and current point
-                let prevPixelX = Int(prev.x * CGFloat(width))
-                let prevPixelY = Int(prev.y * CGFloat(height))
+                if let prev = prevPoint {
+                    // Interpolate between previous and current point
+                    let prevPixelX = Int(prev.x * CGFloat(width))
+                    let prevPixelY = Int(prev.y * CGFloat(height))
 
-                let dx = pixelX - prevPixelX
-                let dy = pixelY - prevPixelY
-                let steps = max(abs(dx), abs(dy), 1)
+                    let dx = pixelX - prevPixelX
+                    let dy = pixelY - prevPixelY
+                    let steps = max(abs(dx), abs(dy), 1)
 
-                for i in 0...steps {
-                    let t = Double(i) / Double(steps)
-                    let interpX = prevPixelX + Int(Double(dx) * t)
-                    let interpY = prevPixelY + Int(Double(dy) * t)
-                    drawCircle(at: interpX, interpY)
+                    for i in 0...steps {
+                        let t = Double(i) / Double(steps)
+                        let interpX = prevPixelX + Int(Double(dx) * t)
+                        let interpY = prevPixelY + Int(Double(dy) * t)
+                        drawCircle(at: interpX, interpY)
+                    }
+                } else {
+                    // First point
+                    drawCircle(at: pixelX, pixelY)
                 }
-            } else {
-                // First point
-                drawCircle(at: pixelX, pixelY)
+
+                prevPoint = point
             }
 
-            prevPoint = point
+            guard let newCGImage = context.makeImage() else { return maskImage }
+
+            return NSImage(cgImage: newCGImage, size: NSSize(width: width, height: height))
         }
-
-        guard let newCGImage = context.makeImage() else { return maskImage }
-
-        return NSImage(cgImage: newCGImage, size: NSSize(width: width, height: height))
     }
 
     /// Create a binary mask from an image's alpha channel
+    /// Uses autoreleasepool to manage memory for CGContext
     func createMaskFromAlpha(image: NSImage) -> NSImage? {
+        return autoreleasepool {
+            guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
 
-        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+            let width = cgImage.width
+            let height = cgImage.height
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
 
-        let width = cgImage.width
+            guard let sourceContext = CGContext(
+                data: nil, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ), let sourceData = sourceContext.data else { return nil }
 
-        let height = cgImage.height
+            sourceContext.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
 
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
+            guard let maskContext = CGContext(
+                data: nil, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ), let maskData = maskContext.data else { return nil }
 
-        guard let sourceContext = CGContext(
-            data: nil, width: width, height: height,
-            bitsPerComponent: 8, bytesPerRow: width * 4,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ), let sourceData = sourceContext.data else { return nil }
+            let sourcePixels = sourceData.bindMemory(to: UInt8.self, capacity: width * height * 4)
+            let maskPixels = maskData.bindMemory(to: UInt8.self, capacity: width * height * 4)
 
-        sourceContext.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+            for i in 0..<(width * height) {
+                let offset = i * 4
+                let alpha = sourcePixels[offset + 3]
+                let white: UInt8 = alpha > 128 ? 255 : 0
 
-        guard let maskContext = CGContext(
-            data: nil, width: width, height: height,
-            bitsPerComponent: 8, bytesPerRow: width * 4,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ), let maskData = maskContext.data else { return nil }
+                maskPixels[offset + 0] = white
+                maskPixels[offset + 1] = white
+                maskPixels[offset + 2] = white
+                maskPixels[offset + 3] = white
+            }
 
-        let sourcePixels = sourceData.bindMemory(to: UInt8.self, capacity: width * height * 4)
-        let maskPixels = maskData.bindMemory(to: UInt8.self, capacity: width * height * 4)
+            guard let maskCGImage = maskContext.makeImage() else { return nil }
 
-        for i in 0..<(width * height) {
-            let offset = i * 4
-            let alpha = sourcePixels[offset + 3]
-            let white: UInt8 = alpha > 128 ? 255 : 0
-
-            maskPixels[offset + 0] = white
-            maskPixels[offset + 1] = white
-            maskPixels[offset + 2] = white
-            maskPixels[offset + 3] = white
+            return NSImage(cgImage: maskCGImage, size: NSSize(width: width, height: height))
         }
-
-        guard let maskCGImage = maskContext.makeImage() else { return nil }
-
-        return NSImage(cgImage: maskCGImage, size: NSSize(width: width, height: height))
     }
 
     /// Check if a normalized point is inside a mask

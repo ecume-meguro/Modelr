@@ -323,13 +323,19 @@ extension SimpleEditorViewModel {
         markRemainingStagesCancelled()
         print("[Gen] Generation stopped by user")
 
-        // Return to the step user was on before starting generation
-        if let previousStep = stepBeforeGeneration {
-            withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
-                currentStep = previousStep
-            }
-            stepBeforeGeneration = nil
-        }
+        // Stay on generate step to show stopped state (user can restart or go back)
+        // Don't auto-navigate back - let user decide
+    }
+
+    /// Restart generation after it was stopped or failed
+    func restartGeneration() {
+        // Clear previous generation state
+        generationStages = [:]
+        generationStatus = ""
+        lastError = nil
+
+        // Start fresh generation
+        generate3D()
     }
 
     func updateGenerationStages(status: String, percent: Double = 0) {

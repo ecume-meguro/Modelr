@@ -376,7 +376,13 @@ extension SimpleEditorViewModel {
     }
 
     /// Handle hover state from viewport raycasting
+    /// Hover highlighting is disabled when there's only one component
     func handleViewportComponentHover(_ index: Int?) {
+        // Skip hover highlighting when there's only one component
+        guard componentFiles.count > 1 else {
+            hoveredComponentIndex = nil
+            return
+        }
         hoveredComponentIndex = index
     }
 

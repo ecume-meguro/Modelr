@@ -359,8 +359,8 @@ extension SimpleEditorViewModel {
                 goBack()
             }
         case .touchup:
-            // Warn if mask was edited (history indicates changes)
-            if !maskHistory.isEmpty || editableMaskImage != nil {
+            // Warn only if user actually made edits to the mask
+            if hasMaskEdits {
                 showBackWarning = true
             } else {
                 goBack()
@@ -393,7 +393,7 @@ extension SimpleEditorViewModel {
         case .segment:
             return totalValidMasks == 0
         case .touchup:
-            return maskHistory.isEmpty && editableMaskImage == nil
+            return !hasMaskEdits
         case .generateSettings:
             return true  // Settings don't have significant state
         case .generate:

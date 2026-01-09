@@ -7,8 +7,9 @@ extension SimpleEditorViewModel {
         // Validate we have masks before transitioning
         guard totalValidMasks > 0 else { return }
 
-        // Clear history immediately
+        // Clear history and reset edit tracking
         maskHistory.removeAll()
+        hasMaskEdits = false
 
         // Try to use preloaded mask first (faster UX)
         let preloadedMask = preloadManager.getPreloadedComposite() != nil
@@ -128,6 +129,7 @@ extension SimpleEditorViewModel {
                isErasing: stroke.isErasing
            ) {
             editableMaskImage = newImage
+            hasMaskEdits = true  // User made an actual edit
         }
 
         currentStroke = nil

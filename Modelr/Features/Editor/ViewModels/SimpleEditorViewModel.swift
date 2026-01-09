@@ -40,6 +40,14 @@ class SimpleEditorViewModel: BaseEditorViewModel {
             return Step(rawValue: rawValue - 1)
         }
 
+        /// Whether this step is optional (can be skipped)
+        var isOptional: Bool {
+            switch self {
+            case .touchup, .generateSettings: return true
+            default: return false
+            }
+        }
+
         /// Check if transitioning from this step loses important work
         var hasSignificantState: Bool {
             switch self {
@@ -52,7 +60,17 @@ class SimpleEditorViewModel: BaseEditorViewModel {
             }
         }
     }
-    @Published var currentStep: Step = .setup
+    @Published var currentStep: Step = .setup {
+        didSet {
+            // Track visited steps when moving forward
+            if currentStep.rawValue > oldValue.rawValue {
+                visitedSteps.insert(currentStep)
+            }
+        }
+    }
+
+    /// Tracks which steps the user has actually visited (for proper back navigation)
+    @Published var visitedSteps: Set<Step> = [.setup]
 
     // MARK: - Error State
     @Published var lastError: AppError?
@@ -147,6 +165,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     @Published var maskHistory: [NSImage] = []
     @Published var isStrokeInProgress: Bool = false
     @Published var currentStroke: PaintStroke? = nil  // Live stroke for visual feedback
+    @Published var hasMaskEdits: Bool = false  // True if user actually edited the mask
     var lastBrushPoint: CGPoint? = nil  // For stroke interpolation
 
     // MARK: - Generation State
@@ -424,10 +443,23 @@ class SimpleEditorViewModel: BaseEditorViewModel {
 
     // MARK: - Navigation
 
+    /// Find the previous step that was actually visited (skips unvisited optional steps)
+    func previousVisitedStep(from step: Step) -> Step? {
+        var candidate = step.previous
+        while let c = candidate {
+            // Always allow going back to non-optional steps or visited steps
+            if !c.isOptional || visitedSteps.contains(c) {
+                return c
+            }
+            candidate = c.previous
+        }
+        return nil
+    }
+
     /// Navigate back one step, cleaning up state appropriately
     /// - Parameter force: If true, skip confirmation dialogs
     func goBack(force: Bool = false) {
-        guard let targetStep = currentStep.previous else {
+        guard let targetStep = previousVisitedStep(from: currentStep) else {
             return  // Can't go back from setup
         }
 
@@ -435,7 +467,10 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         cancelPendingTasks(for: currentStep)
 
         // Clean up state for the current step BEFORE transitioning (synchronous)
-        cleanupStateForStep(currentStep)
+        cleanupStateForStep(currentStep, targetStep: targetStep)
+
+        // Remove current step from visited (going back means we left it)
+        visitedSteps.remove(currentStep)
 
         // Animate step change
         withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
@@ -474,7 +509,10 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     }
 
     /// Clean up state when leaving a step (called BEFORE transition)
-    private func cleanupStateForStep(_ step: Step) {
+    /// - Parameters:
+    ///   - step: The current step being left
+    ///   - targetStep: The step we're navigating to (for context-aware cleanup)
+    private func cleanupStateForStep(_ step: Step, targetStep: Step) {
         switch step {
         case .setup:
             break
@@ -507,13 +545,14 @@ class SimpleEditorViewModel: BaseEditorViewModel {
             maskHistory.removeAll()
             brushPreviewPosition = nil
             isStrokeInProgress = false
+            hasMaskEdits = false
             // Clear preloaded composite
             preloadManager.clearPreloadedComposite()
         case .generateSettings:
-            // Going back to touchup - clear composite since mask may be edited
+            // Going back - clear composite since settings may change
             compositeImage = nil
         case .generate:
-            // Going back to settings - clear generation state
+            // Clear generation state when going back
             compositeImage = nil
             generated3DModelURL = nil
             generationStages = [:]
@@ -536,7 +575,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
                     deleteIndices: deleteIndices
                 )
             }
-            // Going back to generate - clear post-process state
+            // Clear post-process state
             meshComponents.removeAll()
             keepIndices.removeAll()
             deleteIndices.removeAll()
@@ -548,12 +587,16 @@ class SimpleEditorViewModel: BaseEditorViewModel {
             preloadedComponentNodes.removeAll()
             meshDisplayMode = .solid
             customModelColor = nil
-            // Also clear generated model so user can regenerate
-            generated3DModelURL = nil
-            generationStages = [:]
-            generationStatus = ""
-            generationStartTime = nil
-            generationDuration = nil
+
+            // If going back to generate step, keep the model so user can see it
+            // Otherwise clear it (going further back means starting fresh)
+            if targetStep != .generate {
+                generated3DModelURL = nil
+                generationStages = [:]
+                generationStatus = ""
+                generationStartTime = nil
+                generationDuration = nil
+            }
         }
     }
 
@@ -670,6 +713,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         maskHistory.removeAll()
         brushPreviewPosition = nil
         isStrokeInProgress = false
+        hasMaskEdits = false
 
         // Generation state
         compositeImage = nil
@@ -704,6 +748,25 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         // Error state
         lastError = nil
         showErrorAlert = false
+
+        // Navigation state
+        visitedSteps = [.setup, .input]
+    }
+
+    /// Get the display name for the back button based on actual navigation target
+    var backButtonLabel: String {
+        guard let target = previousVisitedStep(from: currentStep) else {
+            return "Back"
+        }
+        switch target {
+        case .setup: return "Back to Setup"
+        case .input: return "Back to Input"
+        case .segment: return "Back to Segment"
+        case .touchup: return "Back to Touchup"
+        case .generateSettings: return "Back to Settings"
+        case .generate: return "Back to Generate"
+        case .postProcess: return "Back"
+        }
     }
 
     // MARK: - Utilities
