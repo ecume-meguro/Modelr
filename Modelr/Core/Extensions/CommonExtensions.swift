@@ -1,20 +1,7 @@
 import SwiftUI
 
-// MARK: - Safe Array Access
-
-extension Array {
-    /// Safely access an element at the given index, returning nil if out of bounds
-    subscript(safe index: Index) -> Element? {
-        indices.contains(index) ? self[index] : nil
-    }
-}
-
-extension Collection {
-    /// Returns the element at the specified index if it exists, otherwise nil
-    subscript(safe index: Index) -> Element? {
-        indices.contains(index) ? self[index] : nil
-    }
-}
+// NOTE: Safe subscript for Array is defined in CoreExtensions.swift
+// Do not duplicate here to avoid ambiguous subscript errors
 
 // MARK: - Standard Animations
 
@@ -43,6 +30,7 @@ extension View {
 }
 
 /// Execute a closure with standard spring animation
+@discardableResult
 func withStandardSpring<Result>(_ body: () throws -> Result) rethrows -> Result {
     try withAnimation(.spring(
         response: AppConstants.standardSpringResponse,
@@ -52,13 +40,34 @@ func withStandardSpring<Result>(_ body: () throws -> Result) rethrows -> Result 
     }
 }
 
+/// Execute a void closure with standard spring animation
+func withStandardSpring(_ body: () -> Void) {
+    withAnimation(.spring(
+        response: AppConstants.standardSpringResponse,
+        dampingFraction: AppConstants.standardSpringDamping
+    )) {
+        body()
+    }
+}
+
 /// Execute a closure with fast spring animation
+@discardableResult
 func withFastSpring<Result>(_ body: () throws -> Result) rethrows -> Result {
     try withAnimation(.spring(
         response: AppConstants.fastSpringResponse,
         dampingFraction: AppConstants.fastSpringDamping
     )) {
         try body()
+    }
+}
+
+/// Execute a void closure with fast spring animation
+func withFastSpring(_ body: () -> Void) {
+    withAnimation(.spring(
+        response: AppConstants.fastSpringResponse,
+        dampingFraction: AppConstants.fastSpringDamping
+    )) {
+        body()
     }
 }
 

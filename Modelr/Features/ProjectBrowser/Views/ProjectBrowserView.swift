@@ -325,7 +325,7 @@ struct ProjectBrowserView: View {
         Divider()
 
         Button(role: .destructive) {
-            withFastSpring {
+            withAnimation(.spring(response: 0.2, dampingFraction: 0.8)) {
                 try? projectManager.deleteProject(project.id)
             }
         } label: {
@@ -402,7 +402,7 @@ struct ProjectBrowserView: View {
 
     @ViewBuilder
     private var renameSheet: some View {
-        VStack(spacing: AppDesign.Spacing.p20) {
+        VStack(spacing: AppDesign.Spacing.p16) {
             Text("Rename Project")
                 .font(.system(size: AppDesign.FontSize.title3, weight: .semibold))
 

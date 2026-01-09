@@ -702,9 +702,7 @@ struct SimpleEditorSidebar: View {
         .background(AppDesign.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
         .contentShape(Rectangle())
         .onTapGesture {
-            withStandardSpring {
-                viewModel.restoreCachedGeneration()
-            }
+            viewModel.restoreCachedGeneration()
         }
     }
 

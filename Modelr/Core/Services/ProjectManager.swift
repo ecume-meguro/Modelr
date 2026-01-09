@@ -205,15 +205,17 @@ class ProjectManager: ObservableObject {
         // Save the new project manifest
         try saveProject(newProject)
 
-        // Update metadata with new project ID
-        if var metadata = loadMetadata(for: projectId) {
-            metadata = ProjectMetadata(
-                projectId: newId,
-                prompt: metadata.prompt,
-                selectedMaskIndices: metadata.selectedMaskIndices,
-                generatedModelPath: metadata.generatedModelPath
-            )
-            try saveMetadata(metadata)
+        // Update metadata with new project ID (file was copied, now update the ID inside)
+        if let oldMetadata = loadMetadata(for: newId) {
+            var newMetadata = ProjectMetadata(projectId: newId)
+            newMetadata.textPrompt = oldMetadata.textPrompt
+            newMetadata.selectedMaskIndices = oldMetadata.selectedMaskIndices
+            newMetadata.generatedModelPath = oldMetadata.generatedModelPath
+            newMetadata.selectedPreset = oldMetadata.selectedPreset
+            newMetadata.customSteps = oldMetadata.customSteps
+            newMetadata.customResolution = oldMetadata.customResolution
+            newMetadata.hasMaskEdits = oldMetadata.hasMaskEdits
+            try saveMetadata(newMetadata)
         }
 
         // Add to list and sort
