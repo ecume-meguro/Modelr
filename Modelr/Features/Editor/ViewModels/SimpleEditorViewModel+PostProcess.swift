@@ -130,11 +130,11 @@ extension SimpleEditorViewModel {
             DispatchQueue.global(qos: .userInitiated).async {
                 var nodes: [Int: SCNNode] = [:]
 
-                // Material constants (matching ComponentModelViewer)
-                let clayColor = NSColor(red: 0.88, green: 0.86, blue: 0.82, alpha: 1.0)
-                let ghostColor = NSColor(red: 0.5, green: 0.5, blue: 0.55, alpha: 1.0)
-                let ghostOpacity: CGFloat = 0.18
-                let clayRoughness: CGFloat = 0.75
+                // Material constants from AppConstants (matching ComponentModelViewer)
+                let clayColor = AppConstants.clayColor
+                let ghostColor = AppConstants.ghostColor
+                let ghostOpacity = AppConstants.ghostOpacity
+                let clayRoughness = AppConstants.clayRoughness
 
                 for file in files {
                     let url = URL(fileURLWithPath: file.path)
@@ -331,13 +331,13 @@ extension SimpleEditorViewModel {
 
     // MARK: - Two-List Management
 
-    /// Auto-sort components: main meshes (>= 1000 faces) to keep, artifacts to delete
+    /// Auto-sort components: main meshes (>= threshold faces) to keep, artifacts to delete
     func autoSortComponents() {
         keepIndices.removeAll()
         deleteIndices.removeAll()
 
         for component in meshComponents {
-            if component.faceCount >= 1000 {
+            if component.faceCount >= AppConstants.minimumFaceCountForMainMesh {
                 keepIndices.insert(component.index)
             } else {
                 deleteIndices.insert(component.index)
@@ -504,39 +504,42 @@ extension SimpleEditorViewModel {
         process.standardOutput = stdout
         process.standardError = stderr
 
-        do {
-            try process.run()
+        return await withCheckedContinuation { continuation in
+            // Use termination handler for non-blocking wait
+            process.terminationHandler = { [stdout, stderr] terminatedProcess in
+                let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
+                let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
 
-            // Wait with timeout (30 seconds max to prevent hanging)
-            let timeout: TimeInterval = 30
-            let startTime = Date()
-            while process.isRunning {
-                if Date().timeIntervalSince(startTime) > timeout {
-                    print("[MeshProcessor] Timeout after \(timeout)s, terminating process")
-                    process.terminate()
-                    return nil
+                if let errorStr = String(data: errorData, encoding: .utf8), !errorStr.isEmpty {
+                    print("[MeshProcessor stderr] \(errorStr)")
                 }
-                Thread.sleep(forTimeInterval: 0.1)
-            }
 
-            let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
-            let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
-
-            if let errorStr = String(data: errorData, encoding: .utf8), !errorStr.isEmpty {
-                print("[MeshProcessor stderr] \(errorStr)")
-            }
-
-            if let outputStr = String(data: outputData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) {
-                print("[MeshProcessor stdout] \(outputStr)")
-                if let jsonData = outputStr.data(using: .utf8),
-                   let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
-                    return json
+                if let outputStr = String(data: outputData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) {
+                    print("[MeshProcessor stdout] \(outputStr)")
+                    if let jsonData = outputStr.data(using: .utf8),
+                       let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+                        continuation.resume(returning: json)
+                        return
+                    }
                 }
+                continuation.resume(returning: nil)
             }
-        } catch {
-            print("[MeshProcessor] Error: \(error)")
+
+            do {
+                try process.run()
+
+                // Set up timeout using Task
+                Task {
+                    try? await Task.sleep(for: .seconds(AppConstants.meshProcessorTimeout))
+                    if process.isRunning {
+                        print("[MeshProcessor] Timeout after \(AppConstants.meshProcessorTimeout)s, terminating process")
+                        process.terminate()
+                    }
+                }
+            } catch {
+                print("[MeshProcessor] Error: \(error)")
+                continuation.resume(returning: nil)
+            }
         }
-
-        return nil
     }
 }

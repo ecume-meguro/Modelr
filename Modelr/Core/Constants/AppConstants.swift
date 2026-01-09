@@ -349,8 +349,42 @@ struct AppConstants {
         Int64(ConfigurationService.shared.hunyuanMiniModelSizeGb * 1_000_000_000)
     }
 
-    /// Hunyuan Standard model download size estimate (bytes)
-    static var hunyuanStandardModelBytes: Int64 {
-        Int64(ConfigurationService.shared.hunyuanLargeModelSizeGb * 1_000_000_000)
-    }
+    // MARK: - Mesh Processing
+
+    /// Minimum face count for a component to be considered a main mesh (not artifact)
+    static let minimumFaceCountForMainMesh: Int = 1000
+
+    /// Timeout for mesh processor operations in seconds
+    static let meshProcessorTimeout: TimeInterval = 30
+
+    /// Maximum console output lines to keep per setup substep
+    static let maxConsoleOutputLines: Int = 50
+
+    // MARK: - Standard Animations
+
+    /// Standard spring animation response
+    static let standardSpringResponse: Double = 0.25
+
+    /// Standard spring animation damping
+    static let standardSpringDamping: Double = 0.85
+
+    /// Fast spring animation response
+    static let fastSpringResponse: Double = 0.2
+
+    /// Fast spring animation damping
+    static let fastSpringDamping: Double = 0.8
+
+    // MARK: - 3D Materials
+
+    /// Clay material color for 3D models
+    static let clayColor = NSColor(red: 0.88, green: 0.86, blue: 0.82, alpha: 1.0)
+
+    /// Ghost/deleted component color
+    static let ghostColor = NSColor(red: 0.5, green: 0.5, blue: 0.55, alpha: 1.0)
+
+    /// Ghost component opacity
+    static let ghostOpacity: CGFloat = 0.18
+
+    /// Clay material roughness
+    static let clayRoughness: CGFloat = 0.75
 }

@@ -77,9 +77,7 @@ extension SimpleEditorViewModel {
         // Download monitoring paths (purely visual, not used for correctness)
         let modelsHubDir = modelrDir.appendingPathComponent("Models/hub")
         let samModelDir = modelsHubDir.appendingPathComponent("models--mlx-community--sam3-image")
-        // Mini variants (fast, turbo) share the same repo; quality uses 2.1
-        let modelCacheName = selectedModelChoice.usesMiniRepo ? "models--tencent--Hunyuan3D-2mini" : "models--tencent--Hunyuan3D-2.1"
-        let hunyuanModelDir = modelsHubDir.appendingPathComponent(modelCacheName)
+        let hunyuanModelDir = modelsHubDir.appendingPathComponent("models--tencent--Hunyuan3D-2mini")
 
         // The setup service now drives the entire sequence
         let success = await env.setup(modelChoice: selectedModelChoice) { [weak self] update in
@@ -115,9 +113,7 @@ extension SimpleEditorViewModel {
                     self.startMonitoringDownload(directory: samModelDir, totalBytes: self.downloadTotalBytes > 0 ? self.downloadTotalBytes : AppConstants.samModelBytes)
                 } else if update.stage == .downloadingHunyuan {
                     self.ensurePinnedTotalBytesForDownloadStage(stage: .downloadingHunyuan)
-                    // Mini variants (fast, turbo) use mini size; quality uses std size
-                    let fallback = self.selectedModelChoice.usesMiniRepo ? AppConstants.hunyuanMiniModelBytes : AppConstants.hunyuanStandardModelBytes
-                    let total = self.downloadTotalBytes > 0 ? self.downloadTotalBytes : fallback
+                    let total = self.downloadTotalBytes > 0 ? self.downloadTotalBytes : AppConstants.hunyuanMiniModelBytes
                     self.startMonitoringDownload(directory: hunyuanModelDir, totalBytes: total)
                 }
             }
@@ -212,10 +208,6 @@ extension SimpleEditorViewModel {
             .components(separatedBy: .newlines)
             .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
 
-        if setupConsoleOutput[subStep] == nil {
-            setupConsoleOutput[subStep] = []
-        }
-
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if !trimmed.isEmpty {
@@ -246,10 +238,14 @@ extension SimpleEditorViewModel {
                     }
                 }
 
-                if setupConsoleOutput[subStep]!.count >= 50 {
-                    setupConsoleOutput[subStep]!.removeFirst()
+                // Safely append to console output without force unwraps
+                if setupConsoleOutput[subStep] == nil {
+                    setupConsoleOutput[subStep] = []
                 }
-                setupConsoleOutput[subStep]!.append(trimmed)
+                if let count = setupConsoleOutput[subStep]?.count, count >= AppConstants.maxConsoleOutputLines {
+                    setupConsoleOutput[subStep]?.removeFirst()
+                }
+                setupConsoleOutput[subStep]?.append(trimmed)
             }
         }
     }
@@ -290,14 +286,9 @@ extension SimpleEditorViewModel {
         Task { [weak self] in
             guard let self else { return }
 
-            let (repoId, subfolder): (String, String) = {
-                switch self.selectedModelChoice {
-                case .fast:
-                    return ("tencent/Hunyuan3D-2mini", "hunyuan3d-dit-v2-mini")
-                case .quality:
-                    return ("tencent/Hunyuan3D-2.1", "hunyuan3d-dit-v2-1")
-                }
-            }()
+            // Only mini model is supported
+            let repoId = "tencent/Hunyuan3D-2mini"
+            let subfolder = "hunyuan3d-dit-v2-mini"
 
             let files: [HuggingFaceModelSizeService.FileSpec] = [
                 .init(repoId: repoId, path: "\(subfolder)/config.yaml"),

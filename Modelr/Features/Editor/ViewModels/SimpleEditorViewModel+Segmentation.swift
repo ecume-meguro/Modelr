@@ -40,14 +40,18 @@ extension SimpleEditorViewModel {
 
     /// Run text prediction for active segmentation
     func runTextPrediction() {
-        guard activeSegmentationIndex < segmentations.count else { return }
-        guard !segmentations[activeSegmentationIndex].textPrompt.isEmpty else { return }
-
-        segmentations[activeSegmentationIndex].isSearchPerformed = true
-        segmentations[activeSegmentationIndex].isProcessing = true
-
+        // Capture values atomically to prevent race conditions
         let index = activeSegmentationIndex
-        let text = segmentations[index].textPrompt
+        guard let entry = segmentations[safe: index] else { return }
+        let text = entry.textPrompt
+        guard !text.isEmpty else { return }
+        guard isImageInitializedWithSAM else {
+            print("[Segmentation] Cannot run text prediction - image not initialized with SAM")
+            return
+        }
+
+        segmentations[index].isSearchPerformed = true
+        segmentations[index].isProcessing = true
 
         // Cancel any previous segmentation task
         segmentationTask?.cancel()
@@ -60,18 +64,18 @@ extension SimpleEditorViewModel {
                 await self.performPrediction(for: index, text: text, points: [], box: nil)
 
                 try Task.checkCancellation()
-                if index < self.segmentations.count {
+                if self.segmentations[safe: index] != nil {
                     self.segmentations[index].isProcessing = false
                     self.segmentations[index].name = text.capitalized
                 }
             } catch is CancellationError {
                 // Cancelled, just reset processing state
-                if index < self.segmentations.count {
+                if self.segmentations[safe: index] != nil {
                     self.segmentations[index].isProcessing = false
                 }
             } catch {
                 print("[Segmentation] Error: \(error)")
-                if index < self.segmentations.count {
+                if self.segmentations[safe: index] != nil {
                     self.segmentations[index].isProcessing = false
                 }
                 self.lastError = AppError.imageProcessing(error.localizedDescription)
@@ -82,13 +86,16 @@ extension SimpleEditorViewModel {
 
     /// Set bounding box for active segmentation and run prediction
     func setBoundingBox(_ box: SAMBox) {
-        guard activeSegmentationIndex < segmentations.count else { return }
-
-        segmentations[activeSegmentationIndex].boundingBox = box
-        segmentations[activeSegmentationIndex].points.removeAll()  // Clear any points
-        segmentations[activeSegmentationIndex].isProcessing = true
-
         let index = activeSegmentationIndex
+        guard segmentations[safe: index] != nil else { return }
+        guard isImageInitializedWithSAM else {
+            print("[Segmentation] Cannot set bounding box - image not initialized with SAM")
+            return
+        }
+
+        segmentations[index].boundingBox = box
+        segmentations[index].points.removeAll()  // Clear any points
+        segmentations[index].isProcessing = true
 
         // Cancel any previous segmentation task
         segmentationTask?.cancel()
@@ -101,16 +108,16 @@ extension SimpleEditorViewModel {
                 await self.performPrediction(for: index, text: nil, points: [], box: box)
 
                 try Task.checkCancellation()
-                if index < self.segmentations.count {
+                if self.segmentations[safe: index] != nil {
                     self.segmentations[index].isProcessing = false
                 }
             } catch is CancellationError {
-                if index < self.segmentations.count {
+                if self.segmentations[safe: index] != nil {
                     self.segmentations[index].isProcessing = false
                 }
             } catch {
                 print("[Segmentation] Error: \(error)")
-                if index < self.segmentations.count {
+                if self.segmentations[safe: index] != nil {
                     self.segmentations[index].isProcessing = false
                 }
             }
@@ -119,13 +126,16 @@ extension SimpleEditorViewModel {
 
     /// Add a point to active segmentation and run prediction (legacy, kept for compatibility)
     func addPoint(at normalized: CGPoint) {
-        guard activeSegmentationIndex < segmentations.count else { return }
+        let index = activeSegmentationIndex
+        guard segmentations[safe: index] != nil else { return }
+        guard isImageInitializedWithSAM else {
+            print("[Segmentation] Cannot add point - image not initialized with SAM")
+            return
+        }
 
         let point = SAMPoint(normalizedCoords: normalized.clamped, label: 1)
-        segmentations[activeSegmentationIndex].points.append(point)
-        segmentations[activeSegmentationIndex].isProcessing = true
-
-        let index = activeSegmentationIndex
+        segmentations[index].points.append(point)
+        segmentations[index].isProcessing = true
         let points = segmentations[index].points
 
         // Cancel any previous segmentation task
@@ -139,17 +149,17 @@ extension SimpleEditorViewModel {
                 await self.performPrediction(for: index, text: nil, points: points, box: nil)
 
                 try Task.checkCancellation()
-                if index < self.segmentations.count {
+                if self.segmentations[safe: index] != nil {
                     self.segmentations[index].isProcessing = false
                 }
             } catch is CancellationError {
                 // Cancelled, just reset processing state
-                if index < self.segmentations.count {
+                if self.segmentations[safe: index] != nil {
                     self.segmentations[index].isProcessing = false
                 }
             } catch {
                 print("[Segmentation] Error: \(error)")
-                if index < self.segmentations.count {
+                if self.segmentations[safe: index] != nil {
                     self.segmentations[index].isProcessing = false
                 }
             }
@@ -174,7 +184,7 @@ extension SimpleEditorViewModel {
             }
 
             await MainActor.run {
-                if index < segmentations.count {
+                if segmentations[safe: index] != nil {
                     segmentations[index].allMasks = masks
                     segmentations[index].selectedMaskIndices = [0]
                 }
@@ -193,8 +203,8 @@ extension SimpleEditorViewModel {
 
     /// Select mask for a specific segmentation (shift to add/remove from selection)
     func selectMask(at maskIndex: Int, for segmentationIndex: Int, addToSelection: Bool = false) {
-        guard segmentationIndex < segmentations.count else { return }
-        guard maskIndex < segmentations[segmentationIndex].allMasks.count else { return }
+        guard let entry = segmentations[safe: segmentationIndex] else { return }
+        guard entry.allMasks[safe: maskIndex] != nil else { return }
 
         if addToSelection {
             if segmentations[segmentationIndex].selectedMaskIndices.contains(maskIndex) {
@@ -247,23 +257,25 @@ extension SimpleEditorViewModel {
 
     /// Clear active segmentation only
     func clearActiveSegmentation() {
-        guard activeSegmentationIndex < segmentations.count else { return }
-        segmentations[activeSegmentationIndex].textPrompt = ""
-        segmentations[activeSegmentationIndex].points.removeAll()
-        segmentations[activeSegmentationIndex].boundingBox = nil
-        segmentations[activeSegmentationIndex].allMasks.removeAll()
-        segmentations[activeSegmentationIndex].selectedMaskIndices = [0]
-        segmentations[activeSegmentationIndex].isSearchPerformed = false
+        let index = activeSegmentationIndex
+        guard segmentations[safe: index] != nil else { return }
+        segmentations[index].textPrompt = ""
+        segmentations[index].points.removeAll()
+        segmentations[index].boundingBox = nil
+        segmentations[index].allMasks.removeAll()
+        segmentations[index].selectedMaskIndices = [0]
+        segmentations[index].isSearchPerformed = false
     }
 
     /// Find which mask was clicked in active segmentation
     func findMaskAtPoint(_ normalized: CGPoint, displaySize: CGSize) -> Int? {
-        guard activeSegmentationIndex < segmentations.count else { return nil }
-        let masks = segmentations[activeSegmentationIndex].allMasks
+        let index = activeSegmentationIndex
+        guard let entry = segmentations[safe: index] else { return nil }
+        let masks = entry.allMasks
 
-        for (index, maskData) in masks.enumerated().reversed() {
+        for (maskIndex, maskData) in masks.enumerated().reversed() {
             if ImageService.shared.isPointInMask(normalized, mask: maskData.image) {
-                return index
+                return maskIndex
             }
         }
         return nil
