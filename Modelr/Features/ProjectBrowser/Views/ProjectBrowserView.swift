@@ -9,6 +9,11 @@ struct ProjectBrowserView: View {
     @State private var isDraggingFile = false
     @State private var hasAppeared = false
 
+    /// Rename sheet state
+    @State private var showRenameSheet = false
+    @State private var projectToRename: Project?
+    @State private var renameText = ""
+
     /// Cached example images to avoid recomputing
     @State private var cachedExamples: [(name: String, url: URL)] = []
 
@@ -80,6 +85,9 @@ struct ProjectBrowserView: View {
             allowsMultipleSelection: false
         ) { result in
             handleFileImport(result)
+        }
+        .sheet(isPresented: $showRenameSheet) {
+            renameSheet
         }
         .task {
             // Load projects
@@ -295,13 +303,21 @@ struct ProjectBrowserView: View {
         Divider()
 
         Button {
-            // TODO: Implement rename
+            projectToRename = project
+            renameText = project.name
+            showRenameSheet = true
         } label: {
             Label("Rename", systemImage: "pencil")
         }
 
         Button {
-            // TODO: Implement duplicate
+            Task {
+                do {
+                    _ = try await projectManager.duplicateProject(project.id)
+                } catch {
+                    print("[ProjectBrowser] Failed to duplicate: \(error)")
+                }
+            }
         } label: {
             Label("Duplicate", systemImage: "doc.on.doc")
         }
@@ -309,7 +325,7 @@ struct ProjectBrowserView: View {
         Divider()
 
         Button(role: .destructive) {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            withFastSpring {
                 try? projectManager.deleteProject(project.id)
             }
         } label: {
@@ -380,6 +396,43 @@ struct ProjectBrowserView: View {
                 print("[ProjectBrowser] Failed to create project from dropped image: \(error)")
             }
         }
+    }
+
+    // MARK: - Rename Sheet
+
+    @ViewBuilder
+    private var renameSheet: some View {
+        VStack(spacing: AppDesign.Spacing.p20) {
+            Text("Rename Project")
+                .font(.system(size: AppDesign.FontSize.title3, weight: .semibold))
+
+            TextField("Project Name", text: $renameText)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 280)
+
+            HStack(spacing: AppDesign.Spacing.p12) {
+                Button("Cancel") {
+                    showRenameSheet = false
+                    projectToRename = nil
+                    renameText = ""
+                }
+                .keyboardShortcut(.escape, modifiers: [])
+
+                Button("Rename") {
+                    if let project = projectToRename, !renameText.isEmpty {
+                        try? projectManager.renameProject(project.id, to: renameText)
+                    }
+                    showRenameSheet = false
+                    projectToRename = nil
+                    renameText = ""
+                }
+                .keyboardShortcut(.return, modifiers: [])
+                .buttonStyle(.borderedProminent)
+                .disabled(renameText.isEmpty)
+            }
+        }
+        .padding(AppDesign.Spacing.p24)
+        .frame(minWidth: 320)
     }
 }
 

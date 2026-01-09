@@ -180,6 +180,49 @@ class ProjectManager: ObservableObject {
         try saveProject(project)
     }
 
+    /// Duplicate a project
+    func duplicateProject(_ projectId: UUID) async throws -> Project {
+        guard let original = loadProject(id: projectId) else {
+            throw ProjectError.loadFailed(NSError(domain: "ProjectManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Project not found"]))
+        }
+
+        let newId = UUID()
+        let originalDir = PathManager.projectDirectory(for: projectId)
+        let newDir = PathManager.projectDirectory(for: newId)
+
+        // Copy entire project directory
+        try fileManager.copyItem(at: originalDir, to: newDir)
+
+        // Create new project with updated metadata
+        let newProject = Project(
+            id: newId,
+            name: "\(original.name) Copy",
+            thumbnailPath: original.thumbnailPath,
+            sourceImagePath: original.sourceImagePath,
+            workflowStep: original.workflowStep
+        )
+
+        // Save the new project manifest
+        try saveProject(newProject)
+
+        // Update metadata with new project ID
+        if var metadata = loadMetadata(for: projectId) {
+            metadata = ProjectMetadata(
+                projectId: newId,
+                prompt: metadata.prompt,
+                selectedMaskIndices: metadata.selectedMaskIndices,
+                generatedModelPath: metadata.generatedModelPath
+            )
+            try saveMetadata(metadata)
+        }
+
+        // Add to list and sort
+        projects.append(newProject)
+        projects.sort { $0.modifiedAt > $1.modifiedAt }
+
+        return newProject
+    }
+
     // MARK: - Project Deletion
 
     /// Delete a project and all its files
