@@ -138,6 +138,14 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     @Published var autoDetectedLabel: String?
     var autoDetectionTask: Task<Void, Never>?
 
+    // MARK: - Image Initialization State
+    /// Whether the current image has been successfully initialized with SAM backend
+    @Published var isImageInitializedWithSAM: Bool = false
+    /// Whether project initialization is in progress (shows loading overlay)
+    @Published var isInitializingProject: Bool = false
+    /// Status message during project initialization
+    @Published var initializationStatus: String = ""
+
     // MARK: - Multi-Segmentation State
     @Published var segmentations: [SegmentationEntry] = []
     @Published var activeSegmentationIndex: Int = 0
@@ -182,7 +190,6 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     @Published var customSteps: CGFloat = 10   // matches turboNormal preset
     @Published var customResolution: CGFloat = 256
     @Published var generationStages: [GenerationStage: StageProgress] = [:]
-    @Published var isLargeModelDownloaded: Bool = false
     @Published var isSmallModelDownloaded: Bool = false
     /// Tracks the step user was on before starting generation (for returning on cancel/stop)
     var stepBeforeGeneration: Step?
@@ -320,8 +327,8 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     }
 
     // MARK: - Initialization
-    override init(env: PythonEnvironment) {
-        super.init(env: env)
+    override init(env: PythonEnvironment, projectId: UUID? = nil) {
+        super.init(env: env, projectId: projectId)
 
         // Log memory management strategy
         let coordinator = ModelLoadingCoordinator.shared
@@ -370,16 +377,20 @@ class SimpleEditorViewModel: BaseEditorViewModel {
 
     /// Check if models are downloaded
     func checkModelsDownloaded() {
-        isLargeModelDownloaded = PathManager.isHunyuanModelDownloaded(variant: "std")
         isSmallModelDownloaded = PathManager.isHunyuanModelDownloaded(variant: "mini")
-
-        print("[Setup] Model status - Small: \(isSmallModelDownloaded), Large: \(isLargeModelDownloaded)")
+        print("[Setup] Model status - Mini: \(isSmallModelDownloaded)")
     }
 
     // MARK: - Image Loading
     func loadImage(from url: URL) {
         // Cancel any previous load task
         imageLoadTask?.cancel()
+
+        // Set initialization state SYNCHRONOUSLY before the task starts
+        // This prevents race condition where loadProject() checks before task runs
+        isImageInitializedWithSAM = false
+        isInitializingProject = true
+        initializationStatus = "Loading image..."
 
         imageLoadTask = Task { [weak self] in
             guard let self = self else { return }
@@ -411,23 +422,244 @@ class SimpleEditorViewModel: BaseEditorViewModel {
 
                 self.imageHasAlpha = ImageService.shared.checkImageHasAlpha(image)
 
+                // Transition to segment step (loading overlay will show in ProjectEditorView)
                 withAnimation(.easeOut(duration: 0.25)) {
                     self.currentStep = .segment
                 }
 
-                // Initialize with Python backend
+                // Phase 1: Initialize SAM
                 try Task.checkCancellation()
-                await self.initializeImage()
+                self.initializationStatus = "Preparing segmentation..."
+                let samInitSuccess = await self.initializeImageWithoutVLM()
+
+                guard samInitSuccess else {
+                    throw AppError.imageProcessing("Failed to initialize segmentation")
+                }
+
+                // Phase 2: Run VLM auto-detection and WAIT for it
+                try Task.checkCancellation()
+                self.initializationStatus = "Analyzing image..."
+                let detectedLabel = await self.runVLMDetectionSync()
+
+                // Phase 3: If we got a label, run segmentation
+                try Task.checkCancellation()
+                if let label = detectedLabel, !label.isEmpty {
+                    self.initializationStatus = "Creating mask for \"\(label)\"..."
+
+                    // Set the prompt and run prediction
+                    if self.activeSegmentationIndex < self.segmentations.count {
+                        self.segmentations[self.activeSegmentationIndex].textPrompt = label
+                    }
+
+                    // Run segmentation and wait for it
+                    await self.runTextPredictionSync()
+                }
+
+                try Task.checkCancellation()
+
+                // Complete initialization
+                self.initializationStatus = "Ready"
+
+                // Small delay for smooth transition
+                try await Task.sleep(nanoseconds: 300_000_000) // 300ms
+
+                // Hide loading overlay
+                withAnimation(.easeOut(duration: 0.3)) {
+                    self.isInitializingProject = false
+                    self.initializationStatus = ""
+                }
 
             } catch is CancellationError {
                 // Task was cancelled, silently ignore
                 print("[Load] Image load cancelled")
+                self.isInitializingProject = false
+                self.initializationStatus = ""
             } catch {
                 print("[Load] Failed to load image: \(error)")
                 // Show error to user
+                self.isInitializingProject = false
+                self.initializationStatus = ""
                 self.lastError = AppError.imageProcessing(error.localizedDescription)
                 self.showErrorAlert = true
             }
+        }
+    }
+
+    /// Load image with saved state from a previous session
+    /// Skips VLM detection if prompt is already saved, skips segmentation if mask indices are saved
+    func loadImageWithSavedState(from url: URL, savedPrompt: String?, savedMaskIndices: [Int]?) {
+        // Cancel any previous load task
+        imageLoadTask?.cancel()
+
+        // Set initialization state SYNCHRONOUSLY before the task starts
+        isImageInitializedWithSAM = false
+        isInitializingProject = true
+        initializationStatus = "Loading project..."
+
+        imageLoadTask = Task { [weak self] in
+            guard let self = self else { return }
+
+            do {
+                try Task.checkCancellation()
+
+                let image = try await self.loadInputImage(from: url)
+
+                try Task.checkCancellation()
+
+                // Reset state for image
+                self.segmentations.removeAll()
+                self.addSegmentation()
+                self.editableMaskImage = nil
+                self.maskHistory.removeAll()
+                self.brushPreviewPosition = nil
+                self.compositeImage = nil
+                // Don't reset generated3DModelURL - it will be restored by caller
+                self.generationStages = [:]
+                self.generationStatus = ""
+                self.zoomScale = 1.0
+                self.panOffset = .zero
+                self.panBase = .zero
+                self.useExistingAlpha = false
+                self.lastError = nil
+
+                self.imageHasAlpha = ImageService.shared.checkImageHasAlpha(image)
+
+                // Transition to segment step
+                withAnimation(.easeOut(duration: 0.25)) {
+                    self.currentStep = .segment
+                }
+
+                // Phase 1: Initialize SAM
+                try Task.checkCancellation()
+                self.initializationStatus = "Preparing segmentation..."
+                let samInitSuccess = await self.initializeImageWithoutVLM()
+
+                guard samInitSuccess else {
+                    throw AppError.imageProcessing("Failed to initialize segmentation")
+                }
+
+                // Phase 2: Use saved prompt or run VLM
+                try Task.checkCancellation()
+                let label: String?
+                if let prompt = savedPrompt, !prompt.isEmpty {
+                    // Use saved prompt - skip VLM
+                    self.initializationStatus = "Restoring prompt..."
+                    label = prompt
+                    self.autoDetectedLabel = prompt
+                    print("[Load] Using saved prompt: \(prompt)")
+                } else {
+                    // No saved prompt - run VLM detection
+                    self.initializationStatus = "Analyzing image..."
+                    label = await self.runVLMDetectionSync()
+                }
+
+                // Phase 3: Run segmentation if we have a label and no saved mask indices
+                try Task.checkCancellation()
+                if let label = label, !label.isEmpty {
+                    // Set the prompt
+                    if self.activeSegmentationIndex < self.segmentations.count {
+                        self.segmentations[self.activeSegmentationIndex].textPrompt = label
+                    }
+
+                    // Only run segmentation if we don't have saved mask indices
+                    // (mask will be restored by caller from file)
+                    if savedMaskIndices == nil || savedMaskIndices?.isEmpty == true {
+                        self.initializationStatus = "Creating mask for \"\(label)\"..."
+                        await self.runTextPredictionSync()
+                    } else {
+                        self.initializationStatus = "Restoring mask..."
+                        // Just mark as searched so UI shows correctly
+                        if self.activeSegmentationIndex < self.segmentations.count {
+                            self.segmentations[self.activeSegmentationIndex].isSearchPerformed = true
+                        }
+                        print("[Load] Skipping segmentation - mask will be restored from file")
+                    }
+                }
+
+                try Task.checkCancellation()
+
+                // Complete initialization
+                self.initializationStatus = "Ready"
+                try await Task.sleep(nanoseconds: 300_000_000) // 300ms
+
+                withAnimation(.easeOut(duration: 0.3)) {
+                    self.isInitializingProject = false
+                    self.initializationStatus = ""
+                }
+
+            } catch is CancellationError {
+                print("[Load] Project load cancelled")
+                self.isInitializingProject = false
+                self.initializationStatus = ""
+            } catch {
+                print("[Load] Failed to load project: \(error)")
+                self.isInitializingProject = false
+                self.initializationStatus = ""
+                self.lastError = AppError.imageProcessing(error.localizedDescription)
+                self.showErrorAlert = true
+            }
+        }
+    }
+
+    /// Run VLM detection synchronously and return the result
+    private func runVLMDetectionSync() async -> String? {
+        guard let path = inputImagePath else { return nil }
+
+        let coordinator = ModelLoadingCoordinator.shared
+
+        // Wait for VLM to be ready if it's still starting
+        if coordinator.isStartingVLM {
+            print("[VLM] Waiting for VLM server to start...")
+            while coordinator.isStartingVLM {
+                try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+                if Task.isCancelled { return nil }
+            }
+        }
+
+        // Ensure VLM is ready
+        guard coordinator.isVLMReady else {
+            print("[VLM] VLM server not ready, skipping auto-detection")
+            return nil
+        }
+
+        do {
+            print("[VLM] Starting auto-detection for: \(path)")
+            let description = try await coordinator.describeImage(imagePath: path)
+
+            // Update the label for display
+            await MainActor.run {
+                self.autoDetectedLabel = description
+                self.isAutoDetecting = false
+            }
+
+            print("[VLM] Auto-detected: \(description)")
+            return description
+        } catch {
+            print("[VLM] Auto-detection failed: \(error)")
+            return nil
+        }
+    }
+
+    /// Run text prediction synchronously (for initialization)
+    private func runTextPredictionSync() async {
+        guard activeSegmentationIndex < segmentations.count else { return }
+        guard !segmentations[activeSegmentationIndex].textPrompt.isEmpty else { return }
+        guard isImageInitializedWithSAM else {
+            print("[Segmentation] Cannot run text prediction - image not initialized with SAM")
+            return
+        }
+
+        segmentations[activeSegmentationIndex].isSearchPerformed = true
+        segmentations[activeSegmentationIndex].isProcessing = true
+
+        let index = activeSegmentationIndex
+        let text = segmentations[index].textPrompt
+
+        await performPrediction(for: index, text: text, points: [], box: nil)
+
+        if index < segmentations.count {
+            segmentations[index].isProcessing = false
+            segmentations[index].name = text.capitalized
         }
     }
 
@@ -436,16 +668,49 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         imageHasAlpha = ImageService.shared.checkImageHasAlpha(image)
     }
 
-    private func initializeImage() async {
-        guard let path = inputImagePath else { return }
+    /// Initialize the image with SAM backend (also triggers VLM in background)
+    /// - Returns: true if initialization succeeded, false otherwise
+    private func initializeImage() async -> Bool {
+        guard let path = inputImagePath else {
+            print("[Init] No input image path")
+            return false
+        }
         do {
             let size = try await env.setImage(path: path)
             imagePixelSize = size
+            isImageInitializedWithSAM = true
+            print("[Init] Image initialized with SAM, size: \(size)")
 
-            // Trigger VLM auto-detection in background
-            await startVLMAutoDetection(imagePath: path)
+            // Trigger VLM auto-detection in background (don't await - let it run async)
+            Task {
+                await startVLMAutoDetection(imagePath: path)
+            }
+            return true
         } catch {
             print("[Init] Failed to set image: \(error)")
+            isImageInitializedWithSAM = false
+            return false
+        }
+    }
+
+    /// Initialize the image with SAM backend only (no VLM trigger)
+    /// Used during full initialization flow where VLM is called separately
+    /// - Returns: true if initialization succeeded, false otherwise
+    private func initializeImageWithoutVLM() async -> Bool {
+        guard let path = inputImagePath else {
+            print("[Init] No input image path")
+            return false
+        }
+        do {
+            let size = try await env.setImage(path: path)
+            imagePixelSize = size
+            isImageInitializedWithSAM = true
+            print("[Init] Image initialized with SAM (no VLM), size: \(size)")
+            return true
+        } catch {
+            print("[Init] Failed to set image: \(error)")
+            isImageInitializedWithSAM = false
+            return false
         }
     }
 
@@ -531,344 +796,9 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         print("[VLM] Auto-detection cancelled by user")
     }
 
-    // MARK: - Navigation
-
-    /// Find the previous step that was actually visited (respects user's actual navigation path)
-    /// This ensures "back" goes to where the user was, not just the previous sequential step.
-    /// For example, if user went Segment → PostProcess via "Restore", back should go to Segment,
-    /// not Generate (which was skipped).
-    func previousVisitedStep(from step: Step) -> Step? {
-        var candidate = step.previous
-        while let c = candidate {
-            // Only return steps that were actually visited
-            if visitedSteps.contains(c) {
-                return c
-            }
-            candidate = c.previous
-        }
-        return nil
-    }
-
-    /// Navigate back one step, cleaning up state appropriately
-    /// - Parameter force: If true, skip confirmation dialogs
-    func goBack(force: Bool = false) {
-        guard let targetStep = previousVisitedStep(from: currentStep) else {
-            return  // Can't go back from setup
-        }
-
-        // Cancel any pending tasks that would update the current step's state
-        cancelPendingTasks(for: currentStep)
-
-        // Clean up state for the current step BEFORE transitioning (synchronous)
-        cleanupStateForStep(currentStep, targetStep: targetStep)
-
-        // Remove current step from visited (going back means we left it)
-        visitedSteps.remove(currentStep)
-
-        // Animate step change
-        withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
-            currentStep = targetStep
-        }
-    }
-
-    /// Cancel pending tasks for a specific step
-    private func cancelPendingTasks(for step: Step) {
-        switch step {
-        case .setup:
-            // Cancel setup-related tasks if any
-            break
-        case .input:
-            imageLoadTask?.cancel()
-            imageLoadTask = nil
-        case .segment:
-            segmentationTask?.cancel()
-            segmentationTask = nil
-        case .touchup:
-            // No long-running tasks in touchup
-            break
-        case .generateSettings:
-            // No long-running tasks in settings
-            break
-        case .generate:
-            generationTask?.cancel()
-            generationTask = nil
-            if isGenerating {
-                stopGeneration()
-            }
-        case .postProcess:
-            meshPreloadTask?.cancel()
-            meshPreloadTask = nil
-        }
-    }
-
-    /// Clean up state when leaving a step (called BEFORE transition)
-    /// - Parameters:
-    ///   - step: The current step being left
-    ///   - targetStep: The step we're navigating to (for context-aware cleanup)
-    private func cleanupStateForStep(_ step: Step, targetStep: Step) {
-        switch step {
-        case .setup:
-            break
-        case .input:
-            // Going back to setup - this shouldn't happen normally
-            break
-        case .segment:
-            // Cache segmentation state before clearing
-            if !segmentations.isEmpty {
-                cachedSegmentation = SegmentationCache(
-                    segmentations: segmentations,
-                    activeIndex: activeSegmentationIndex,
-                    inputImage: inputImage,
-                    inputImagePath: inputImagePath,
-                    imagePixelSize: imagePixelSize
-                )
-            }
-            // Going back to input - clear segmentation state
-            segmentations.removeAll()
-            inputImage = nil
-            inputImagePath = nil
-            imagePixelSize = .zero
-            imageHasAlpha = false
-            useExistingAlpha = false
-            // Clear preloaded mask
-            preloadManager.clearPreloadedMask()
-        case .touchup:
-            // Going back to segment - clear touchup edits but keep segmentation
-            editableMaskImage = nil
-            maskHistory.removeAll()
-            brushPreviewPosition = nil
-            isStrokeInProgress = false
-            hasMaskEdits = false
-            // Clear preloaded composite
-            preloadManager.clearPreloadedComposite()
-        case .generateSettings:
-            // Going back - clear composite since settings may change
-            compositeImage = nil
-        case .generate:
-            // Clear generation state when going back
-            compositeImage = nil
-            generated3DModelURL = nil
-            generationStages = [:]
-            generationStatus = ""
-            generationStartTime = nil
-            generationDuration = nil
-            isGenerating = false
-            // Reset download monitoring
-            resetDownloadMonitoringState()
-        case .postProcess:
-            // Cache generation/post-process state before clearing
-            if let modelURL = generated3DModelURL {
-                cachedGeneration = GenerationCache(
-                    modelURL: modelURL,
-                    compositeImage: compositeImage,
-                    meshComponents: meshComponents,
-                    componentFiles: componentFiles,
-                    preloadedNodes: preloadedComponentNodes,
-                    keepIndices: keepIndices,
-                    deleteIndices: deleteIndices
-                )
-            }
-            // Clear post-process state
-            meshComponents.removeAll()
-            keepIndices.removeAll()
-            deleteIndices.removeAll()
-            highlightedComponentIndex = nil
-            hoveredComponentIndex = nil
-            isolatedComponentIndex = nil
-            processedModelURL = nil
-            componentFiles.removeAll()
-            preloadedComponentNodes.removeAll()
-            meshDisplayMode = .solid
-            customModelColor = nil
-
-            // If going back to generate step, keep the model so user can see it
-            // Otherwise clear it (going further back means starting fresh)
-            if targetStep != .generate {
-                generated3DModelURL = nil
-                generationStages = [:]
-                generationStatus = ""
-                generationStartTime = nil
-                generationDuration = nil
-            }
-        }
-    }
-
-    // MARK: - Cache Restore Methods
-
-    /// Restore cached generation state (after navigating back from post-process)
-    func restoreCachedGeneration() {
-        guard let cache = cachedGeneration else { return }
-
-        generated3DModelURL = cache.modelURL
-        compositeImage = cache.compositeImage
-        meshComponents = cache.meshComponents
-        componentFiles = cache.componentFiles
-        preloadedComponentNodes = cache.preloadedNodes
-        keepIndices = cache.keepIndices
-        deleteIndices = cache.deleteIndices
-
-        // Clear the cache after restoring
-        cachedGeneration = nil
-
-        // Navigate to post-process step
-        currentStep = .postProcess
-    }
-
-    /// Restore cached segmentation state
-    func restoreCachedSegmentation() {
-        guard let cache = cachedSegmentation else { return }
-
-        segmentations = cache.segmentations
-        activeSegmentationIndex = cache.activeIndex
-        inputImage = cache.inputImage
-        inputImagePath = cache.inputImagePath
-        imagePixelSize = cache.imagePixelSize
-
-        // Clear the cache after restoring
-        cachedSegmentation = nil
-
-        // Navigate to segment step
-        currentStep = .segment
-    }
-
-    /// Clear all caches (called on explicit "Start Over")
-    func clearAllCaches() {
-        cachedGeneration = nil
-        cachedSegmentation = nil
-    }
-
-    /// Reset download monitoring state
-    private func resetDownloadMonitoringState() {
-        downloadedBytes = 0
-        downloadTotalBytes = 0
-        downloadSpeed = 0
-        downloadTimeRemaining = 0
-        pinnedDownloadTotalBytes = nil
-        didQueryCurrentDownloadTotal = false
-        isUsingHuggingFaceDownloadProgress = false
-        downloadMonitor.stopMonitoring()
-    }
-
-    /// Clear all state and return to input step
-    func clearAll() {
-        // Cancel ALL pending tasks first
-        cancelAllTasks()
-
-        // Clear all state synchronously BEFORE animation
-        resetAllState()
-
-        // Clear all caches (user is starting over)
-        clearAllCaches()
-
-        // Animate to input
-        withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
-            currentStep = .input
-        }
-    }
-
-    /// Cancel all pending tasks across all steps
-    private func cancelAllTasks() {
-        imageLoadTask?.cancel()
-        imageLoadTask = nil
-        segmentationTask?.cancel()
-        segmentationTask = nil
-        generationTask?.cancel()
-        generationTask = nil
-        cleanupTask?.cancel()
-        cleanupTask = nil
-        meshPreloadTask?.cancel()
-        meshPreloadTask = nil
-        autoDetectionTask?.cancel()
-        autoDetectionTask = nil
-
-        // Clear all preloaded data
-        preloadManager.cancelAll()
-
-        // Stop generation if in progress
-        if isGenerating {
-            stopGeneration()
-        }
-    }
-
-    /// Reset all state to initial values
-    private func resetAllState() {
-        // Input state
-        inputImage = nil
-        inputImagePath = nil
-        imagePixelSize = .zero
-        imageHasAlpha = false
-
-        // VLM auto-detection state
-        isAutoDetecting = false
-        autoDetectedLabel = nil
-
-        // Segmentation state
-        segmentations.removeAll()
-        activeSegmentationIndex = 0
-        useExistingAlpha = false
-
-        // Touchup state
-        editableMaskImage = nil
-        maskHistory.removeAll()
-        brushPreviewPosition = nil
-        isStrokeInProgress = false
-        hasMaskEdits = false
-
-        // Generation state
-        compositeImage = nil
-        generated3DModelURL = nil
-        generationStages = [:]
-        generationStatus = ""
-        generationStartTime = nil
-        generationDuration = nil
-        isGenerating = false
-
-        // Post-process state
-        meshComponents.removeAll()
-        keepIndices.removeAll()
-        deleteIndices.removeAll()
-        highlightedComponentIndex = nil
-        isolatedComponentIndex = nil
-        processedModelURL = nil
-        componentFiles.removeAll()
-        preloadedComponentNodes.removeAll()
-        meshDisplayMode = .solid
-        customModelColor = nil
-
-        // UI state
-        zoomScale = 1.0
-        panOffset = .zero
-        panBase = .zero
-        showingOriginal = false
-
-        // Download state
-        resetDownloadMonitoringState()
-
-        // Error state
-        lastError = nil
-        showErrorAlert = false
-
-        // Navigation state
-        visitedSteps = [.setup, .input]
-    }
-
-    /// Get the display name for the back button based on actual navigation target
-    var backButtonLabel: String {
-        guard let target = previousVisitedStep(from: currentStep) else {
-            return "Back"
-        }
-        switch target {
-        case .setup: return "Back to Setup"
-        case .input: return "Back to Input"
-        case .segment: return "Back to Segment"
-        case .touchup: return "Back to Touchup"
-        case .generateSettings: return "Back to Settings"
-        case .generate: return "Back to Generate"
-        case .postProcess: return "Back"
-        }
-    }
-
     // MARK: - Utilities
+    // NOTE: Navigation methods are in SimpleEditorViewModel+Navigation.swift
+    // NOTE: Cache restore methods are in SimpleEditorViewModel+Cache.swift
     func colorForMask(_ index: Int) -> Color {
         AppDesign.neonColors[index % AppDesign.neonColors.count]
     }
