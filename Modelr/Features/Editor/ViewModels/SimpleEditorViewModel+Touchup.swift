@@ -76,10 +76,69 @@ extension SimpleEditorViewModel {
         editableMaskImage = maskHistory.removeLast()
     }
 
+    /// Start a new paint stroke
+    func startStroke(at point: CGPoint) {
+        let normalizedBrushSize = brushSize / 1000.0
+        currentStroke = PaintStroke(startPoint: point, brushSize: normalizedBrushSize, isErasing: brushMode == .remove)
+    }
+
+    /// Add a point to the current stroke (with interpolation for smooth lines)
+    func addStrokePoint(_ point: CGPoint) {
+        guard currentStroke != nil else { return }
+
+        // Interpolate from last point if needed
+        if let lastPoint = lastBrushPoint {
+            let dx = point.x - lastPoint.x
+            let dy = point.y - lastPoint.y
+            let distance = sqrt(dx * dx + dy * dy)
+
+            // Interpolation step size (relative to brush size for smooth coverage)
+            let stepSize = (brushSize / 1000.0) * 0.3
+            let steps = max(1, Int(distance / stepSize))
+
+            for i in 1...steps {
+                let t = CGFloat(i) / CGFloat(steps)
+                let interpPoint = CGPoint(
+                    x: lastPoint.x + dx * t,
+                    y: lastPoint.y + dy * t
+                )
+                currentStroke?.addPoint(interpPoint)
+            }
+        } else {
+            currentStroke?.addPoint(point)
+        }
+
+        lastBrushPoint = point
+    }
+
+    /// Finish the stroke and apply it to the mask
+    func finishStroke() {
+        guard let stroke = currentStroke, !stroke.points.isEmpty else {
+            currentStroke = nil
+            lastBrushPoint = nil
+            return
+        }
+
+        // Apply all stroke points to mask at once (much faster than per-point)
+        if let maskImage = editableMaskImage,
+           let newImage = ImageService.shared.applyStroke(
+               to: maskImage,
+               points: stroke.points,
+               size: stroke.brushSize,
+               isErasing: stroke.isErasing
+           ) {
+            editableMaskImage = newImage
+        }
+
+        currentStroke = nil
+        lastBrushPoint = nil
+        onMaskEditComplete()
+    }
+
+    /// Legacy single-point paint (kept for tap gestures)
     func paintOnMask(at normalized: CGPoint) {
         guard let maskImage = editableMaskImage else { return }
 
-        // Normalize brush size relative to image (it was previously using / 1000.0)
         let normalizedBrushSize = brushSize / 1000.0
 
         if let newImage = ImageService.shared.applyBrush(
@@ -95,6 +154,8 @@ extension SimpleEditorViewModel {
     /// Called when mask editing is complete (stroke ended)
     /// Triggers preloading of composite for faster transition
     func onMaskEditComplete() {
+        // Invalidate existing composite since mask changed
+        compositeImage = nil
         // Invalidate previous preloaded composite since mask changed
         preloadManager.clearPreloadedComposite()
         // Start new composite preload

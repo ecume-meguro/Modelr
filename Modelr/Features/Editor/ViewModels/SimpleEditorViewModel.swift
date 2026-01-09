@@ -120,6 +120,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     @Published var activeSegmentationIndex: Int = 0
     @Published var useExistingAlpha: Bool = false
     @Published var imageHasAlpha: Bool = false
+    @Published var currentDrawingBox: SAMBox? = nil  // Box being drawn
 
     /// Currently active segmentation entry
     var activeSegmentation: SegmentationEntry? {
@@ -145,6 +146,8 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     @Published var brushPreviewPosition: CGPoint? = nil
     @Published var maskHistory: [NSImage] = []
     @Published var isStrokeInProgress: Bool = false
+    @Published var currentStroke: PaintStroke? = nil  // Live stroke for visual feedback
+    var lastBrushPoint: CGPoint? = nil  // For stroke interpolation
 
     // MARK: - Generation State
     @Published var generationStatus = ""
@@ -168,9 +171,10 @@ class SimpleEditorViewModel: BaseEditorViewModel {
 
     // MARK: - Post-Process State
     @Published var meshComponents: [MeshComponent] = []
-    @Published var keepIndices: Set<Int> = []        // Components to keep (green)
-    @Published var deleteIndices: Set<Int> = []      // Components to delete (red)
-    @Published var highlightedComponentIndex: Int? = nil  // Currently highlighted (yellow in viewer)
+    @Published var keepIndices: Set<Int> = []        // Components to keep (solid clay)
+    @Published var deleteIndices: Set<Int> = []      // Components to delete (ghost/translucent)
+    @Published var highlightedComponentIndex: Int? = nil  // Currently highlighted (rim glow in viewer)
+    @Published var hoveredComponentIndex: Int? = nil      // Currently hovered via viewport raycasting
     @Published var isolatedComponentIndex: Int? = nil     // Show only this component (nil = show all)
     @Published var isAnalyzingMesh: Bool = false
     @Published var isExtractingComponents: Bool = false
@@ -198,6 +202,40 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     // Pre-loading task for instant post-process transition
     var meshPreloadTask: Task<Void, Never>?
 
+    // MARK: - Workflow State Cache (for non-destructive navigation)
+
+    /// Cached generation state for restoring when navigating back
+    struct GenerationCache {
+        let modelURL: URL
+        let compositeImage: NSImage?
+        let meshComponents: [MeshComponent]
+        let componentFiles: [ComponentFile]
+        let preloadedNodes: [Int: SCNNode]
+        let keepIndices: Set<Int>
+        let deleteIndices: Set<Int>
+    }
+
+    /// Cached segmentation state for restoring when navigating back
+    struct SegmentationCache {
+        let segmentations: [SegmentationEntry]
+        let activeIndex: Int
+        let inputImage: NSImage?
+        let inputImagePath: String?
+        let imagePixelSize: CGSize
+    }
+
+    /// Cached generation results (preserved when navigating back from post-process)
+    @Published var cachedGeneration: GenerationCache? = nil
+
+    /// Cached segmentation results (preserved when navigating back from segment)
+    @Published var cachedSegmentation: SegmentationCache? = nil
+
+    /// Whether there's a cached generation that can be restored
+    var hasCachedGeneration: Bool { cachedGeneration != nil }
+
+    /// Whether there's a cached segmentation that can be restored
+    var hasCachedSegmentation: Bool { cachedSegmentation != nil }
+
     /// Whether we're in the handoff phase (generation complete, preloading for post-process)
     var isInHandoff: Bool {
         generationStages[.handoff]?.status == .inProgress
@@ -212,6 +250,8 @@ class SimpleEditorViewModel: BaseEditorViewModel {
 
     // MARK: - UI State
     @Published var zoomScale: CGFloat = 1.0
+    @Published var panOffset: CGSize = .zero
+    var panBase: CGSize = .zero  // Base offset for pan gesture
     @Published var showingOriginal: Bool = false
 
     // MARK: - 3D View Mode
@@ -340,6 +380,8 @@ class SimpleEditorViewModel: BaseEditorViewModel {
                 self.generationStages = [:]
                 self.generationStatus = ""
                 self.zoomScale = 1.0
+                self.panOffset = .zero
+                self.panBase = .zero
                 self.useExistingAlpha = false
                 self.lastError = nil
 
@@ -440,6 +482,16 @@ class SimpleEditorViewModel: BaseEditorViewModel {
             // Going back to setup - this shouldn't happen normally
             break
         case .segment:
+            // Cache segmentation state before clearing
+            if !segmentations.isEmpty {
+                cachedSegmentation = SegmentationCache(
+                    segmentations: segmentations,
+                    activeIndex: activeSegmentationIndex,
+                    inputImage: inputImage,
+                    inputImagePath: inputImagePath,
+                    imagePixelSize: imagePixelSize
+                )
+            }
             // Going back to input - clear segmentation state
             segmentations.removeAll()
             inputImage = nil
@@ -458,8 +510,8 @@ class SimpleEditorViewModel: BaseEditorViewModel {
             // Clear preloaded composite
             preloadManager.clearPreloadedComposite()
         case .generateSettings:
-            // Going back to touchup - nothing to clean up
-            break
+            // Going back to touchup - clear composite since mask may be edited
+            compositeImage = nil
         case .generate:
             // Going back to settings - clear generation state
             compositeImage = nil
@@ -472,11 +524,24 @@ class SimpleEditorViewModel: BaseEditorViewModel {
             // Reset download monitoring
             resetDownloadMonitoringState()
         case .postProcess:
+            // Cache generation/post-process state before clearing
+            if let modelURL = generated3DModelURL {
+                cachedGeneration = GenerationCache(
+                    modelURL: modelURL,
+                    compositeImage: compositeImage,
+                    meshComponents: meshComponents,
+                    componentFiles: componentFiles,
+                    preloadedNodes: preloadedComponentNodes,
+                    keepIndices: keepIndices,
+                    deleteIndices: deleteIndices
+                )
+            }
             // Going back to generate - clear post-process state
             meshComponents.removeAll()
             keepIndices.removeAll()
             deleteIndices.removeAll()
             highlightedComponentIndex = nil
+            hoveredComponentIndex = nil
             isolatedComponentIndex = nil
             processedModelURL = nil
             componentFiles.removeAll()
@@ -490,6 +555,50 @@ class SimpleEditorViewModel: BaseEditorViewModel {
             generationStartTime = nil
             generationDuration = nil
         }
+    }
+
+    // MARK: - Cache Restore Methods
+
+    /// Restore cached generation state (after navigating back from post-process)
+    func restoreCachedGeneration() {
+        guard let cache = cachedGeneration else { return }
+
+        generated3DModelURL = cache.modelURL
+        compositeImage = cache.compositeImage
+        meshComponents = cache.meshComponents
+        componentFiles = cache.componentFiles
+        preloadedComponentNodes = cache.preloadedNodes
+        keepIndices = cache.keepIndices
+        deleteIndices = cache.deleteIndices
+
+        // Clear the cache after restoring
+        cachedGeneration = nil
+
+        // Navigate to post-process step
+        currentStep = .postProcess
+    }
+
+    /// Restore cached segmentation state
+    func restoreCachedSegmentation() {
+        guard let cache = cachedSegmentation else { return }
+
+        segmentations = cache.segmentations
+        activeSegmentationIndex = cache.activeIndex
+        inputImage = cache.inputImage
+        inputImagePath = cache.inputImagePath
+        imagePixelSize = cache.imagePixelSize
+
+        // Clear the cache after restoring
+        cachedSegmentation = nil
+
+        // Navigate to segment step
+        currentStep = .segment
+    }
+
+    /// Clear all caches (called on explicit "Start Over")
+    func clearAllCaches() {
+        cachedGeneration = nil
+        cachedSegmentation = nil
     }
 
     /// Reset download monitoring state
@@ -511,6 +620,9 @@ class SimpleEditorViewModel: BaseEditorViewModel {
 
         // Clear all state synchronously BEFORE animation
         resetAllState()
+
+        // Clear all caches (user is starting over)
+        clearAllCaches()
 
         // Animate to input
         withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
@@ -582,6 +694,8 @@ class SimpleEditorViewModel: BaseEditorViewModel {
 
         // UI state
         zoomScale = 1.0
+        panOffset = .zero
+        panBase = .zero
         showingOriginal = false
 
         // Download state

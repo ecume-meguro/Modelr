@@ -460,6 +460,14 @@ struct SimpleEditorSidebar: View {
                         AppDesign.InlineButton("Back to Input", icon: "arrow.left") {
                             viewModel.handleBackAction()
                         }
+
+                        // Restore cached generation option
+                        if viewModel.hasCachedGeneration {
+                            Divider()
+                                .padding(.vertical, AppDesign.Spacing.p4)
+
+                            restoreCachedModelButton
+                        }
                     }
                 }
                 .transition(.asymmetric(
@@ -492,6 +500,14 @@ struct SimpleEditorSidebar: View {
 
                         AppDesign.InlineButton("Back to Segment", icon: "arrow.left") {
                             viewModel.handleBackAction()
+                        }
+
+                        // Restore cached generation option
+                        if viewModel.hasCachedGeneration {
+                            Divider()
+                                .padding(.vertical, AppDesign.Spacing.p4)
+
+                            restoreCachedModelButton
                         }
                     }
                 }
@@ -603,6 +619,34 @@ struct SimpleEditorSidebar: View {
             content()
         }
         .padding(.top, AppDesign.Spacing.p12)
+    }
+
+    // MARK: - Restore Cached Model Button
+
+    @ViewBuilder
+    private var restoreCachedModelButton: some View {
+        HStack(spacing: AppDesign.Spacing.p8) {
+            Image(systemName: "arrow.uturn.forward")
+                .font(.system(size: AppDesign.FontSize.caption))
+                .foregroundStyle(AppDesign.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Restore Previous Model")
+                    .font(.system(size: AppDesign.FontSize.subheadline, weight: .medium))
+                    .foregroundStyle(AppDesign.accent)
+                Text("Return to your generated 3D model")
+                    .font(.system(size: AppDesign.FontSize.xs))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(AppDesign.Spacing.p8)
+        .background(AppDesign.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+                viewModel.restoreCachedGeneration()
+            }
+        }
     }
 
     // MARK: - Generate with Preset Row

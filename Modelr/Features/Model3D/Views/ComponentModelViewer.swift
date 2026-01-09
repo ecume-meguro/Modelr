@@ -8,13 +8,23 @@ struct ComponentModelViewer: NSViewRepresentable {
     let componentFiles: [ComponentFile]
     let keepIndices: Set<Int>
     let deleteIndices: Set<Int>
-    let highlightedIndex: Int?
+    let hoveredIndex: Int?
     let isolatedIndex: Int?
     let displayMode: SimpleEditorViewModel.MeshDisplayMode
     /// Pre-loaded SceneKit nodes for instant rendering (optional - falls back to loading from disk if empty)
     var preloadedNodes: [Int: SCNNode] = [:]
     /// Custom color override (when user selects a paint color)
     var customColor: NSColor? = nil
+
+    // MARK: - Interaction Callbacks
+    /// Called when a component is left-clicked in the viewport (keep)
+    var onComponentClicked: ((Int) -> Void)? = nil
+    /// Called when a component is right-clicked in the viewport (delete)
+    var onComponentRightClicked: ((Int) -> Void)? = nil
+    /// Called when empty space is clicked (deselect)
+    var onEmptySpaceClicked: (() -> Void)? = nil
+    /// Called when hover state changes (nil when not hovering over any component)
+    var onComponentHovered: ((Int?) -> Void)? = nil
 
     /// Check if artifacts are present (items in both keep and delete lists)
     var hasArtifacts: Bool {
@@ -34,15 +44,29 @@ struct ComponentModelViewer: NSViewRepresentable {
         scnView.backgroundColor = NSColor(calibratedWhite: 0.12, alpha: 1.0)
         scnView.antialiasingMode = .multisampling4X
 
+        // GPU acceleration settings
+        scnView.preferredFramesPerSecond = 60
+        scnView.rendersContinuously = false  // Only render when needed (saves GPU)
+        scnView.isJitteringEnabled = true    // Temporal anti-aliasing for smoother edges
+
         let scene = SCNScene()
         scnView.scene = scene
 
         setupCameraAndLighting(scene: scene, view: scnView)
+
+        // Set up interaction handling
+        context.coordinator.scnView = scnView
+        context.coordinator.onComponentClicked = onComponentClicked
+        context.coordinator.onComponentRightClicked = onComponentRightClicked
+        context.coordinator.onEmptySpaceClicked = onEmptySpaceClicked
+        context.coordinator.onComponentHovered = onComponentHovered
+        context.coordinator.setupInteraction(for: scnView)
+
         context.coordinator.loadComponents(
             componentFiles,
             keepIndices: keepIndices,
             deleteIndices: deleteIndices,
-            highlightedIndex: highlightedIndex,
+            hoveredIndex: hoveredIndex,
             isolatedIndex: isolatedIndex,
             displayMode: displayMode,
             preloadedNodes: preloadedNodes,
@@ -58,11 +82,17 @@ struct ComponentModelViewer: NSViewRepresentable {
     func updateNSView(_ scnView: SCNView, context: Context) {
         guard let scene = scnView.scene else { return }
 
+        // Update callbacks in case they changed
+        context.coordinator.onComponentClicked = onComponentClicked
+        context.coordinator.onComponentRightClicked = onComponentRightClicked
+        context.coordinator.onEmptySpaceClicked = onEmptySpaceClicked
+        context.coordinator.onComponentHovered = onComponentHovered
+
         // Update component colors and visibility based on state
         context.coordinator.updateAppearance(
             keepIndices: keepIndices,
             deleteIndices: deleteIndices,
-            highlightedIndex: highlightedIndex,
+            hoveredIndex: hoveredIndex,
             isolatedIndex: isolatedIndex,
             displayMode: displayMode,
             hasArtifacts: hasArtifacts,
@@ -124,20 +154,181 @@ struct ComponentModelViewer: NSViewRepresentable {
         scene.rootNode.addChildNode(ambientLight)
     }
 
-    class Coordinator {
+    class Coordinator: NSObject {
         private var componentNodes: [Int: SCNNode] = [:]
 
-        // Color constants
-        private let keepColor = NSColor(red: 0.2, green: 0.85, blue: 0.4, alpha: 1.0)      // Green
-        private let deleteColor = NSColor(red: 0.95, green: 0.3, blue: 0.3, alpha: 1.0)   // Red
-        private let highlightColor = NSColor(red: 1.0, green: 0.9, blue: 0.2, alpha: 1.0) // Yellow
-        private let neutralColor = NSColor(white: 0.7, alpha: 1.0)                         // Gray clay
+        // MARK: - Interaction Handling
+        weak var scnView: SCNView?
+        var onComponentClicked: ((Int) -> Void)?
+        var onComponentRightClicked: ((Int) -> Void)?
+        var onEmptySpaceClicked: (() -> Void)?
+        var onComponentHovered: ((Int?) -> Void)?
+        private var clickGestureRecognizer: NSClickGestureRecognizer?
+        private var rightClickGestureRecognizer: NSClickGestureRecognizer?
+        private var lastHoveredIndex: Int?
+
+        // MARK: - Material System (Clay shader with artifact highlighting)
+
+        // Clay shader - warm grey, matte finish (like ZBrush/Blender sculpting)
+        private let clayColor = NSColor(red: 0.82, green: 0.80, blue: 0.76, alpha: 1.0)
+        private let clayHoverColor = NSColor(red: 0.88, green: 0.86, blue: 0.82, alpha: 1.0)
+
+        // Rim light colors for delete indication
+        private let deleteRimColor = NSColor(red: 1.0, green: 0.2, blue: 0.2, alpha: 1.0)
+        private let deleteRimHoverColor = NSColor(red: 1.0, green: 0.4, blue: 0.4, alpha: 1.0)
+
+        // Hover glow for keep items
+        private let keepHoverGlow = NSColor(red: 0.3, green: 0.8, blue: 1.0, alpha: 1.0)
+
+        private let materialRoughness: CGFloat = 0.75  // Matte clay finish
+        private let materialMetalness: CGFloat = 0.0   // No metalness for clay
+
+        // Material state enum for cleaner logic
+        enum MaterialState {
+            case keep           // Kept items (clean clay)
+            case keepHover      // Hovered kept items (clay with subtle glow)
+            case delete         // Deleted items (clay with red rim light)
+            case deleteHover    // Hovered deleted items (clay with brighter red rim)
+        }
+
+        // MARK: - Setup Interaction
+        private var mouseMovedMonitor: Any?
+        private var scrollStateObserver: Any?
+        private var isScrolling = false
+        private var scrollEndTimer: Timer?
+
+        private func handleScrollEvent() {
+            if !isScrolling {
+                isScrolling = true
+                // Clear hover during scroll
+                if lastHoveredIndex != nil {
+                    lastHoveredIndex = nil
+                    onComponentHovered?(nil)
+                }
+            }
+            // Reset end timer
+            scrollEndTimer?.invalidate()
+            scrollEndTimer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: false) { [weak self] _ in
+                self?.isScrolling = false
+            }
+        }
+
+        func setupInteraction(for scnView: SCNView) {
+            // Add left-click gesture recognizer (keep)
+            let clickRecognizer = NSClickGestureRecognizer(target: self, action: #selector(handleClick(_:)))
+            scnView.addGestureRecognizer(clickRecognizer)
+            self.clickGestureRecognizer = clickRecognizer
+
+            // Add right-click gesture recognizer (delete)
+            let rightClickRecognizer = NSClickGestureRecognizer(target: self, action: #selector(handleRightClick(_:)))
+            rightClickRecognizer.buttonMask = 0x2  // Right mouse button
+            scnView.addGestureRecognizer(rightClickRecognizer)
+            self.rightClickGestureRecognizer = rightClickRecognizer
+
+            // Set up mouse moved monitor for hover detection
+            mouseMovedMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
+                self?.handleMouseMoved(event)
+                return event
+            }
+
+            // Track scroll wheel events directly to skip expensive hit testing during scroll
+            scrollStateObserver = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                if event.deltaY != 0 || event.deltaX != 0 {
+                    self?.handleScrollEvent()
+                }
+                return event
+            }
+        }
+
+        @objc private func handleClick(_ gesture: NSClickGestureRecognizer) {
+            guard let scnView = scnView else { return }
+            let location = gesture.location(in: scnView)
+
+            if let componentIndex = hitTestForComponentIndex(at: location, in: scnView) {
+                onComponentClicked?(componentIndex)
+            } else {
+                // Clicked on empty space - deselect
+                onEmptySpaceClicked?()
+            }
+        }
+
+        @objc private func handleRightClick(_ gesture: NSClickGestureRecognizer) {
+            guard let scnView = scnView else { return }
+            let location = gesture.location(in: scnView)
+
+            if let componentIndex = hitTestForComponentIndex(at: location, in: scnView) {
+                onComponentRightClicked?(componentIndex)
+            }
+        }
+
+        private func handleMouseMoved(_ event: NSEvent) {
+            // Skip expensive hit testing during scroll
+            guard !isScrolling else { return }
+
+            guard let scnView = scnView,
+                  let window = scnView.window,
+                  event.window == window else {
+                return
+            }
+
+            let locationInWindow = event.locationInWindow
+            let location = scnView.convert(locationInWindow, from: nil)
+
+            // Only process if within bounds
+            guard scnView.bounds.contains(location) else {
+                if lastHoveredIndex != nil {
+                    lastHoveredIndex = nil
+                    onComponentHovered?(nil)
+                }
+                return
+            }
+
+            let componentIndex = hitTestForComponentIndex(at: location, in: scnView)
+            if componentIndex != lastHoveredIndex {
+                lastHoveredIndex = componentIndex
+                onComponentHovered?(componentIndex)
+            }
+        }
+
+        deinit {
+            if let monitor = mouseMovedMonitor {
+                NSEvent.removeMonitor(monitor)
+            }
+            if let observer = scrollStateObserver {
+                NSEvent.removeMonitor(observer)
+            }
+            scrollEndTimer?.invalidate()
+        }
+
+        /// Perform hit test and return the component index if a component was hit
+        private func hitTestForComponentIndex(at location: CGPoint, in scnView: SCNView) -> Int? {
+            let hitResults = scnView.hitTest(location, options: [
+                .searchMode: SCNHitTestSearchMode.closest.rawValue,
+                .ignoreHiddenNodes: true
+            ])
+
+            // Find the first hit that belongs to a component node
+            for hit in hitResults {
+                var node: SCNNode? = hit.node
+                // Walk up the node hierarchy to find the component node
+                while let currentNode = node {
+                    if let nodeName = currentNode.name,
+                       nodeName.hasPrefix("component_"),
+                       let indexStr = nodeName.components(separatedBy: "_").last,
+                       let index = Int(indexStr) {
+                        return index
+                    }
+                    node = currentNode.parent
+                }
+            }
+            return nil
+        }
 
         func loadComponents(
             _ files: [ComponentFile],
             keepIndices: Set<Int>,
             deleteIndices: Set<Int>,
-            highlightedIndex: Int?,
+            hoveredIndex: Int?,
             isolatedIndex: Int?,
             displayMode: SimpleEditorViewModel.MeshDisplayMode,
             preloadedNodes: [Int: SCNNode],
@@ -168,13 +359,13 @@ struct ComponentModelViewer: NSViewRepresentable {
 
                     // Only re-apply materials if highlighted (yellow override) or display mode changed
                     // Otherwise use the pre-baked materials for instant display
-                    if highlightedIndex == file.index {
+                    if hoveredIndex == file.index {
                         self.applyMaterialToNode(
                             node: componentNode,
                             index: file.index,
                             keepIndices: keepIndices,
                             deleteIndices: deleteIndices,
-                            highlightedIndex: highlightedIndex,
+                            hoveredIndex: hoveredIndex,
                             isolatedIndex: isolatedIndex,
                             displayMode: displayMode,
                             hasArtifacts: hasArtifacts,
@@ -219,7 +410,7 @@ struct ComponentModelViewer: NSViewRepresentable {
                                 index: file.index,
                                 keepIndices: keepIndices,
                                 deleteIndices: deleteIndices,
-                                highlightedIndex: highlightedIndex,
+                                hoveredIndex: hoveredIndex,
                                 isolatedIndex: isolatedIndex,
                                 displayMode: displayMode,
                                 hasArtifacts: hasArtifacts,
@@ -255,7 +446,7 @@ struct ComponentModelViewer: NSViewRepresentable {
             index: Int,
             keepIndices: Set<Int>,
             deleteIndices: Set<Int>,
-            highlightedIndex: Int?,
+            hoveredIndex: Int?,
             isolatedIndex: Int?,
             displayMode: SimpleEditorViewModel.MeshDisplayMode,
             hasArtifacts: Bool,
@@ -266,7 +457,7 @@ struct ComponentModelViewer: NSViewRepresentable {
                 index: index,
                 keepIndices: keepIndices,
                 deleteIndices: deleteIndices,
-                highlightedIndex: highlightedIndex,
+                hoveredIndex: hoveredIndex,
                 isolatedIndex: isolatedIndex,
                 displayMode: displayMode,
                 hasArtifacts: hasArtifacts,
@@ -293,7 +484,7 @@ struct ComponentModelViewer: NSViewRepresentable {
         func updateAppearance(
             keepIndices: Set<Int>,
             deleteIndices: Set<Int>,
-            highlightedIndex: Int?,
+            hoveredIndex: Int?,
             isolatedIndex: Int?,
             displayMode: SimpleEditorViewModel.MeshDisplayMode,
             hasArtifacts: Bool,
@@ -314,7 +505,7 @@ struct ComponentModelViewer: NSViewRepresentable {
                     index: index,
                     keepIndices: keepIndices,
                     deleteIndices: deleteIndices,
-                    highlightedIndex: highlightedIndex,
+                    hoveredIndex: hoveredIndex,
                     isolatedIndex: isolatedIndex,
                     displayMode: displayMode,
                     hasArtifacts: hasArtifacts,
@@ -328,25 +519,22 @@ struct ComponentModelViewer: NSViewRepresentable {
             index: Int,
             keepIndices: Set<Int>,
             deleteIndices: Set<Int>,
-            highlightedIndex: Int?,
+            hoveredIndex: Int?,
             isolatedIndex: Int?,
             displayMode: SimpleEditorViewModel.MeshDisplayMode,
             hasArtifacts: Bool,
             customColor: NSColor?
         ) {
-            let color = colorForComponent(
+            let state = materialStateForComponent(
                 index: index,
                 keepIndices: keepIndices,
                 deleteIndices: deleteIndices,
-                highlightedIndex: highlightedIndex,
-                hasArtifacts: hasArtifacts,
-                customColor: customColor
+                hoveredIndex: hoveredIndex,
+                hasArtifacts: hasArtifacts
             )
 
             node.geometry?.materials.forEach { material in
-                material.isDoubleSided = true
-                material.diffuse.contents = color
-                configureMaterial(material, for: displayMode)
+                configureMaterial(material, state: state, displayMode: displayMode, customColor: customColor)
             }
 
             for child in node.childNodes {
@@ -355,7 +543,7 @@ struct ComponentModelViewer: NSViewRepresentable {
                     index: index,
                     keepIndices: keepIndices,
                     deleteIndices: deleteIndices,
-                    highlightedIndex: highlightedIndex,
+                    hoveredIndex: hoveredIndex,
                     isolatedIndex: isolatedIndex,
                     displayMode: displayMode,
                     hasArtifacts: hasArtifacts,
@@ -369,24 +557,22 @@ struct ComponentModelViewer: NSViewRepresentable {
             index: Int,
             keepIndices: Set<Int>,
             deleteIndices: Set<Int>,
-            highlightedIndex: Int?,
+            hoveredIndex: Int?,
             isolatedIndex: Int?,
             displayMode: SimpleEditorViewModel.MeshDisplayMode,
             hasArtifacts: Bool,
             customColor: NSColor?
         ) {
-            let color = colorForComponent(
+            let state = materialStateForComponent(
                 index: index,
                 keepIndices: keepIndices,
                 deleteIndices: deleteIndices,
-                highlightedIndex: highlightedIndex,
-                hasArtifacts: hasArtifacts,
-                customColor: customColor
+                hoveredIndex: hoveredIndex,
+                hasArtifacts: hasArtifacts
             )
 
             node.geometry?.materials.forEach { material in
-                material.diffuse.contents = color
-                configureMaterial(material, for: displayMode)
+                configureMaterial(material, state: state, displayMode: displayMode, customColor: customColor)
             }
 
             for child in node.childNodes {
@@ -395,7 +581,7 @@ struct ComponentModelViewer: NSViewRepresentable {
                     index: index,
                     keepIndices: keepIndices,
                     deleteIndices: deleteIndices,
-                    highlightedIndex: highlightedIndex,
+                    hoveredIndex: hoveredIndex,
                     isolatedIndex: isolatedIndex,
                     displayMode: displayMode,
                     hasArtifacts: hasArtifacts,
@@ -404,54 +590,115 @@ struct ComponentModelViewer: NSViewRepresentable {
             }
         }
 
-        private func configureMaterial(_ material: SCNMaterial, for displayMode: SimpleEditorViewModel.MeshDisplayMode) {
-            switch displayMode {
-            case .solid:
-                material.fillMode = .fill
-                material.transparency = 1.0
-                material.transparencyMode = .default
-                material.blendMode = .replace
-                material.writesToDepthBuffer = true
-                material.lightingModel = .physicallyBased
-            case .wireframe:
-                material.fillMode = .lines
-                material.transparency = 1.0
-                material.transparencyMode = .default
-                material.blendMode = .replace
-                material.writesToDepthBuffer = true
-                material.lightingModel = .constant
+        /// Determine material state for a component based on keep/delete/hover status
+        private func materialStateForComponent(
+            index: Int,
+            keepIndices: Set<Int>,
+            deleteIndices: Set<Int>,
+            hoveredIndex: Int?,
+            hasArtifacts: Bool
+        ) -> MaterialState {
+            let isHovered = hoveredIndex == index
+            let isDeleted = hasArtifacts && deleteIndices.contains(index)
+
+            if isDeleted {
+                return isHovered ? .deleteHover : .delete
+            } else {
+                return isHovered ? .keepHover : .keep
             }
         }
 
+        /// Configure material with clay shader and rim-light for artifacts
+        private func configureMaterial(
+            _ material: SCNMaterial,
+            state: MaterialState,
+            displayMode: SimpleEditorViewModel.MeshDisplayMode,
+            customColor: NSColor?
+        ) {
+            material.isDoubleSided = true
+
+            // Base configuration
+            switch displayMode {
+            case .solid:
+                material.fillMode = .fill
+                material.lightingModel = .physicallyBased
+            case .wireframe:
+                material.fillMode = .lines
+                material.lightingModel = .constant
+            }
+
+            // Clay material base properties (matte, warm grey)
+            material.metalness.contents = materialMetalness
+            material.roughness.contents = materialRoughness
+            material.transparency = 1.0
+            material.transparencyMode = .default
+            material.blendMode = .replace
+            material.writesToDepthBuffer = true
+
+            // Apply material based on state
+            switch state {
+            case .keep:
+                // Clean clay - no effects
+                material.diffuse.contents = customColor ?? clayColor
+                material.emission.contents = NSColor.black
+                material.emission.intensity = 0.0
+                // Clear any rim/fresnel effects
+                material.fresnelExponent = 0.0
+
+            case .keepHover:
+                // Clay with subtle cyan glow on hover
+                material.diffuse.contents = customColor ?? clayHoverColor
+                material.emission.contents = keepHoverGlow
+                material.emission.intensity = 0.2
+                material.fresnelExponent = 2.0  // Subtle edge glow
+
+            case .delete:
+                // Clay base with red rim light (Fresnel-based edge emission)
+                material.diffuse.contents = customColor ?? clayColor
+                material.emission.contents = deleteRimColor
+                material.emission.intensity = 0.6
+                material.fresnelExponent = 4.0  // Strong edge effect for rim light
+                // Slightly reduce opacity to show it's marked for deletion
+                material.transparency = 0.85
+
+            case .deleteHover:
+                // Brighter red rim light on hover
+                material.diffuse.contents = customColor ?? clayHoverColor
+                material.emission.contents = deleteRimHoverColor
+                material.emission.intensity = 0.8
+                material.fresnelExponent = 3.5  // Slightly softer but brighter
+                material.transparency = 0.9
+            }
+        }
+
+        // Helper to get color for a component (returns clay color, used for legend)
         private func colorForComponent(
             index: Int,
             keepIndices: Set<Int>,
             deleteIndices: Set<Int>,
-            highlightedIndex: Int?,
+            hoveredIndex: Int?,
             hasArtifacts: Bool,
             customColor: NSColor?
         ) -> NSColor {
-            // Highlighted overrides everything - bright yellow
-            if highlightedIndex == index {
-                return highlightColor
-            }
-
-            // Custom color takes priority (user paint selection)
             if let custom = customColor {
                 return custom
             }
 
-            // Only show keep/delete colors if there are actual artifacts (items in both lists)
-            if hasArtifacts {
-                if keepIndices.contains(index) {
-                    return keepColor
-                } else if deleteIndices.contains(index) {
-                    return deleteColor
-                }
-            }
+            let state = materialStateForComponent(
+                index: index,
+                keepIndices: keepIndices,
+                deleteIndices: deleteIndices,
+                hoveredIndex: hoveredIndex,
+                hasArtifacts: hasArtifacts
+            )
 
-            // No artifacts or fallback - use neutral gray clay
-            return neutralColor
+            switch state {
+            case .keep, .keepHover:
+                return clayColor
+            case .delete, .deleteHover:
+                // Return clay with red tint indication
+                return clayColor
+            }
         }
     }
 }
@@ -461,12 +708,18 @@ struct ComponentModelViewerContainer: View {
     let componentFiles: [ComponentModelViewer.ComponentFile]
     let keepIndices: Set<Int>
     let deleteIndices: Set<Int>
-    let highlightedIndex: Int?
+    let hoveredIndex: Int?
     let isolatedIndex: Int?
     @Binding var displayMode: SimpleEditorViewModel.MeshDisplayMode
     var preloadedNodes: [Int: SCNNode] = [:]
     @Binding var customColor: NSColor?
     @State private var showColorPicker = false
+
+    // Interaction callbacks (passed through to ComponentModelViewer)
+    var onComponentClicked: ((Int) -> Void)? = nil
+    var onComponentRightClicked: ((Int) -> Void)? = nil
+    var onEmptySpaceClicked: (() -> Void)? = nil
+    var onComponentHovered: ((Int?) -> Void)? = nil
 
     /// Check if artifacts are present (items in both keep and delete lists)
     private var hasArtifacts: Bool {
@@ -484,11 +737,15 @@ struct ComponentModelViewerContainer: View {
                     componentFiles: componentFiles,
                     keepIndices: keepIndices,
                     deleteIndices: deleteIndices,
-                    highlightedIndex: highlightedIndex,
+                    hoveredIndex: hoveredIndex,
                     isolatedIndex: isolatedIndex,
                     displayMode: displayMode,
                     preloadedNodes: preloadedNodes,
-                    customColor: customColor
+                    customColor: customColor,
+                    onComponentClicked: onComponentClicked,
+                    onComponentRightClicked: onComponentRightClicked,
+                    onEmptySpaceClicked: onEmptySpaceClicked,
+                    onComponentHovered: onComponentHovered
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
@@ -669,16 +926,20 @@ struct ComponentModelViewerContainer: View {
         ]
     }
 
-    // MARK: - Color Legend
+    // MARK: - Material Legend
+
+    // Clay color for legend
+    private let legendClayColor = Color(red: 0.82, green: 0.80, blue: 0.76)
+    private let legendRedRimColor = Color(red: 1.0, green: 0.3, blue: 0.3)
+    private let legendCyanGlow = Color(red: 0.3, green: 0.8, blue: 1.0)
 
     @ViewBuilder
     private var colorLegend: some View {
         HStack(spacing: AppDesign.Spacing.p12) {
-            legendItem(color: .green, label: "Keep")
-            legendItem(color: .red, label: "Delete")
-            if highlightedIndex != nil {
-                legendItem(color: .yellow, label: "Selected")
-            }
+            // Clay material indicator (clean mesh)
+            legendItem(style: .clay, label: "Keep")
+            // Red rim indicator (artifact)
+            legendItem(style: .redRim, label: "Artifact")
         }
         .font(.system(size: AppDesign.FontSize.xs, weight: .medium))
         .foregroundColor(.white.opacity(0.8))
@@ -688,12 +949,33 @@ struct ComponentModelViewerContainer: View {
         .clipShape(Capsule())
     }
 
+    private enum LegendStyle {
+        case clay
+        case redRim
+    }
+
     @ViewBuilder
-    private func legendItem(color: Color, label: String) -> some View {
+    private func legendItem(style: LegendStyle, label: String) -> some View {
         HStack(spacing: 4) {
-            Circle()
-                .fill(color)
-                .frame(width: 8, height: 8)
+            switch style {
+            case .clay:
+                // Clean clay circle
+                Circle()
+                    .fill(legendClayColor)
+                    .frame(width: 10, height: 10)
+                    .shadow(color: .black.opacity(0.3), radius: 1, y: 1)
+
+            case .redRim:
+                // Clay with red rim glow
+                Circle()
+                    .fill(legendClayColor)
+                    .overlay(
+                        Circle()
+                            .stroke(legendRedRimColor, lineWidth: 2)
+                            .blur(radius: 1)
+                    )
+                    .frame(width: 10, height: 10)
+            }
             Text(label)
         }
     }

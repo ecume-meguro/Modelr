@@ -123,14 +123,18 @@ extension SimpleEditorViewModel {
         keepIndices: Set<Int>,
         deleteIndices: Set<Int>
     ) async -> [Int: SCNNode] {
-        await withCheckedContinuation { continuation in
+        // Check if there are artifacts (both keep and delete items)
+        let hasArtifacts = !keepIndices.isEmpty && !deleteIndices.isEmpty
+
+        return await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 var nodes: [Int: SCNNode] = [:]
 
-                // Color constants (same as ComponentModelViewer)
-                let keepColor = NSColor(red: 0.2, green: 0.85, blue: 0.4, alpha: 1.0)
-                let deleteColor = NSColor(red: 0.95, green: 0.3, blue: 0.3, alpha: 1.0)
-                let defaultColor = NSColor.gray
+                // Material constants (matching ComponentModelViewer)
+                let clayColor = NSColor(red: 0.88, green: 0.86, blue: 0.82, alpha: 1.0)
+                let ghostColor = NSColor(red: 0.5, green: 0.5, blue: 0.55, alpha: 1.0)
+                let ghostOpacity: CGFloat = 0.18
+                let clayRoughness: CGFloat = 0.75
 
                 for file in files {
                     let url = URL(fileURLWithPath: file.path)
@@ -146,20 +150,19 @@ extension SimpleEditorViewModel {
                     let componentNode = SCNNode()
                     componentNode.name = "component_\(file.index)"
 
-                    // Determine color based on keep/delete status
-                    let color: NSColor
-                    if keepIndices.contains(file.index) {
-                        color = keepColor
-                    } else if deleteIndices.contains(file.index) {
-                        color = deleteColor
-                    } else {
-                        color = defaultColor
-                    }
+                    // Determine if this is a ghost (discarded) item
+                    let isGhost = hasArtifacts && deleteIndices.contains(file.index)
 
                     for child in loadedScene.rootNode.childNodes {
                         let cloned = child.clone()
-                        // Apply material with correct color
-                        self.applyMaterialRecursively(to: cloned, color: color)
+                        // Apply material based on state
+                        self.applyMaterialRecursively(
+                            to: cloned,
+                            color: isGhost ? ghostColor : clayColor,
+                            isGhost: isGhost,
+                            ghostOpacity: ghostOpacity,
+                            roughness: clayRoughness
+                        )
                         componentNode.addChildNode(cloned)
                     }
 
@@ -172,16 +175,36 @@ extension SimpleEditorViewModel {
     }
 
     /// Apply material recursively to a node during preload (nonisolated for background thread use)
-    private nonisolated func applyMaterialRecursively(to node: SCNNode, color: NSColor) {
+    private nonisolated func applyMaterialRecursively(
+        to node: SCNNode,
+        color: NSColor,
+        isGhost: Bool,
+        ghostOpacity: CGFloat,
+        roughness: CGFloat
+    ) {
         node.geometry?.materials.forEach { material in
             material.isDoubleSided = true
             material.diffuse.contents = color
             material.fillMode = .fill
-            material.transparency = 1.0
             material.lightingModel = .physicallyBased
+            material.metalness.contents = 0.0
+            material.roughness.contents = roughness
+            material.emission.contents = NSColor.black
+
+            if isGhost {
+                material.transparency = ghostOpacity
+                material.transparencyMode = .dualLayer
+                material.blendMode = .alpha
+                material.writesToDepthBuffer = false
+            } else {
+                material.transparency = 1.0
+                material.transparencyMode = .default
+                material.blendMode = .replace
+                material.writesToDepthBuffer = true
+            }
         }
         for child in node.childNodes {
-            applyMaterialRecursively(to: child, color: color)
+            applyMaterialRecursively(to: child, color: color, isGhost: isGhost, ghostOpacity: ghostOpacity, roughness: roughness)
         }
     }
 
@@ -339,6 +362,24 @@ extension SimpleEditorViewModel {
         highlightedComponentIndex = index
     }
 
+    /// Handle click on a component in the 3D viewport (toggle keep/delete)
+    func handleViewportComponentClick(_ index: Int) {
+        // Toggle between keep and delete states
+        if keepIndices.contains(index) {
+            // Can only move to delete if there's more than one item in keep
+            if keepIndices.count > 1 {
+                moveToDelete(index)
+            }
+        } else if deleteIndices.contains(index) {
+            moveToKeep(index)
+        }
+    }
+
+    /// Handle hover state from viewport raycasting
+    func handleViewportComponentHover(_ index: Int?) {
+        hoveredComponentIndex = index
+    }
+
     /// Check if there are pending changes (items in delete list)
     var hasPendingDeletions: Bool {
         !deleteIndices.isEmpty
@@ -380,6 +421,12 @@ extension SimpleEditorViewModel {
         guard let largest = meshComponents.first else { return }
         keepIndices = [largest.index]
         deleteIndices = Set(meshComponents.dropFirst().map { $0.index })
+    }
+
+    /// Keep only a specific component, move all others to delete
+    func keepOnlyThis(_ index: Int) {
+        keepIndices = [index]
+        deleteIndices = Set(meshComponents.filter { $0.index != index }.map { $0.index })
     }
 
     /// Isolate a component (show only this one in viewer)

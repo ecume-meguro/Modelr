@@ -28,8 +28,8 @@ struct PaintStrokeOverlay: View {
     private func drawStroke(_ stroke: PaintStroke, in context: inout GraphicsContext, size: CGSize) {
         guard stroke.points.count >= 1 else { return }
 
-        // Calculate brush size in pixels
-        let brushRadius = stroke.brushSize * size.width / 2
+        // Calculate brush radius in pixels (matches ImageService.applyStroke)
+        let brushRadius = stroke.brushSize * size.width
 
         if stroke.isErasing {
             // Draw erase strokes with hatched pattern (red with diagonal lines)

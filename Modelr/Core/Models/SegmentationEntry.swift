@@ -6,6 +6,7 @@ struct SegmentationEntry: Identifiable {
     var name: String
     var textPrompt: String = ""
     var points: [SAMPoint] = []
+    var boundingBox: SAMBox? = nil  // Bounding box for SAM
     var allMasks: [(image: NSImage, score: Double, url: URL)] = []
     var selectedMaskIndices: Set<Int> = [0]  // Support multiple selections
     var isExpanded: Bool = true
@@ -44,6 +45,8 @@ struct SegmentationEntry: Identifiable {
     var promptDescription: String {
         if !textPrompt.isEmpty {
             return "\"\(textPrompt)\""
+        } else if boundingBox != nil {
+            return "Bounding box"
         } else if !points.isEmpty {
             return "\(points.count) point(s)"
         }

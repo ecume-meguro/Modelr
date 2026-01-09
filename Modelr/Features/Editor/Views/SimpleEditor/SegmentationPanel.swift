@@ -262,12 +262,12 @@ struct SegmentationEntryView: View {
 
             Divider().padding(.vertical, 2)
 
-            // Alternative: click detection
+            // Alternative: bounding box selection
             VStack(alignment: .leading, spacing: AppDesign.Spacing.p4) {
-                Text("Or click directly on the object")
+                Text("Or draw a box around the object")
                     .font(.system(size: AppDesign.FontSize.caption))
                     .foregroundStyle(.secondary)
-                AppDesign.HintText("Right-click to add, Option-click to remove")
+                AppDesign.HintText("Drag to draw a bounding box")
             }
             .onAppear {
                 // Auto-focus when this entry appears expanded and active
@@ -288,20 +288,20 @@ struct SegmentationEntryView: View {
                 regionSelectionSection
             }
 
-            // Points indicator
-            if !entry.points.isEmpty {
+            // Bounding box indicator
+            if entry.boundingBox != nil {
                 HStack(spacing: AppDesign.Spacing.p4) {
-                    Image(systemName: "hand.point.up.left.fill")
+                    Image(systemName: "rectangle.dashed")
                         .font(.system(size: AppDesign.FontSize.caption))
                         .foregroundStyle(.secondary)
-                    Text("\(entry.points.count) point(s) placed")
+                    Text("Bounding box set")
                         .font(.system(size: AppDesign.FontSize.caption))
                         .foregroundStyle(.secondary)
                 }
             }
 
             // Clear button
-            if entry.hasValidMask || !entry.points.isEmpty {
+            if entry.hasValidMask || entry.boundingBox != nil {
                 HStack {
                     AppDesign.InlineButton("Clear", icon: "trash") {
                         viewModel.clearActiveSegmentation()

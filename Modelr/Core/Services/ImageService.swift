@@ -230,11 +230,9 @@ class ImageService {
         let value: UInt8 = isErasing ? 0 : 255
         let pixelValue = UInt32(value) | (UInt32(value) << 8) | (UInt32(value) << 16) | (UInt32(value) << 24)
 
-        for point in points {
-            let pixelX = Int(point.x * CGFloat(width))
-            let pixelY = Int(point.y * CGFloat(height))
-
-            guard pixelX >= 0, pixelX < width, pixelY >= 0, pixelY < height else { continue }
+        // Helper to draw a filled circle at a pixel position
+        func drawCircle(at pixelX: Int, _ pixelY: Int) {
+            guard pixelX >= 0, pixelX < width, pixelY >= 0, pixelY < height else { return }
 
             let minY = max(0, pixelY - brushRadius)
             let maxY = min(height - 1, pixelY + brushRadius)
@@ -256,10 +254,38 @@ class ImageService {
             }
         }
 
+        // Draw connected line segments between consecutive points
+        var prevPoint: CGPoint? = nil
+        for point in points {
+            let pixelX = Int(point.x * CGFloat(width))
+            let pixelY = Int(point.y * CGFloat(height))
+
+            if let prev = prevPoint {
+                // Interpolate between previous and current point
+                let prevPixelX = Int(prev.x * CGFloat(width))
+                let prevPixelY = Int(prev.y * CGFloat(height))
+
+                let dx = pixelX - prevPixelX
+                let dy = pixelY - prevPixelY
+                let steps = max(abs(dx), abs(dy), 1)
+
+                for i in 0...steps {
+                    let t = Double(i) / Double(steps)
+                    let interpX = prevPixelX + Int(Double(dx) * t)
+                    let interpY = prevPixelY + Int(Double(dy) * t)
+                    drawCircle(at: interpX, interpY)
+                }
+            } else {
+                // First point
+                drawCircle(at: pixelX, pixelY)
+            }
+
+            prevPoint = point
+        }
+
         guard let newCGImage = context.makeImage() else { return maskImage }
 
         return NSImage(cgImage: newCGImage, size: NSSize(width: width, height: height))
-
     }
 
     /// Create a binary mask from an image's alpha channel

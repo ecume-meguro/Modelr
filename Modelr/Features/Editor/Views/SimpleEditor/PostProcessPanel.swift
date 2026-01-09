@@ -87,13 +87,17 @@ struct PostProcessPanel: View {
 
     // MARK: - Two List Interface
 
+    // Section colors (matching clay shader system)
+    private let sectionClayColor = Color(red: 0.82, green: 0.80, blue: 0.76)
+    private let sectionArtifactColor = Color(red: 1.0, green: 0.3, blue: 0.3)
+
     @ViewBuilder
     private var twoListView: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
-            // Keep List (green)
+            // Main Mesh section (clean clay)
             keepListSection
 
-            // Delete List (red)
+            // Artifacts section (red rim indicator)
             deleteListSection
 
             // Apply button
@@ -107,11 +111,11 @@ struct PostProcessPanel: View {
     private var keepListSection: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p6) {
             HStack {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(AppDesign.success)
-                Text("Keep")
+                Image(systemName: "cube.fill")
+                    .foregroundStyle(sectionClayColor)
+                Text("Main Mesh")
                     .font(.system(size: AppDesign.FontSize.caption, weight: .semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(.primary.opacity(0.9))
                     .textCase(.uppercase)
                     .tracking(0.5)
                 Text("(\(viewModel.keepIndices.count))")
@@ -121,7 +125,7 @@ struct PostProcessPanel: View {
             }
 
             if viewModel.keepIndices.isEmpty {
-                emptyListPlaceholder(text: "Drag items here to keep")
+                emptyListPlaceholder(text: "Click artifacts to keep")
             } else {
                 ForEach(keepComponents, id: \.index) { component in
                     componentRow(component, isKeep: true)
@@ -129,10 +133,10 @@ struct PostProcessPanel: View {
             }
         }
         .padding(AppDesign.Spacing.p8)
-        .background(AppDesign.success.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 10))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(AppDesign.success.opacity(0.2), lineWidth: 1)
+                .strokeBorder(sectionClayColor.opacity(0.3), lineWidth: 1)
         )
         .onDrop(of: [.text], delegate: KeepListDropDelegate(viewModel: viewModel))
     }
@@ -141,21 +145,21 @@ struct PostProcessPanel: View {
     private var deleteListSection: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p6) {
             HStack {
-                Image(systemName: "trash.fill")
-                    .foregroundStyle(AppDesign.destructive)
-                Text("Delete")
+                Image(systemName: "cube.transparent")
+                    .foregroundStyle(sectionArtifactColor.opacity(0.7))
+                Text("Artifacts")
                     .font(.system(size: AppDesign.FontSize.caption, weight: .semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(sectionArtifactColor.opacity(0.9))
                     .textCase(.uppercase)
                     .tracking(0.5)
                 Text("(\(viewModel.deleteIndices.count))")
                     .font(.system(size: AppDesign.FontSize.xs))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(sectionArtifactColor.opacity(0.6))
                 Spacer()
             }
 
             if viewModel.deleteIndices.isEmpty {
-                emptyListPlaceholder(text: "Drag items here to delete")
+                emptyListPlaceholder(text: "Click mesh parts to mark as artifacts")
             } else {
                 ForEach(deleteComponents, id: \.index) { component in
                     componentRow(component, isKeep: false)
@@ -163,10 +167,10 @@ struct PostProcessPanel: View {
             }
         }
         .padding(AppDesign.Spacing.p8)
-        .background(AppDesign.destructive.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+        .background(sectionArtifactColor.opacity(0.03), in: RoundedRectangle(cornerRadius: 10))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(AppDesign.destructive.opacity(0.2), lineWidth: 1)
+                .strokeBorder(sectionArtifactColor.opacity(0.2), lineWidth: 1)
         )
         .onDrop(of: [.text], delegate: DeleteListDropDelegate(viewModel: viewModel))
     }
@@ -199,29 +203,37 @@ struct PostProcessPanel: View {
         component.faceCount < 1000
     }
 
+    // Colors for hover states (matching 3D viewport clay shader)
+    private let clayColor = Color(red: 0.82, green: 0.80, blue: 0.76)
+    private let clayHoverColor = Color(red: 0.88, green: 0.86, blue: 0.82)
+    private let cyanGlow = Color(red: 0.3, green: 0.8, blue: 1.0)
+    private let redRimColor = Color(red: 1.0, green: 0.3, blue: 0.3)
+
     @ViewBuilder
     private func componentRow(_ component: MeshComponent, isKeep: Bool) -> some View {
-        let isHighlighted = viewModel.highlightedComponentIndex == component.index
+        let isHovered = viewModel.hoveredComponentIndex == component.index
         let isIsolated = viewModel.isolatedComponentIndex == component.index
-        let baseColor = isKeep ? AppDesign.success : AppDesign.destructive
         let label = componentLabel(for: component)
         let isArtifact = isLikelyArtifact(component)
 
         // Check if this is the only item in keep list (can't move to delete)
         let canMoveToDelete = isKeep && viewModel.keepIndices.count > 1
 
+        // Color based on keep/delete state (clay for keep, red-tinted for delete)
+        let indicatorColor = isKeep ? (isHovered ? cyanGlow : clayColor) : redRimColor
+
         HStack(spacing: AppDesign.Spacing.p8) {
-            // Color indicator
+            // Material indicator (clay for keep, red rim for delete/artifact)
             RoundedRectangle(cornerRadius: 3)
-                .fill(isHighlighted ? Color.yellow : baseColor)
+                .fill(indicatorColor)
                 .frame(width: 4)
                 .frame(maxHeight: .infinity)
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
                     Text(label)
-                        .font(.system(size: AppDesign.FontSize.subheadline, weight: isHighlighted ? .semibold : .regular))
-                        .foregroundStyle(isHighlighted ? Color.yellow : .primary)
+                        .font(.system(size: AppDesign.FontSize.subheadline, weight: isHovered ? .semibold : .regular))
+                        .foregroundStyle(isHovered ? (isKeep ? cyanGlow : redRimColor) : .primary)
 
                     if isIsolated {
                         Image(systemName: "eye.fill")
@@ -238,11 +250,12 @@ struct PostProcessPanel: View {
                 HStack(spacing: 6) {
                     Text("\(formatNumber(component.faceCount)) faces")
                         .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(isKeep ? .secondary : .tertiary)
 
                     watertightBadge(component.isWatertight)
                 }
             }
+            .opacity(isKeep ? 1.0 : 0.7)  // Subtle fade for delete items
 
             Spacer()
 
@@ -267,7 +280,7 @@ struct PostProcessPanel: View {
                 .help(isIsolated ? "Show All" : "Isolate")
             }
 
-            // Move button (larger click area)
+            // Move button (colored based on action)
             Button {
                 withAnimation(.easeOut(duration: 0.2)) {
                     if isKeep {
@@ -281,7 +294,7 @@ struct PostProcessPanel: View {
             } label: {
                 Image(systemName: isKeep ? "arrow.down" : "arrow.up")
                     .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(isKeep ? (canMoveToDelete ? AppDesign.destructive : Color.secondary.opacity(0.3)) : AppDesign.success)
+                    .foregroundStyle(canMoveToDelete || !isKeep ? (isKeep ? redRimColor.opacity(0.8) : clayColor) : Color.secondary.opacity(0.3))
                     .frame(width: 32, height: 32)
                     .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
             }
@@ -293,19 +306,23 @@ struct PostProcessPanel: View {
         .padding(.horizontal, AppDesign.Spacing.p8)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(isHighlighted ? Color.yellow.opacity(0.15) : Color.primary.opacity(0.03))
+                .fill(isHovered ? (isKeep ? cyanGlow : redRimColor).opacity(0.1) : Color.primary.opacity(0.03))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(isHighlighted ? Color.yellow.opacity(0.5) : Color.clear, lineWidth: 1)
+                .strokeBorder(isHovered ? (isKeep ? cyanGlow : redRimColor).opacity(0.4) : Color.clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
+        .onHoverIfNotScrolling { hovering in
+            viewModel.hoveredComponentIndex = hovering ? component.index : nil
+        }
         .onTapGesture {
+            // Toggle keep/delete on click
             withAnimation(.easeOut(duration: 0.15)) {
-                if viewModel.highlightedComponentIndex == component.index {
-                    viewModel.highlightComponent(nil)
-                } else {
-                    viewModel.highlightComponent(component.index)
+                if isKeep && canMoveToDelete {
+                    viewModel.moveToDelete(component.index)
+                } else if !isKeep {
+                    viewModel.moveToKeep(component.index)
                 }
             }
         }
@@ -320,6 +337,19 @@ struct PostProcessPanel: View {
             }
 
             Divider()
+
+            // Keep only this option (only show if there are multiple components)
+            if viewModel.meshComponents.count > 1 {
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        viewModel.keepOnlyThis(component.index)
+                    }
+                } label: {
+                    Label("Keep Only This", systemImage: "1.circle")
+                }
+
+                Divider()
+            }
 
             // Move options
             if isKeep {
@@ -356,26 +386,13 @@ struct PostProcessPanel: View {
         viewModel.meshComponents.filter { viewModel.deleteIndices.contains($0.index) }
     }
 
-    private func componentLabel(for component: MeshComponent) -> String {
-        let isMainMesh = component.faceCount >= 1000
+    /// Pre-computed component classifications for efficient label lookup
+    private var componentClassification: ComponentClassification {
+        ComponentClassification(components: viewModel.meshComponents)
+    }
 
-        if isMainMesh {
-            let mainMeshes = viewModel.meshComponents.filter { $0.faceCount >= 1000 }
-            if mainMeshes.count == 1 {
-                return "Main Mesh"
-            } else {
-                let index = mainMeshes.firstIndex(where: { $0.index == component.index }) ?? 0
-                return "Main Mesh \(index + 1)"
-            }
-        } else {
-            let artifacts = viewModel.meshComponents.filter { $0.faceCount < 1000 }
-            if artifacts.count == 1 {
-                return "Artifact"
-            } else {
-                let index = artifacts.firstIndex(where: { $0.index == component.index }) ?? 0
-                return "Artifact \(index + 1)"
-            }
-        }
+    private func componentLabel(for component: MeshComponent) -> String {
+        componentClassification.label(for: component)
     }
 
     private func formatNumber(_ num: Int) -> String {
@@ -593,6 +610,62 @@ struct PostProcessPanel: View {
                     NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
                 }
             }
+        }
+    }
+}
+
+// MARK: - Component Classification Cache
+
+/// Cached component classification to avoid repeated filtering during render
+private struct ComponentClassification {
+    let mainMeshIndices: [Int: Int]  // component.index -> display index (1-based)
+    let artifactIndices: [Int: Int]  // component.index -> display index (1-based)
+    let mainMeshCount: Int
+    let artifactCount: Int
+
+    init(components: [MeshComponent]) {
+        var mainMeshes: [(index: Int, componentIndex: Int)] = []
+        var artifacts: [(index: Int, componentIndex: Int)] = []
+
+        for (idx, component) in components.enumerated() {
+            if component.faceCount >= 1000 {
+                mainMeshes.append((idx, component.index))
+            } else {
+                artifacts.append((idx, component.index))
+            }
+        }
+
+        var mainDict: [Int: Int] = [:]
+        for (displayIdx, item) in mainMeshes.enumerated() {
+            mainDict[item.componentIndex] = displayIdx + 1
+        }
+
+        var artifactDict: [Int: Int] = [:]
+        for (displayIdx, item) in artifacts.enumerated() {
+            artifactDict[item.componentIndex] = displayIdx + 1
+        }
+
+        self.mainMeshIndices = mainDict
+        self.artifactIndices = artifactDict
+        self.mainMeshCount = mainMeshes.count
+        self.artifactCount = artifacts.count
+    }
+
+    func label(for component: MeshComponent) -> String {
+        if component.faceCount >= 1000 {
+            if mainMeshCount == 1 {
+                return "Main Mesh"
+            } else if let displayIdx = mainMeshIndices[component.index] {
+                return "Main Mesh \(displayIdx)"
+            }
+            return "Main Mesh"
+        } else {
+            if artifactCount == 1 {
+                return "Artifact"
+            } else if let displayIdx = artifactIndices[component.index] {
+                return "Artifact \(displayIdx)"
+            }
+            return "Artifact"
         }
     }
 }

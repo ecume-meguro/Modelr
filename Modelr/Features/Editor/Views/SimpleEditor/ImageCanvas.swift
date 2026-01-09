@@ -56,11 +56,19 @@ struct ImageCanvas: View {
                                 },
                                 keepIndices: viewModel.keepIndices,
                                 deleteIndices: viewModel.deleteIndices,
-                                highlightedIndex: viewModel.highlightedComponentIndex,
+                                hoveredIndex: viewModel.hoveredComponentIndex,
                                 isolatedIndex: viewModel.isolatedComponentIndex,
                                 displayMode: $viewModel.meshDisplayMode,
                                 preloadedNodes: viewModel.preloadedComponentNodes,
-                                customColor: $viewModel.customModelColor
+                                customColor: $viewModel.customModelColor,
+                                onComponentClicked: { index in
+                                    withAnimation(.easeOut(duration: 0.15)) {
+                                        viewModel.handleViewportComponentClick(index)
+                                    }
+                                },
+                                onComponentHovered: { index in
+                                    viewModel.handleViewportComponentHover(index)
+                                }
                             )
                             .id("components-\(viewModel.componentFiles.count)")
                             .padding(AppDesign.Spacing.p24)
@@ -72,10 +80,18 @@ struct ImageCanvas: View {
                                 },
                                 keepIndices: viewModel.keepIndices,
                                 deleteIndices: viewModel.deleteIndices,
-                                highlightedIndex: viewModel.highlightedComponentIndex,
+                                hoveredIndex: viewModel.hoveredComponentIndex,
                                 isolatedIndex: viewModel.isolatedComponentIndex,
                                 displayMode: $viewModel.meshDisplayMode,
-                                customColor: $viewModel.customModelColor
+                                customColor: $viewModel.customModelColor,
+                                onComponentClicked: { index in
+                                    withAnimation(.easeOut(duration: 0.15)) {
+                                        viewModel.handleViewportComponentClick(index)
+                                    }
+                                },
+                                onComponentHovered: { index in
+                                    viewModel.handleViewportComponentHover(index)
+                                }
                             )
                             .id("components-fallback-\(viewModel.componentFiles.count)")
                             .padding(AppDesign.Spacing.p24)
@@ -343,10 +359,24 @@ struct ImageCanvas: View {
             .contentShape(Rectangle())
             .addInteractions(viewModel: viewModel, geo: geo, displaySize: size)
             .scaleEffect(viewModel.zoomScale)
+            .offset(viewModel.panOffset)
             .gesture(
                 MagnificationGesture()
                     .onChanged { value in
                         viewModel.zoomScale = max(0.5, min(5.0, value))
+                    }
+            )
+            .highPriorityGesture(
+                DragGesture()
+                    .modifiers(.option)  // Option+drag to pan
+                    .onChanged { value in
+                        viewModel.panOffset = CGSize(
+                            width: viewModel.panBase.width + value.translation.width,
+                            height: viewModel.panBase.height + value.translation.height
+                        )
+                    }
+                    .onEnded { value in
+                        viewModel.panBase = viewModel.panOffset
                     }
             )
         }
@@ -414,18 +444,24 @@ struct ImageCanvas: View {
                 }
             }
 
-            // Points overlay for active segmentation
-            ForEach(activeEntry.points) { point in
-                Circle()
-                    .fill(point.isPositive ? AppDesign.success : AppDesign.destructive)
-                    .frame(width: 12, height: 12)
-                    .overlay(Circle().stroke(Color.white, lineWidth: 2))
-                    .shadow(color: .black.opacity(0.3), radius: 2)
-                    .position(
-                        x: point.normalizedCoords.x * size.width,
-                        y: point.normalizedCoords.y * size.height
-                    )
-                    .transition(.scale.combined(with: .opacity))
+            // Bounding box overlay for active segmentation
+            if let box = activeEntry.boundingBox {
+                BoundingBoxOverlay(
+                    boxes: [box],
+                    currentBox: nil,
+                    displayedSize: size,
+                    imagePixelSize: viewModel.imagePixelSize
+                )
+            }
+
+            // Current drawing box overlay
+            if let currentBox = viewModel.currentDrawingBox {
+                BoundingBoxOverlay(
+                    boxes: [],
+                    currentBox: currentBox,
+                    displayedSize: size,
+                    imagePixelSize: viewModel.imagePixelSize
+                )
             }
         }
     }
@@ -503,6 +539,16 @@ extension ImageCanvas {
                 showBorder: true
             )
 
+            // Current stroke overlay (live preview while drawing)
+            if let currentStroke = viewModel.currentStroke {
+                PaintStrokeOverlay(
+                    strokes: [],
+                    currentStroke: currentStroke,
+                    displayedSize: size
+                )
+                .allowsHitTesting(false)
+            }
+
             // Brush preview
             if let pos = viewModel.brushPreviewPosition {
                 let scaledBrushSize = viewModel.brushSize * size.width / 500.0
@@ -525,10 +571,15 @@ extension ImageCanvas {
 
     @ViewBuilder
     var zoomControls: some View {
-        if viewModel.zoomScale != 1.0 {
+        let isPanned = viewModel.panOffset != .zero
+        let isZoomed = viewModel.zoomScale != 1.0
+
+        if isZoomed || isPanned {
             Button(action: {
                 withAnimation(.easeOut(duration: 0.2)) {
                     viewModel.zoomScale = 1.0
+                    viewModel.panOffset = .zero
+                    viewModel.panBase = .zero
                 }
             }) {
                 HStack(spacing: 4) {

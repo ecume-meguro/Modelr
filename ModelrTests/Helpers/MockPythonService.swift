@@ -83,9 +83,8 @@ class MockPythonService: PythonServiceProtocol {
         maskPath: String,
         steps: Int,
         resolution: Int,
-        modelVariant: String = "std",
+        modelVariant: String,
         progress: @escaping (String) -> Void,
-        preview: ((Data) -> Void)? = nil,
         completion: @escaping (Result<URL, Error>) -> Void
     ) async {
         isProcessing = true

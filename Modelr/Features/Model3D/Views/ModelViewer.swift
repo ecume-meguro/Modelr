@@ -20,6 +20,11 @@ struct ModelViewer: NSViewRepresentable {
         scnView.backgroundColor = NSColor(calibratedWhite: 0.12, alpha: 1.0)
         scnView.antialiasingMode = .multisampling4X
 
+        // GPU acceleration settings
+        scnView.preferredFramesPerSecond = 60
+        scnView.rendersContinuously = false  // Only render when needed (saves GPU)
+        scnView.isJitteringEnabled = true    // Temporal anti-aliasing for smoother edges
+
         // 2. Scene Setup
         let scene = SCNScene()
         scnView.scene = scene

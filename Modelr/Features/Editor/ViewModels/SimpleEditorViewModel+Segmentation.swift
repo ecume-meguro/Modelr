@@ -57,7 +57,7 @@ extension SimpleEditorViewModel {
 
             do {
                 try Task.checkCancellation()
-                await self.performPrediction(for: index, text: text, points: [])
+                await self.performPrediction(for: index, text: text, points: [], box: nil)
 
                 try Task.checkCancellation()
                 if index < self.segmentations.count {
@@ -80,7 +80,44 @@ extension SimpleEditorViewModel {
         }
     }
 
-    /// Add a point to active segmentation and run prediction
+    /// Set bounding box for active segmentation and run prediction
+    func setBoundingBox(_ box: SAMBox) {
+        guard activeSegmentationIndex < segmentations.count else { return }
+
+        segmentations[activeSegmentationIndex].boundingBox = box
+        segmentations[activeSegmentationIndex].points.removeAll()  // Clear any points
+        segmentations[activeSegmentationIndex].isProcessing = true
+
+        let index = activeSegmentationIndex
+
+        // Cancel any previous segmentation task
+        segmentationTask?.cancel()
+
+        segmentationTask = Task { [weak self] in
+            guard let self = self else { return }
+
+            do {
+                try Task.checkCancellation()
+                await self.performPrediction(for: index, text: nil, points: [], box: box)
+
+                try Task.checkCancellation()
+                if index < self.segmentations.count {
+                    self.segmentations[index].isProcessing = false
+                }
+            } catch is CancellationError {
+                if index < self.segmentations.count {
+                    self.segmentations[index].isProcessing = false
+                }
+            } catch {
+                print("[Segmentation] Error: \(error)")
+                if index < self.segmentations.count {
+                    self.segmentations[index].isProcessing = false
+                }
+            }
+        }
+    }
+
+    /// Add a point to active segmentation and run prediction (legacy, kept for compatibility)
     func addPoint(at normalized: CGPoint) {
         guard activeSegmentationIndex < segmentations.count else { return }
 
@@ -99,7 +136,7 @@ extension SimpleEditorViewModel {
 
             do {
                 try Task.checkCancellation()
-                await self.performPrediction(for: index, text: nil, points: points)
+                await self.performPrediction(for: index, text: nil, points: points, box: nil)
 
                 try Task.checkCancellation()
                 if index < self.segmentations.count {
@@ -119,12 +156,12 @@ extension SimpleEditorViewModel {
         }
     }
 
-    /// Centralized prediction logic for both points and text
-    func performPrediction(for index: Int, text: String?, points: [SAMPoint]) async {
+    /// Centralized prediction logic for points, box, and text
+    func performPrediction(for index: Int, text: String?, points: [SAMPoint], box: SAMBox? = nil) async {
         do {
             let (maskURLs, _, scores, _) = try await env.predict(
                 points: points,
-                box: nil,
+                box: box,
                 text: text,
                 imageSize: imagePixelSize
             )
@@ -213,6 +250,7 @@ extension SimpleEditorViewModel {
         guard activeSegmentationIndex < segmentations.count else { return }
         segmentations[activeSegmentationIndex].textPrompt = ""
         segmentations[activeSegmentationIndex].points.removeAll()
+        segmentations[activeSegmentationIndex].boundingBox = nil
         segmentations[activeSegmentationIndex].allMasks.removeAll()
         segmentations[activeSegmentationIndex].selectedMaskIndices = [0]
         segmentations[activeSegmentationIndex].isSearchPerformed = false

@@ -120,7 +120,8 @@ final class PythonEnvironmentTests: XCTestCase {
             imagePath: "/fake/image.jpg",
             maskPath: "/fake/mask.png",
             steps: 10,
-            resolution: 128
+            resolution: 128,
+            modelVariant: "mini"
         ) { progress in
             progressUpdates.append(progress)
         } completion: { result in
@@ -154,7 +155,8 @@ final class PythonEnvironmentTests: XCTestCase {
             imagePath: "/fake/image.jpg",
             maskPath: "/fake/mask.png",
             steps: 10,
-            resolution: 128
+            resolution: 128,
+            modelVariant: "mini"
         ) { _ in } completion: { result in
             finalResult = result
         }
@@ -178,7 +180,8 @@ final class PythonEnvironmentTests: XCTestCase {
             imagePath: "/fake/image.jpg",
             maskPath: "/fake/mask.png",
             steps: 10,
-            resolution: 128
+            resolution: 128,
+            modelVariant: "mini"
         ) { progress in
             progressUpdates.append(progress)
         } completion: { _ in }

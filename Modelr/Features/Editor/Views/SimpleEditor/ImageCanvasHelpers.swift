@@ -5,19 +5,6 @@ extension View {
     @ViewBuilder
     func addInteractions(viewModel: SimpleEditorViewModel, geo: GeometryProxy, displaySize: CGSize) -> some View {
         self
-            .overlay(
-                RightClickHandler { location in
-                    if viewModel.currentStep == .segment {
-                        let normalized = CGPoint(
-                            x: location.x / displaySize.width,
-                            y: location.y / displaySize.height
-                        )
-                        if normalized.x >= 0 && normalized.x <= 1 && normalized.y >= 0 && normalized.y <= 1 {
-                            viewModel.addPoint(at: normalized)
-                        }
-                    }
-                }
-            )
             .onTapGesture { location in
                 let imageX = (geo.size.width - displaySize.width) / 2
                 let imageY = (geo.size.height - displaySize.height) / 2
@@ -29,6 +16,7 @@ extension View {
                 guard normalized.x >= 0 && normalized.x <= 1 && normalized.y >= 0 && normalized.y <= 1 else { return }
 
                 if viewModel.currentStep == .segment {
+                    // Click on existing mask to select it
                     let activeIndex = viewModel.activeSegmentationIndex
                     if activeIndex < viewModel.segmentations.count && !viewModel.segmentations[activeIndex].allMasks.isEmpty {
                         if let clickedIndex = viewModel.findMaskAtPoint(normalized, displaySize: displaySize) {
@@ -67,14 +55,54 @@ extension View {
                 }
             }
             .gesture(
+                viewModel.currentStep == .segment ?
+                // Bounding box drag gesture for segmentation
+                DragGesture(minimumDistance: 5)
+                    .onChanged { value in
+                        let imageX = (geo.size.width - displaySize.width) / 2
+                        let imageY = (geo.size.height - displaySize.height) / 2
+
+                        let startNormalized = CGPoint(
+                            x: (value.startLocation.x - imageX) / displaySize.width,
+                            y: (value.startLocation.y - imageY) / displaySize.height
+                        ).clamped
+
+                        let endNormalized = CGPoint(
+                            x: (value.location.x - imageX) / displaySize.width,
+                            y: (value.location.y - imageY) / displaySize.height
+                        ).clamped
+
+                        viewModel.currentDrawingBox = SAMBox(startPoint: startNormalized, endPoint: endNormalized)
+                    }
+                    .onEnded { value in
+                        let imageX = (geo.size.width - displaySize.width) / 2
+                        let imageY = (geo.size.height - displaySize.height) / 2
+
+                        let startNormalized = CGPoint(
+                            x: (value.startLocation.x - imageX) / displaySize.width,
+                            y: (value.startLocation.y - imageY) / displaySize.height
+                        ).clamped
+
+                        let endNormalized = CGPoint(
+                            x: (value.location.x - imageX) / displaySize.width,
+                            y: (value.location.y - imageY) / displaySize.height
+                        ).clamped
+
+                        // Only submit if box has reasonable size
+                        let box = SAMBox(startPoint: startNormalized, endPoint: endNormalized)
+                        let rect = box.normalizedRect
+                        if rect.width > 0.01 && rect.height > 0.01 {
+                            viewModel.setBoundingBox(box)
+                        }
+
+                        viewModel.currentDrawingBox = nil
+                    }
+                : nil
+            )
+            .gesture(
                 viewModel.currentStep == .touchup ?
                 DragGesture(minimumDistance: 1)
                     .onChanged { value in
-                        if !viewModel.isStrokeInProgress {
-                            viewModel.isStrokeInProgress = true
-                            viewModel.saveUndoState()
-                        }
-
                         let imageX = (geo.size.width - displaySize.width) / 2
                         let imageY = (geo.size.height - displaySize.height) / 2
 
@@ -82,13 +110,24 @@ extension View {
                             x: (value.location.x - imageX) / displaySize.width,
                             y: (value.location.y - imageY) / displaySize.height
                         )
-                        if normalized.x >= 0 && normalized.x <= 1 && normalized.y >= 0 && normalized.y <= 1 {
-                            viewModel.brushPreviewPosition = normalized
-                            viewModel.paintOnMask(at: normalized)
+
+                        guard normalized.x >= 0 && normalized.x <= 1 && normalized.y >= 0 && normalized.y <= 1 else { return }
+
+                        viewModel.brushPreviewPosition = normalized
+
+                        if !viewModel.isStrokeInProgress {
+                            // Start a new stroke
+                            viewModel.isStrokeInProgress = true
+                            viewModel.saveUndoState()
+                            viewModel.startStroke(at: normalized)
+                        } else {
+                            // Add point to current stroke (interpolation handled inside)
+                            viewModel.addStrokePoint(normalized)
                         }
                     }
                     .onEnded { _ in
                         viewModel.isStrokeInProgress = false
+                        viewModel.finishStroke()
                     }
                 : nil
             )
