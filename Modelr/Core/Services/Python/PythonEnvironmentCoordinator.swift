@@ -276,8 +276,9 @@ deinit {
         // Use the persistent Hunyuan server via ModelLoadingCoordinator
         let coordinator = await MainActor.run { ModelLoadingCoordinator.shared }
 
-        // Check if persistent server is available
-        let isReady = await MainActor.run { coordinator.isHunyuanReady }
+        // Check if persistent server is available with the correct variant
+        // If variant doesn't match, the server will be restarted
+        let isReady = await coordinator.ensureHunyuanReady(env: self, variant: modelVariant)
 
         if isReady {
             // Use persistent server

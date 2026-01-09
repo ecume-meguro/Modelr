@@ -740,7 +740,8 @@ struct SimpleEditorSidebar: View {
 
                 // Preset dropdown menu
                 Menu {
-                    ForEach(GenerationPreset.allCases, id: \.self) { preset in
+                    // Standard presets (use mini model)
+                    ForEach(GenerationPreset.allCases.filter { !$0.usesHunyuan21 }, id: \.self) { preset in
                         Button {
                             viewModel.selectedPreset = preset
                             viewModel.customSteps = CGFloat(preset.steps)
@@ -757,6 +758,32 @@ struct SimpleEditorSidebar: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
+                    }
+
+                    Divider()
+
+                    // Hunyuan 2.1 presets (larger model)
+                    Section {
+                        ForEach(GenerationPreset.allCases.filter { $0.usesHunyuan21 }, id: \.self) { preset in
+                            Button {
+                                viewModel.selectedPreset = preset
+                                viewModel.customSteps = CGFloat(preset.steps)
+                                viewModel.customResolution = CGFloat(preset.resolution)
+                            } label: {
+                                HStack {
+                                    Text(preset.rawValue)
+                                    if !PathManager.isHunyuan21Downloaded {
+                                        Image(systemName: "arrow.down.circle.fill")
+                                            .foregroundStyle(.orange)
+                                    }
+                                    Spacer()
+                                    Text(preset.estimatedTime)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    } header: {
+                        Label("Hunyuan 2.1", systemImage: "sparkles")
                     }
 
                     Divider()
@@ -795,6 +822,18 @@ struct SimpleEditorSidebar: View {
                         .font(.system(size: AppDesign.FontSize.xs))
                         .foregroundStyle(AppDesign.warning)
                     Text("Will download \(SetupModelChoice.fast.downloadSize) on first use")
+                        .font(.system(size: AppDesign.FontSize.xs))
+                        .foregroundStyle(AppDesign.warning)
+                }
+            }
+
+            // Hunyuan 2.1 download warning
+            if viewModel.selectedPreset.usesHunyuan21 && !PathManager.isHunyuan21Downloaded {
+                HStack(spacing: AppDesign.Spacing.p4) {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.system(size: AppDesign.FontSize.xs))
+                        .foregroundStyle(AppDesign.warning)
+                    Text("Hunyuan 2.1 (\(viewModel.selectedPreset.modelDownloadSize)) will download on first use")
                         .font(.system(size: AppDesign.FontSize.xs))
                         .foregroundStyle(AppDesign.warning)
                 }

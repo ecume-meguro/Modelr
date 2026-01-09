@@ -303,6 +303,44 @@ class ModelLoadingCoordinator: ObservableObject {
         return isHunyuanReady
     }
 
+    /// Ensure Hunyuan server is running with a specific model variant
+    /// If a different variant is loaded, restarts the server with the requested variant
+    /// - Parameters:
+    ///   - env: Python environment
+    ///   - variant: The model variant to load ("mini" or "std")
+    /// - Returns: Whether the server is ready with the requested variant
+    func ensureHunyuanReady(env: PythonEnvironment, variant: String) async -> Bool {
+        // Check if correct variant is already loaded
+        if isHunyuanReady && hunyuanProcessManager?.isRunning == true && hunyuanVariant == variant {
+            return true
+        }
+
+        // Already starting, wait for it
+        if isStartingHunyuan {
+            while isStartingHunyuan {
+                try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+            }
+            // Check if the started variant matches what we need
+            if hunyuanVariant == variant && isHunyuanReady {
+                return true
+            }
+        }
+
+        // Different variant needed - restart server
+        if hunyuanProcessManager?.isRunning == true && hunyuanVariant != variant {
+            print("[ModelLoadingCoordinator] Switching Hunyuan variant from \(hunyuanVariant ?? "nil") to \(variant)")
+            hunyuanProcessManager?.stopServer()
+            hunyuanProcessManager = nil
+            isHunyuanReady = false
+            hunyuanVariant = nil
+        }
+
+        // Start with requested variant
+        isStartingHunyuan = true
+        await startHunyuanServer(env: env, variant: variant)
+        return isHunyuanReady && hunyuanVariant == variant
+    }
+
     /// Generate 3D model using the persistent Hunyuan server
     /// - Parameters:
     ///   - onProgress: Callback with (stage, detail, progress) where stage is "loading"/"diffusion"/"volume_decoding"/"saving"

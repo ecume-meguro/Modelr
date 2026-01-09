@@ -647,9 +647,16 @@ struct PathManager {
     
     /// Check if self-test setup is complete
     
-    /// Check if a Hunyuan3D model variant is downloaded (only mini is supported)
+    /// Check if a Hunyuan3D model variant is downloaded
+    /// - Parameter variant: "mini" for Hunyuan3D-2mini, "std" for Hunyuan3D-2.1
     static func isHunyuanModelDownloaded(variant: String) -> Bool {
-        let modelDirName = "models--tencent--Hunyuan3D-2mini"
+        let modelDirName: String
+        switch variant {
+        case "std":
+            modelDirName = "models--tencent--Hunyuan3D-2.1"
+        default:
+            modelDirName = "models--tencent--Hunyuan3D-2mini"
+        }
 
         // When Swift sets HUGGINGFACE_HUB_CACHE to Models/hub, the models--... dirs are created directly under that folder.
         // Also allow the HF_HOME default layout (Models/hub/hub) and legacy locations.
@@ -662,6 +669,11 @@ struct PathManager {
             || checkModelExists(dirName: modelDirName, in: hfHomeStyleHub)
             || checkModelExists(dirName: modelDirName, in: legacyHub1)
             || checkModelExists(dirName: modelDirName, in: legacyHub2)
+    }
+
+    /// Check if Hunyuan 2.1 (standard/larger) model is downloaded
+    static var isHunyuan21Downloaded: Bool {
+        isHunyuanModelDownloaded(variant: "std")
     }
     
     private static func checkModelExists(dirName: String, in parentDir: URL) -> Bool {

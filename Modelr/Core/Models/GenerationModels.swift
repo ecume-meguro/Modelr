@@ -1,16 +1,46 @@
 import Foundation
 
 enum GenerationPreset: String, CaseIterable, Identifiable {
-    // Hunyuan3D-2 Mini presets
+    // Hunyuan3D-2 Mini presets (fast, smaller model)
     case draft = "Draft"
     case normal = "Normal"
     case high = "High"
     case max = "Max"
 
+    // Hunyuan3D-2.1 Standard preset (larger model, better quality)
+    case ultra = "Ultra"
+
     var id: String { rawValue }
 
-    /// The model variant to use (always "mini" now)
-    var modelVariant: String { "mini" }
+    /// The model variant to use
+    var modelVariant: String {
+        switch self {
+        case .draft, .normal, .high, .max:
+            return "mini"
+        case .ultra:
+            return "std"
+        }
+    }
+
+    /// Whether this preset uses the Hunyuan 2.1 (standard/larger) model
+    var usesHunyuan21: Bool {
+        modelVariant == "std"
+    }
+
+    /// Whether this preset requires a separate model download
+    var requiresAdditionalDownload: Bool {
+        usesHunyuan21
+    }
+
+    /// Download size for the required model (approximate)
+    var modelDownloadSize: String {
+        switch self {
+        case .ultra:
+            return "~8.5 GB"
+        default:
+            return ""
+        }
+    }
 
     var steps: Int {
         switch self {
@@ -18,6 +48,7 @@ enum GenerationPreset: String, CaseIterable, Identifiable {
         case .normal: return 35
         case .high: return 50
         case .max: return 75
+        case .ultra: return 50
         }
     }
 
@@ -27,6 +58,7 @@ enum GenerationPreset: String, CaseIterable, Identifiable {
         case .normal: return 256
         case .high: return 384
         case .max: return 512
+        case .ultra: return 512
         }
     }
 
@@ -36,6 +68,7 @@ enum GenerationPreset: String, CaseIterable, Identifiable {
         case .normal: return "Balanced"
         case .high: return "High quality"
         case .max: return "Maximum quality"
+        case .ultra: return "Hunyuan 2.1 model"
         }
     }
 
@@ -45,6 +78,7 @@ enum GenerationPreset: String, CaseIterable, Identifiable {
         case .normal: return "~2m"
         case .high: return "~4m"
         case .max: return "~6m"
+        case .ultra: return "~8m"
         }
     }
 }
