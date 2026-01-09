@@ -563,12 +563,22 @@ struct SimpleEditorSidebar: View {
 
                 sectionFooter {
                     if viewModel.isGenerating {
-                        // During generation - only show stop button
+                        // During generation - show stop button
                         AppDesign.GlassButtonSecondary("Stop Generation", icon: "stop.fill", destructive: true) {
                             viewModel.stopGeneration()
                         }
+                    } else if viewModel.isInHandoff {
+                        // During handoff - show brief message (GenerationPanel shows detailed progress)
+                        HStack(spacing: AppDesign.Spacing.p6) {
+                            ProgressView()
+                                .controlSize(.small)
+                                .scaleEffect(0.7)
+                            Text("Preparing model...")
+                                .font(.system(size: AppDesign.FontSize.caption))
+                                .foregroundStyle(.secondary)
+                        }
                     } else if let _ = viewModel.generated3DModelURL {
-                        // Has model (came back from PostProcess or generation complete but not yet transitioned)
+                        // Has model (came back from PostProcess or generation complete)
                         AppDesign.GlassButton("Continue to Post-Process", icon: "arrow.right") {
                             viewModel.transitionToPostProcess()
                         }
@@ -586,11 +596,11 @@ struct SimpleEditorSidebar: View {
                 AppDesign.CompletedRow("Model generated")
             }
         }
-        .alert("Discard 3D Model?", isPresented: $viewModel.showDiscardModelWarning) {
+        .alert("Go Back?", isPresented: $viewModel.showDiscardModelWarning) {
             Button("Cancel", role: .cancel) { }
-            Button("Discard", role: .destructive) { viewModel.goBack() }
+            Button("Go Back", role: .destructive) { viewModel.goBack() }
         } message: {
-            Text("The generated 3D model will be kept on disk, but you'll return to the previous step.")
+            Text("Your 3D model will be saved and can be restored later from the Segment step.")
         }
     }
 

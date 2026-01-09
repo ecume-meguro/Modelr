@@ -341,6 +341,11 @@ extension SimpleEditorViewModel {
 
     /// Handle back button action with appropriate warnings based on current state
     func handleBackAction() {
+        // Block back during handoff phase (post-generation processing)
+        if isInHandoff {
+            return
+        }
+
         // During setup, always warn if not on first substep
         if currentStep == .setup && currentSetupSubStep != .chooseModel {
             showStartOverWarning = true
