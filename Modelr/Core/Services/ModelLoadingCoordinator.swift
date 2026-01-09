@@ -47,6 +47,12 @@ class ModelLoadingCoordinator: ObservableObject {
     /// Current Hunyuan model variant loaded
     @Published private(set) var hunyuanVariant: String?
 
+    /// Whether VLM server is currently starting
+    @Published private(set) var isStartingVLM: Bool = false
+
+    /// Whether VLM server is running and ready
+    @Published private(set) var isVLMReady: Bool = false
+
     /// System RAM in bytes
     let systemRAM: UInt64
 
@@ -58,7 +64,11 @@ class ModelLoadingCoordinator: ObservableObject {
     /// The persistent Hunyuan process manager
     private(set) var hunyuanProcessManager: HunyuanProcessManager?
 
+    /// The persistent VLM process manager
+    private(set) var vlmProcessManager: VLMProcessManager?
+
     private var startupTask: Task<Void, Never>?
+    private var vlmStartupTask: Task<Void, Never>?
 
     private init() {
         self.systemRAM = ProcessInfo.processInfo.physicalMemory
@@ -118,8 +128,18 @@ class ModelLoadingCoordinator: ObservableObject {
         return nil
     }
 
-    /// Called when SAM model is ready - triggers async Hunyuan server start if using aggressive strategy
+    /// Called when SAM model is ready - triggers async Hunyuan and VLM server starts
     func onSAMModelReady(env: PythonEnvironment) {
+        // Start VLM server (lightweight MLX model, always start alongside SAM)
+        if !isVLMReady && !isStartingVLM {
+            print("[ModelLoadingCoordinator] SAM ready, starting VLM server...")
+            isStartingVLM = true
+            vlmStartupTask = Task {
+                await startVLMServer(env: env)
+            }
+        }
+
+        // Start Hunyuan server (only for aggressive strategy)
         guard strategy == .aggressive && !isHunyuanReady && !isStartingHunyuan else {
             if strategy == .conservative {
                 print("[ModelLoadingCoordinator] Conservative strategy - Hunyuan will start on-demand")
@@ -133,7 +153,7 @@ class ModelLoadingCoordinator: ObservableObject {
             return
         }
 
-        print("[ModelLoadingCoordinator] SAM ready, starting persistent Hunyuan server (variant: \(variant))...")
+        print("[ModelLoadingCoordinator] Starting persistent Hunyuan server (variant: \(variant))...")
         isStartingHunyuan = true
 
         startupTask = Task {
@@ -179,6 +199,75 @@ class ModelLoadingCoordinator: ObservableObject {
         }
 
         isStartingHunyuan = false
+    }
+
+    /// Start the persistent VLM server
+    private func startVLMServer(env: PythonEnvironment) async {
+        guard let uvPath = env.findUVPath() else {
+            print("[ModelLoadingCoordinator] UV path not found, cannot start VLM server")
+            isStartingVLM = false
+            return
+        }
+
+        let manager = VLMProcessManager()
+        vlmProcessManager = manager
+
+        // Setup stderr logging
+        manager.onStderrLine = { line in
+            print("[VLMServer] \(line)")
+        }
+
+        do {
+            try manager.startServer(uvPath: uvPath)
+
+            // Wait for ready signal
+            let response = try await manager.waitForReady(timeout: 120)  // Model loading can take time
+
+            if response.ready == true {
+                print("[ModelLoadingCoordinator] VLM server ready (device: \(response.device ?? "unknown"))")
+                isVLMReady = true
+            } else {
+                print("[ModelLoadingCoordinator] VLM server failed to initialize: \(response.error ?? "unknown")")
+                manager.stopServer()
+                vlmProcessManager = nil
+            }
+        } catch {
+            print("[ModelLoadingCoordinator] VLM server startup error: \(error)")
+            manager.stopServer()
+            vlmProcessManager = nil
+        }
+
+        isStartingVLM = false
+    }
+
+    /// Ensure VLM server is running (starts if needed)
+    func ensureVLMReady(env: PythonEnvironment) async -> Bool {
+        // Already running
+        if isVLMReady && vlmProcessManager?.isRunning == true {
+            return true
+        }
+
+        // Already starting, wait for it
+        if isStartingVLM {
+            while isStartingVLM {
+                try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+            }
+            return isVLMReady
+        }
+
+        // Need to start
+        isStartingVLM = true
+        await startVLMServer(env: env)
+        return isVLMReady
+    }
+
+    /// Describe an image using the VLM server
+    func describeImage(imagePath: String) async throws -> String {
+        guard let manager = vlmProcessManager, manager.isRunning else {
+            throw PythonError.workerNotRunning
+        }
+
+        return try await manager.describeImage(imagePath: imagePath)
     }
 
     /// Ensure Hunyuan server is running (starts if needed)
@@ -407,6 +496,14 @@ class ModelLoadingCoordinator: ObservableObject {
         print("[ModelLoadingCoordinator] Hunyuan server stopped")
     }
 
+    /// Stop the VLM server
+    func stopVLMServer() {
+        vlmProcessManager?.stopServer()
+        vlmProcessManager = nil
+        isVLMReady = false
+        print("[ModelLoadingCoordinator] VLM server stopped")
+    }
+
     /// Cancel current generation without stopping the server
     func cancelGeneration() {
         hunyuanProcessManager?.cancelGeneration()
@@ -416,11 +513,16 @@ class ModelLoadingCoordinator: ObservableObject {
     func cancelStartup() {
         startupTask?.cancel()
         startupTask = nil
+        vlmStartupTask?.cancel()
+        vlmStartupTask = nil
         isStartingHunyuan = false
+        isStartingVLM = false
         stopHunyuanServer()
+        stopVLMServer()
     }
 
     deinit {
         hunyuanProcessManager?.stopServer()
+        vlmProcessManager?.stopServer()
     }
 }

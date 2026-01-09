@@ -27,6 +27,12 @@ MODELS = {
         "files": ["model.safetensors"],
         "fallback_bytes": 3_000_000_000,  # ~3 GB
     },
+    "vlm-qwen3": {
+        "repo_id": "mlx-community/Qwen3-VL-2B-Instruct-4bit",
+        "subfolder": None,
+        "files": None,  # Query all files
+        "fallback_bytes": 1_500_000_000,  # ~1.5 GB (4-bit quantized)
+    },
 }
 
 

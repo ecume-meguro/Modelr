@@ -289,3 +289,29 @@ Original `goBack()` function went to the numerically previous step, ignoring whe
 Warning dialog about losing touchup changes appeared even when user just entered and immediately left without editing.
 
 **Status**: ✅ FIXED - Added `hasMaskEdits` flag that only triggers warning when actual edits were made.
+
+### Issue 6: Back navigation assumed non-optional steps were always visited
+The `previousVisitedStep()` function incorrectly returned non-optional steps even if they weren't visited. This caused issues with features like `restoreCachedGeneration()` that skip steps (e.g., going directly from Segment to PostProcess).
+
+**Example bug scenario:**
+1. User at Segment step
+2. User clicks "Restore Previous Model" → jumps to PostProcess (skipping Generate)
+3. User presses Back → incorrectly went to Generate (never visited) instead of Segment
+
+**Root cause:** The logic `!c.isOptional || visitedSteps.contains(c)` assumed all mandatory steps were visited.
+
+**Status**: ✅ FIXED - Changed `previousVisitedStep()` to only return steps that are actually in `visitedSteps`:
+```swift
+func previousVisitedStep(from step: Step) -> Step? {
+    var candidate = step.previous
+    while let c = candidate {
+        if visitedSteps.contains(c) {
+            return c
+        }
+        candidate = c.previous
+    }
+    return nil
+}
+```
+
+This ensures "Back" always returns to the last step the user was actually on.

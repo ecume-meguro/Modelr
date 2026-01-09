@@ -164,3 +164,37 @@ struct HunyuanResponse: Codable {
     let variant: String?      // e.g. "mini", "std"
     let status: String?       // e.g. "pong", "exiting"
 }
+
+// MARK: - VLM Python Communication Protocol
+
+struct VLMRequest: Codable {
+    let messageId: String
+    let command: String  // "set_image", "describe", "ping", "exit"
+    let imagePath: String?
+    let prompt: String?
+    let maxTokens: Int?
+    let temperature: Double?
+
+    init(command: String, imagePath: String? = nil, prompt: String? = nil, maxTokens: Int? = nil, temperature: Double? = nil) {
+        self.messageId = UUID().uuidString
+        self.command = command
+        self.imagePath = imagePath
+        self.prompt = prompt
+        self.maxTokens = maxTokens
+        self.temperature = temperature
+    }
+}
+
+struct VLMResponse: Codable {
+    let success: Bool
+    let description: String?      // The detected object description
+    let rawOutput: String?        // Raw VLM output before cleaning
+    let error: String?
+    let inferenceTimeMs: Int?
+    let ready: Bool?              // true when server is initialized
+    let device: String?           // e.g. "mlx"
+    let server: String?           // e.g. "vlm_wrapper"
+    let status: String?           // e.g. "pong", "exiting"
+    let width: Int?               // Image width from set_image
+    let height: Int?              // Image height from set_image
+}

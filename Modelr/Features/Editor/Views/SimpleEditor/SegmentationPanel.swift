@@ -135,8 +135,33 @@ struct SegmentationEntryView: View {
                 )
         )
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        // "Click to interrupt" overlay when VLM is analyzing
+        .overlay(
+            Group {
+                if viewModel.isAutoDetecting && isActive && entry.isExpanded {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(.ultraThinMaterial.opacity(0.8))
+                        .overlay(
+                            VStack(spacing: AppDesign.Spacing.p4) {
+                                Image(systemName: "hand.tap.fill")
+                                    .font(.system(size: 18))
+                                    .foregroundStyle(.secondary)
+                                Text("Click to interrupt")
+                                    .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                            }
+                        )
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            viewModel.cancelAutoDetection()
+                        }
+                        .transition(.opacity.animation(.easeOut(duration: 0.15)))
+                }
+            }
+        )
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: entry.isExpanded)
         .animation(.spring(response: 0.25, dampingFraction: 0.85), value: isActive)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.isAutoDetecting)
         .onChange(of: isActive) { _, newValue in
             // Focus text field when this entry becomes active
             if newValue && entry.isExpanded {
@@ -224,18 +249,45 @@ struct SegmentationEntryView: View {
         }
     }
 
+    /// Whether this entry is currently being analyzed by VLM
+    private var isAnalyzing: Bool {
+        viewModel.isAutoDetecting && isActive
+    }
+
     @ViewBuilder
     private var entryContent: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
             // Text-guided detection section
             VStack(alignment: .leading, spacing: AppDesign.Spacing.p6) {
                 HStack(spacing: AppDesign.Spacing.p8) {
-                    TextField("what to detect? e.g. alpaca", text: textPromptBinding)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($isTextFieldFocused)
-                        .onSubmit {
-                            viewModel.runTextPrediction()
+                    ZStack(alignment: .leading) {
+                        // Show "Analyzing..." when VLM is running
+                        if isAnalyzing {
+                            HStack(spacing: AppDesign.Spacing.p6) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .scaleEffect(0.6)
+                                Text("Analyzing...")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, 6)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .frame(height: 22)
+                            .background(Color.primary.opacity(0.05))
+                            .clipShape(RoundedRectangle(cornerRadius: 5))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 5)
+                                    .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
+                            )
+                        } else {
+                            TextField("what to detect? e.g. alpaca", text: textPromptBinding)
+                                .textFieldStyle(.roundedBorder)
+                                .focused($isTextFieldFocused)
+                                .onSubmit {
+                                    viewModel.runTextPrediction()
+                                }
                         }
+                    }
 
                     Button {
                         viewModel.runTextPrediction()
@@ -254,7 +306,7 @@ struct SegmentationEntryView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
-                    .disabled(entry.textPrompt.isEmpty || entry.isProcessing)
+                    .disabled(entry.textPrompt.isEmpty || entry.isProcessing || isAnalyzing)
                 }
 
                 AppDesign.HintText("AI will find and segment the object you describe")

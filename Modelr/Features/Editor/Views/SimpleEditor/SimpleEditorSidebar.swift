@@ -238,15 +238,13 @@ struct SimpleEditorSidebar: View {
 
                 HStack(spacing: AppDesign.Spacing.p12) {
                     // Circle with bypass arc overlay
-                    ZStack {
-                        // Greyed out circle
-                        workflowStepCircle(displayNumber: displayNumber, isDone: isDone, isActive: isActive, locked: locked, isOptional: isOptional)
-
-                        // Bypass arc around the circle - same size as circle (24x24)
-                        BypassArc(goesRight: goesRight)
-                            .stroke(connectorColor, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                            .frame(width: 24, height: 24)
-                    }
+                    workflowStepCircle(displayNumber: displayNumber, isDone: isDone, isActive: isActive, locked: locked, isOptional: isOptional, wasVisited: false)
+                        .overlay(
+                            // Bypass arc tightly around the circle (26x26 arc around 24x24 circle = 1px gap)
+                            BypassArc(goesRight: goesRight)
+                                .stroke(connectorColor, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                                .frame(width: 26, height: 26)
+                        )
 
                     HStack(spacing: AppDesign.Spacing.p4) {
                         Text(title)
@@ -278,7 +276,7 @@ struct SimpleEditorSidebar: View {
 
                 // Header: Circle + Title (always vertically centered together)
                 HStack(spacing: AppDesign.Spacing.p12) {
-                    workflowStepCircle(displayNumber: displayNumber, isDone: isDone, isActive: isActive, locked: locked, isOptional: isOptional)
+                    workflowStepCircle(displayNumber: displayNumber, isDone: isDone, isActive: isActive, locked: locked, isOptional: isOptional, wasVisited: wasVisited)
 
                     HStack(spacing: AppDesign.Spacing.p4) {
                         Text(title)
@@ -366,15 +364,18 @@ struct SimpleEditorSidebar: View {
     }
 
     @ViewBuilder
-    private func workflowStepCircle(displayNumber: Int, isDone: Bool, isActive: Bool, locked: Bool = false, isOptional: Bool = false) -> some View {
+    private func workflowStepCircle(displayNumber: Int, isDone: Bool, isActive: Bool, locked: Bool = false, isOptional: Bool = false, wasVisited: Bool = true) -> some View {
+        // For optional steps: only show as "skipped" (grayed) if done but NOT visited
+        let isSkipped = isOptional && isDone && !wasVisited
+
         ZStack {
             Circle()
-                // Optional steps when done show grayed circle, not green checkmark
-                .fill(locked ? Color.secondary.opacity(0.1) : (isDone ? (isOptional ? Color.secondary.opacity(0.15) : AppDesign.success) : (isActive ? AppDesign.accent : Color.secondary.opacity(0.2))))
+                // Skipped optional steps show grayed circle; visited steps (optional or not) show green when done
+                .fill(locked ? Color.secondary.opacity(0.1) : (isDone ? (isSkipped ? Color.secondary.opacity(0.15) : AppDesign.success) : (isActive ? AppDesign.accent : Color.secondary.opacity(0.2))))
                 .frame(width: 24, height: 24)
 
-            if isDone && !locked && !isOptional {
-                // Only non-optional steps get checkmark
+            if isDone && !locked && !isSkipped {
+                // Completed steps (including visited optional steps) get checkmark
                 Image(systemName: "checkmark")
                     .font(.system(size: AppDesign.FontSize.caption, weight: .bold))
                     .foregroundStyle(.white)
@@ -382,7 +383,7 @@ struct SimpleEditorSidebar: View {
             } else {
                 Text("\(displayNumber)")
                     .font(.system(size: AppDesign.FontSize.caption, weight: .bold, design: .monospaced))
-                    .foregroundStyle(locked ? Color.secondary.opacity(0.5) : (isActive ? Color.white : Color.secondary.opacity(isOptional && !isActive ? 0.4 : 1)))
+                    .foregroundStyle(locked ? Color.secondary.opacity(0.5) : (isActive ? Color.white : Color.secondary.opacity(isSkipped ? 0.4 : 1)))
             }
         }
         .animation(.spring(response: 0.22, dampingFraction: 0.72), value: isDone)

@@ -35,6 +35,7 @@ struct PathManager {
         try SecureFileManager.shared.ensureDirectoryExists(at: samEnvironmentDirectory)
         try SecureFileManager.shared.ensureDirectoryExists(at: hunyuanEnvironmentDirectory)
         try SecureFileManager.shared.ensureDirectoryExists(at: toolsEnvironmentDirectory)
+        try SecureFileManager.shared.ensureDirectoryExists(at: vlmEnvironmentDirectory)
 
         try SecureFileManager.shared.ensureDirectoryExists(at: modelsDirectory)
         try SecureFileManager.shared.ensureDirectoryExists(at: modelsHubDirectory)
@@ -332,6 +333,11 @@ struct PathManager {
     static var hunyuanEnvironmentDirectory: URL {
         environmentsDirectory.appendingPathComponent("hunyuan", isDirectory: true)
     }
+
+    /// Per-environment directory for VLM (venv only)
+    static var vlmEnvironmentDirectory: URL {
+        environmentsDirectory.appendingPathComponent("vlm", isDirectory: true)
+    }
     
     /// Legacy venvDirectory (no longer used)
     static var venvDirectory: URL {
@@ -351,6 +357,11 @@ struct PathManager {
     /// Project directory for Tools (scripts + pyproject)
     static var toolsProjectDirectory: URL {
         libScriptsDirectory.appendingPathComponent("tools", isDirectory: true)
+    }
+
+    /// Project directory for VLM (scripts + pyproject)
+    static var vlmProjectDirectory: URL {
+        libScriptsDirectory.appendingPathComponent("vlm", isDirectory: true)
     }
 
     /// Back-compat: treat hunyuanDirectory as the *project* dir (where uv runs)
@@ -382,6 +393,11 @@ struct PathManager {
     static var hunyuanWrapperPath: URL {
         hunyuanProjectDirectory.appendingPathComponent(AppConstants.hunyuanWrapperFileName)
     }
+
+    /// Get path for VLM wrapper script
+    static var vlmWrapperPath: URL {
+        vlmProjectDirectory.appendingPathComponent(AppConstants.vlmWrapperFileName)
+    }
     
     /// Get path for SAM pyproject file
     static var samPyprojectPath: URL {
@@ -391,6 +407,16 @@ struct PathManager {
     /// Get path for Hunyuan pyproject file in Hunyuan directory
     static var hunyuanPyprojectPath: URL {
         hunyuanProjectDirectory.appendingPathComponent(AppConstants.hunyuanPyprojectFileName)
+    }
+
+    /// Get path for VLM pyproject file
+    static var vlmPyprojectPath: URL {
+        vlmProjectDirectory.appendingPathComponent(AppConstants.vlmPyprojectFileName)
+    }
+
+    /// Get path for VLM virtual environment
+    static var vlmVenvDirectory: URL {
+        vlmEnvironmentDirectory.appendingPathComponent(AppConstants.venvDirectoryName, isDirectory: true)
     }
     
     /// Get path for mask file

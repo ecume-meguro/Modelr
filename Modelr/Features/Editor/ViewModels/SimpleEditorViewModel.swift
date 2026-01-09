@@ -133,6 +133,11 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         return "\(timeStr) remaining"
     }
 
+    // MARK: - VLM Auto-Detection State
+    @Published var isAutoDetecting: Bool = false
+    @Published var autoDetectedLabel: String?
+    var autoDetectionTask: Task<Void, Never>?
+
     // MARK: - Multi-Segmentation State
     @Published var segmentations: [SegmentationEntry] = []
     @Published var activeSegmentationIndex: Int = 0
@@ -436,19 +441,107 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         do {
             let size = try await env.setImage(path: path)
             imagePixelSize = size
+
+            // Trigger VLM auto-detection in background
+            await startVLMAutoDetection(imagePath: path)
         } catch {
             print("[Init] Failed to set image: \(error)")
         }
     }
 
+    /// Start VLM auto-detection to identify the object in the image
+    private func startVLMAutoDetection(imagePath: String) async {
+        // Cancel any previous detection
+        autoDetectionTask?.cancel()
+
+        autoDetectionTask = Task { [weak self] in
+            guard let self = self else { return }
+
+            await MainActor.run {
+                self.isAutoDetecting = true
+                self.autoDetectedLabel = nil
+            }
+
+            let coordinator = ModelLoadingCoordinator.shared
+
+            // Wait for VLM to be ready if it's still starting
+            if coordinator.isStartingVLM {
+                print("[VLM] Waiting for VLM server to start...")
+                while coordinator.isStartingVLM {
+                    try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+                    if Task.isCancelled { return }
+                }
+            }
+
+            // Ensure VLM is ready
+            guard coordinator.isVLMReady else {
+                print("[VLM] VLM server not ready, skipping auto-detection")
+                await MainActor.run {
+                    self.isAutoDetecting = false
+                }
+                return
+            }
+
+            do {
+                try Task.checkCancellation()
+
+                print("[VLM] Starting auto-detection for: \(imagePath)")
+                let description = try await coordinator.describeImage(imagePath: imagePath)
+
+                try Task.checkCancellation()
+
+                await MainActor.run {
+                    self.autoDetectedLabel = description
+                    self.isAutoDetecting = false
+
+                    // Auto-fill the text prompt for the active segmentation
+                    if self.activeSegmentationIndex < self.segmentations.count {
+                        self.segmentations[self.activeSegmentationIndex].textPrompt = description
+                        print("[VLM] Auto-detected object: '\(description)' - filled text prompt")
+
+                        // Automatically run SAM text prediction
+                        print("[VLM] Auto-triggering SAM text prediction...")
+                        self.runTextPrediction()
+                    }
+                }
+            } catch is CancellationError {
+                print("[VLM] Auto-detection cancelled")
+            } catch {
+                print("[VLM] Auto-detection failed: \(error)")
+                await MainActor.run {
+                    self.isAutoDetecting = false
+                }
+            }
+        }
+    }
+
+    /// Manually trigger VLM auto-detection (for re-detection button)
+    func triggerAutoDetection() {
+        guard let path = inputImagePath else { return }
+        Task {
+            await startVLMAutoDetection(imagePath: path)
+        }
+    }
+
+    /// Cancel ongoing VLM auto-detection
+    func cancelAutoDetection() {
+        autoDetectionTask?.cancel()
+        autoDetectionTask = nil
+        isAutoDetecting = false
+        print("[VLM] Auto-detection cancelled by user")
+    }
+
     // MARK: - Navigation
 
-    /// Find the previous step that was actually visited (skips unvisited optional steps)
+    /// Find the previous step that was actually visited (respects user's actual navigation path)
+    /// This ensures "back" goes to where the user was, not just the previous sequential step.
+    /// For example, if user went Segment → PostProcess via "Restore", back should go to Segment,
+    /// not Generate (which was skipped).
     func previousVisitedStep(from step: Step) -> Step? {
         var candidate = step.previous
         while let c = candidate {
-            // Always allow going back to non-optional steps or visited steps
-            if !c.isOptional || visitedSteps.contains(c) {
+            // Only return steps that were actually visited
+            if visitedSteps.contains(c) {
                 return c
             }
             candidate = c.previous
@@ -685,6 +778,8 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         cleanupTask = nil
         meshPreloadTask?.cancel()
         meshPreloadTask = nil
+        autoDetectionTask?.cancel()
+        autoDetectionTask = nil
 
         // Clear all preloaded data
         preloadManager.cancelAll()
@@ -702,6 +797,10 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         inputImagePath = nil
         imagePixelSize = .zero
         imageHasAlpha = false
+
+        // VLM auto-detection state
+        isAutoDetecting = false
+        autoDetectedLabel = nil
 
         // Segmentation state
         segmentations.removeAll()

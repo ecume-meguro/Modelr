@@ -275,12 +275,18 @@ struct AppConstants {
     
     /// Name of Hunyuan wrapper script
     static let hunyuanWrapperFileName = "hunyuan_wrapper.py"
-    
+
+    /// Name of VLM wrapper script
+    static let vlmWrapperFileName = "vlm_wrapper.py"
+
     /// Name of SAM pyproject file
     static let samPyprojectFileName = "pyproject.toml"
-    
+
     /// Name of Hunyuan pyproject file
     static let hunyuanPyprojectFileName = "pyproject_hunyuan.toml"
+
+    /// Name of VLM pyproject file
+    static let vlmPyprojectFileName = "pyproject_vlm.toml"
     
     /// Prefix for generated 3D models
     static let generatedModelPrefix = "generated_model_"

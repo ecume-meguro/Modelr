@@ -8,6 +8,7 @@ class PythonDependencyService {
     var samVenvReady = false
     var toolsVenvReady = false
     var hunyuanVenvReady = false
+    var vlmVenvReady = false
     var resourcePathOverride: String?
 
     init() {
@@ -59,6 +60,18 @@ class PythonDependencyService {
         
         report(.downloadingSAM, "Downloading segmentation model...", nil, false)
         await warmupSAMModel(uvPath: uvPath, onProgress: onProgress)
+
+        // 1.5. VLM (Vision Language Model for auto-detection)
+        report(.syncingSAM, "Syncing VLM environment...", nil, false)
+        await setupVLMEnvironment(uvPath: uvPath, onProgress: onProgress)
+        // VLM is optional - don't fail setup if it fails
+        if !vlmVenvReady {
+            print("[Setup] VLM environment failed - auto-detection will be unavailable")
+        } else {
+            // Warmup VLM model (download weights)
+            report(.downloadingSAM, "Downloading VLM model...", nil, false)
+            await warmupVLMModel(uvPath: uvPath, onProgress: onProgress)
+        }
 
         // 2. 3D Generation (Environment then Model)
         report(.syncingHunyuan, "Syncing 3D generation environment...", nil, false)
@@ -138,6 +151,42 @@ class PythonDependencyService {
             venvPath: toolsVenvDir,
             workingDir: toolsProjectDir,
             stage: .syncingTools,
+            onProgress: onProgress
+        )
+    }
+
+    private func warmupVLMModel(uvPath: String, onProgress: @escaping (SetupProgressUpdate) -> Void) async {
+        let vlmProjectDir = PathManager.vlmProjectDirectory
+        let vlmVenvDir = PathManager.vlmVenvDirectory
+        let modelsHubDir = PathManager.modelsHubDirectory
+        try? PathManager.ensureDirectoryExists(at: modelsHubDir)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: uvPath)
+        process.arguments = ["run", "--project", vlmProjectDir.path, AppConstants.vlmWrapperFileName, "--warmup"]
+        process.currentDirectoryURL = vlmProjectDir
+        process.environment = createPythonEnvironment(venvPath: vlmVenvDir, modelsHubDir: modelsHubDir)
+
+        await runProcessAsync(process, stage: .downloadingSAM, onProgress: onProgress)
+    }
+
+    private func setupVLMEnvironment(uvPath: String, onProgress: @escaping (SetupProgressUpdate) -> Void) async {
+        let vlmProjectDir = PathManager.vlmProjectDirectory
+        let vlmVenvDir = PathManager.vlmVenvDirectory
+        do {
+            try PathManager.ensureDirectoryExists(at: vlmProjectDir)
+            try PathManager.ensureDirectoryExists(at: PathManager.vlmEnvironmentDirectory)
+        } catch {
+            onProgress(SetupProgressUpdate(stage: .failed, status: "VLM preparation failed", logLine: error.localizedDescription))
+            return
+        }
+
+        vlmVenvReady = await syncEnvironment(
+            uvPath: uvPath,
+            pythonVersion: "3.13",
+            venvPath: vlmVenvDir,
+            workingDir: vlmProjectDir,
+            stage: .syncingSAM,  // Reuse SAM stage for UI simplicity
             onProgress: onProgress
         )
     }
@@ -321,6 +370,13 @@ class PythonDependencyService {
             return false
         }
 
+        // Sync VLM environment (optional)
+        report(.syncingSAM, "Updating VLM environment...", nil, false)
+        await setupVLMEnvironment(uvPath: uvPath, onProgress: onProgress)
+        if !vlmVenvReady {
+            print("[EnvRefresh] VLM environment failed - auto-detection will be unavailable")
+        }
+
         // Sync Hunyuan environment
         report(.syncingHunyuan, "Updating 3D generation environment...", nil, false)
         await setupHunyuanEnvironment(uvPath: uvPath, onProgress: onProgress)
@@ -363,6 +419,13 @@ class PythonDependencyService {
             PathManager.hunyuanProjectDirectory.appendingPathComponent("pyproject.toml"),
             PathManager.hunyuanProjectDirectory.appendingPathComponent(AppConstants.hunyuanWrapperFileName)
         ]
+
+        // VLM is optional - check but don't require
+        let vlmReady = fileManager.fileExists(atPath: PathManager.vlmProjectDirectory.appendingPathComponent("pyproject.toml").path) &&
+                       fileManager.fileExists(atPath: PathManager.vlmProjectDirectory.appendingPathComponent(AppConstants.vlmWrapperFileName).path)
+        if !vlmReady {
+            print("[Resources] VLM resources not found - auto-detection will be unavailable")
+        }
 
         return requiredPaths.allSatisfy { fileManager.fileExists(atPath: $0.path) }
     }
@@ -418,6 +481,13 @@ class PythonDependencyService {
             try copyFile(from: source.appendingPathComponent(AppConstants.hunyuanPyprojectFileName), to: hunyuanPyprojectDst)
             try copyFile(from: source.appendingPathComponent(AppConstants.hunyuanWrapperFileName), to: PathManager.hunyuanProjectDirectory.appendingPathComponent(AppConstants.hunyuanWrapperFileName))
             normalizeUvLocalSourcePaths(inPyprojectAt: hunyuanPyprojectDst)
+
+            // VLM (Vision Language Model)
+            try PathManager.ensureDirectoryExists(at: PathManager.vlmProjectDirectory)
+            let vlmPyprojectDst = PathManager.vlmProjectDirectory.appendingPathComponent("pyproject.toml")
+            try copyFile(from: source.appendingPathComponent(AppConstants.vlmPyprojectFileName), to: vlmPyprojectDst)
+            try copyFile(from: source.appendingPathComponent(AppConstants.vlmWrapperFileName), to: PathManager.vlmProjectDirectory.appendingPathComponent(AppConstants.vlmWrapperFileName))
+            normalizeUvLocalSourcePaths(inPyprojectAt: vlmPyprojectDst)
         } catch {
             print("[Resources] Failed to copy resources: \(error)")
         }
