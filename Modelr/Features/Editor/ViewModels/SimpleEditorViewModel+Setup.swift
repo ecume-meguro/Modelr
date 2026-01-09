@@ -365,6 +365,9 @@ extension SimpleEditorViewModel {
             } else {
                 goBack()
             }
+        case .generateSettings:
+            // Settings don't have significant state, just go back
+            goBack()
         case .generate:
             // Warn if 3D model was generated
             if generated3DModelURL != nil || isGenerating {
@@ -391,6 +394,8 @@ extension SimpleEditorViewModel {
             return totalValidMasks == 0
         case .touchup:
             return maskHistory.isEmpty && editableMaskImage == nil
+        case .generateSettings:
+            return true  // Settings don't have significant state
         case .generate:
             return generated3DModelURL == nil && !isGenerating
         case .postProcess:

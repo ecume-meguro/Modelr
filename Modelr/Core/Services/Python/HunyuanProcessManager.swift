@@ -153,18 +153,33 @@ class HunyuanProcessManager {
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
         stderrPipe?.fileHandleForReading.readabilityHandler = nil
 
-        // Give brief grace period, then force kill
+        // Give brief grace period for graceful exit
         if proc.isRunning {
             usleep(200_000) // 200ms grace period
 
             if proc.isRunning {
-                // Kill the process group to ensure Python children are also killed
+                // Find and kill all child processes first (uv spawns Python in separate group)
+                let children = Self.findChildProcesses(pid)
+                for childPid in children.reversed() {
+                    print("[Hunyuan] Killing child PID \(childPid)")
+                    kill(childPid, SIGTERM)
+                }
+
+                if !children.isEmpty {
+                    usleep(100_000) // 100ms for SIGTERM
+                    for childPid in children.reversed() {
+                        kill(childPid, SIGKILL)
+                    }
+                }
+
+                // Also try process group (may work for some processes)
                 let pgid = getpgid(pid)
                 if pgid > 0 {
                     kill(-pgid, SIGTERM)
                     usleep(50_000) // 50ms
                     kill(-pgid, SIGKILL)
                 }
+
                 proc.terminate()
             }
 
@@ -178,6 +193,39 @@ class HunyuanProcessManager {
         stderrPipe = nil
 
         print("[Hunyuan] Server stopped")
+    }
+
+    /// Recursively find all child processes of a given PID
+    private static func findChildProcesses(_ pid: pid_t) -> [pid_t] {
+        var result: [pid_t] = []
+
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        task.arguments = ["-P", "\(pid)"]
+
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+
+        do {
+            try task.run()
+            task.waitUntilExit()
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let output = String(data: data, encoding: .utf8) {
+                let childPids = output.components(separatedBy: .newlines)
+                    .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+
+                for childPid in childPids {
+                    result.append(childPid)
+                    result.append(contentsOf: findChildProcesses(childPid))
+                }
+            }
+        } catch {
+            // Ignore - process may have already exited
+        }
+
+        return result
     }
 
     // MARK: - Communication

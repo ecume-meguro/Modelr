@@ -19,16 +19,18 @@ extension SimpleEditorViewModel {
                     self.generationStatus = stage
                     self.updateGenerationStages(status: stage, percent: percent)
                 case .completed(let url):
+                    // IMPORTANT: Set handoff stage FIRST, before changing isGenerating/URL
+                    // This ensures isInHandoff is true when SwiftUI re-renders, preventing
+                    // a flash of "Generation Complete" before handoff progress shows
+                    self.markPreviousStagesCompleted(before: .handoff)
+                    self.generationStages[.saving] = StageProgress(status: .completed, progress: 1.0, detail: "")
+                    self.generationStages[.handoff] = StageProgress(status: .inProgress, progress: 0, detail: "Analyzing...")
+
+                    // Now safe to update these - isInHandoff is already true
                     self.isGenerating = false
                     self.generated3DModelURL = url
                     if let startTime = self.generationStartTime {
                         self.generationDuration = Date().timeIntervalSince(startTime)
-                    }
-                    // Mark saving complete, show handoff in progress
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                        self.markPreviousStagesCompleted(before: .handoff)
-                        self.generationStages[.saving] = StageProgress(status: .completed, progress: 1.0, detail: "")
-                        self.generationStages[.handoff] = StageProgress(status: .inProgress, progress: 0, detail: "Analyzing...")
                     }
                     self.checkModelsDownloaded()
                     // Notify coordinator that generation is complete
@@ -68,10 +70,35 @@ extension SimpleEditorViewModel {
             .store(in: &cancellables)
     }
 
-    func transitionToGenerate() {
+    /// Transition to generate settings step (for customizing settings before generation)
+    func transitionToGenerateSettings() {
         // Check models downloaded (fast filesystem check)
         checkModelsDownloaded()
 
+        // Prepare composite image in background
+        prepareCompositeImage()
+
+        // Transition to settings step
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            currentStep = .generateSettings
+        }
+    }
+
+    /// Start generation from the settings step
+    func startGeneration() {
+        transitionToGenerateInternal(autoStart: true, preset: nil)
+    }
+
+    /// Immediately start generation with a preset (skips the settings screen)
+    func generateImmediately(with preset: GenerationPreset = .normal) {
+        selectedPreset = preset
+        customSteps = CGFloat(preset.steps)
+        customResolution = CGFloat(preset.resolution)
+        transitionToGenerateInternal(autoStart: true, preset: preset)
+    }
+
+    /// Prepare composite image for generation (called when entering settings or generating)
+    private func prepareCompositeImage() {
         // Capture data on main actor before detaching
         let existingMask = editableMaskImage
         let masks = segmentations.flatMap { $0.selectedMasks }
@@ -79,11 +106,6 @@ extension SimpleEditorViewModel {
 
         // Try to use preloaded composite first
         let preloadedComposite = preloadManager.getPreloadedComposite()
-
-        // Animate step change FIRST for immediate UI response
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-            currentStep = .generate
-        }
 
         if let composite = preloadedComposite {
             // Use preloaded composite immediately
@@ -121,6 +143,89 @@ extension SimpleEditorViewModel {
                 withAnimation(.easeOut(duration: 0.2)) {
                     compositeImage = composite
                 }
+            }
+        }
+    }
+
+    private func transitionToGenerateInternal(autoStart: Bool, preset: GenerationPreset?) {
+        // Check models downloaded (fast filesystem check)
+        checkModelsDownloaded()
+
+        // Track the step user was on before generation (for returning on cancel/stop)
+        stepBeforeGeneration = currentStep
+
+        // Set generation state BEFORE changing step to avoid flash
+        isGenerating = true
+        generationStartTime = Date()
+        generationStages = [:]
+
+        // Change step WITHOUT animation when auto-starting to prevent flash
+        currentStep = .generate
+
+        // If composite is already ready (from settings step), start generation immediately
+        if compositeImage != nil {
+            generate3D()
+            return
+        }
+
+        // Otherwise prepare composite and then start generation
+        // Capture data on main actor before detaching
+        let existingMask = editableMaskImage
+        let masks = segmentations.flatMap { $0.selectedMasks }
+        let source = inputImage
+
+        // Try to use preloaded composite first
+        let preloadedComposite = preloadManager.getPreloadedComposite()
+
+        if let composite = preloadedComposite {
+            // Use preloaded composite immediately
+            withAnimation(.easeOut(duration: 0.2)) {
+                compositeImage = composite
+            }
+            // Clear preloaded data
+            preloadManager.clearPreloadedComposite()
+            // Start generation
+            generate3D()
+        } else {
+            // Fall back to async composite creation
+            Task {
+                // If no mask yet, merge in background
+                let maskToUse: NSImage? = await {
+                    if let existing = existingMask {
+                        return existing
+                    }
+                    return await Task.detached(priority: .userInitiated) {
+                        ImageService.shared.mergeMasks(masks)
+                    }.value
+                }()
+
+                guard let mask = maskToUse else {
+                    // Reset isGenerating if we can't proceed
+                    isGenerating = false
+                    return
+                }
+
+                // Store the mask if we just created it
+                if editableMaskImage == nil {
+                    editableMaskImage = mask
+                }
+
+                // Create composite in background
+                guard let source = source else {
+                    // Reset isGenerating if we can't proceed
+                    isGenerating = false
+                    return
+                }
+                let composite = await Task.detached(priority: .userInitiated) {
+                    ImageService.shared.createCompositeImage(source: source, mask: mask)
+                }.value
+
+                withAnimation(.easeOut(duration: 0.2)) {
+                    compositeImage = composite
+                }
+
+                // Start generation now that composite is ready
+                generate3D()
             }
         }
     }
@@ -217,6 +322,14 @@ extension SimpleEditorViewModel {
         isGenerating = false
         markRemainingStagesCancelled()
         print("[Gen] Generation stopped by user")
+
+        // Return to the step user was on before starting generation
+        if let previousStep = stepBeforeGeneration {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+                currentStep = previousStep
+            }
+            stepBeforeGeneration = nil
+        }
     }
 
     func updateGenerationStages(status: String, percent: Double = 0) {

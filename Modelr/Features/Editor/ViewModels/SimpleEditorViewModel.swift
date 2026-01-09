@@ -26,8 +26,9 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         case input = 1
         case segment = 2
         case touchup = 3
-        case generate = 4
-        case postProcess = 5
+        case generateSettings = 4
+        case generate = 5
+        case postProcess = 6
 
         static func < (lhs: Step, rhs: Step) -> Bool {
             lhs.rawValue < rhs.rawValue
@@ -45,6 +46,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
             case .setup, .input: return false
             case .segment: return true  // Has segmentation masks
             case .touchup: return true  // Has edited mask
+            case .generateSettings: return false // Just settings, no state
             case .generate: return true // Has 3D model
             case .postProcess: return true // Has post-process edits
             }
@@ -155,6 +157,8 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     @Published var generationStages: [GenerationStage: StageProgress] = [:]
     @Published var isLargeModelDownloaded: Bool = false
     @Published var isSmallModelDownloaded: Bool = false
+    /// Tracks the step user was on before starting generation (for returning on cancel/stop)
+    var stepBeforeGeneration: Step?
 
     // MARK: - Warning Dialogs
     @Published var showBackWarning: Bool = false
@@ -185,6 +189,8 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         case wireframe = "Wireframe"
     }
     @Published var meshDisplayMode: MeshDisplayMode = .solid
+    /// Custom model color (user paint selection) - nil means use default coloring
+    @Published var customModelColor: NSColor? = nil
 
     // Post-process confirmations
     @Published var showApplyChangesConfirmation: Bool = false
@@ -410,6 +416,9 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         case .touchup:
             // No long-running tasks in touchup
             break
+        case .generateSettings:
+            // No long-running tasks in settings
+            break
         case .generate:
             generationTask?.cancel()
             generationTask = nil
@@ -448,8 +457,11 @@ class SimpleEditorViewModel: BaseEditorViewModel {
             isStrokeInProgress = false
             // Clear preloaded composite
             preloadManager.clearPreloadedComposite()
+        case .generateSettings:
+            // Going back to touchup - nothing to clean up
+            break
         case .generate:
-            // Going back to touchup - clear generation state
+            // Going back to settings - clear generation state
             compositeImage = nil
             generated3DModelURL = nil
             generationStages = [:]
@@ -470,6 +482,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
             componentFiles.removeAll()
             preloadedComponentNodes.removeAll()
             meshDisplayMode = .solid
+            customModelColor = nil
             // Also clear generated model so user can regenerate
             generated3DModelURL = nil
             generationStages = [:]
@@ -565,6 +578,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         componentFiles.removeAll()
         preloadedComponentNodes.removeAll()
         meshDisplayMode = .solid
+        customModelColor = nil
 
         // UI state
         zoomScale = 1.0

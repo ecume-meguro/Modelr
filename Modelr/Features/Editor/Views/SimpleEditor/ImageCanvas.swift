@@ -58,8 +58,9 @@ struct ImageCanvas: View {
                                 deleteIndices: viewModel.deleteIndices,
                                 highlightedIndex: viewModel.highlightedComponentIndex,
                                 isolatedIndex: viewModel.isolatedComponentIndex,
-                                displayMode: viewModel.meshDisplayMode,
-                                preloadedNodes: viewModel.preloadedComponentNodes
+                                displayMode: $viewModel.meshDisplayMode,
+                                preloadedNodes: viewModel.preloadedComponentNodes,
+                                customColor: $viewModel.customModelColor
                             )
                             .id("components-\(viewModel.componentFiles.count)")
                             .padding(AppDesign.Spacing.p24)
@@ -73,7 +74,8 @@ struct ImageCanvas: View {
                                 deleteIndices: viewModel.deleteIndices,
                                 highlightedIndex: viewModel.highlightedComponentIndex,
                                 isolatedIndex: viewModel.isolatedComponentIndex,
-                                displayMode: viewModel.meshDisplayMode
+                                displayMode: $viewModel.meshDisplayMode,
+                                customColor: $viewModel.customModelColor
                             )
                             .id("components-fallback-\(viewModel.componentFiles.count)")
                             .padding(AppDesign.Spacing.p24)
@@ -85,10 +87,7 @@ struct ImageCanvas: View {
                         }
                     }
 
-                    // Floating display mode pill
-                    if !viewModel.isAnalyzingMesh && !viewModel.isExtractingComponents && !viewModel.componentFiles.isEmpty {
-                        displayModePill
-                    }
+                    // Controls are now inside ComponentModelViewerContainer
                 }
                 .transition(.asymmetric(
                     insertion: .opacity.combined(with: .scale(scale: 0.98)).animation(.spring(response: 0.25, dampingFraction: 0.9)),
@@ -96,9 +95,9 @@ struct ImageCanvas: View {
                 ))
             }
 
-            // Generate step: show composite image throughout (including during handoff)
+            // Generate settings and generate steps: show composite image throughout (including during handoff)
             // Don't show the 3D model until we transition to postProcess
-            if viewModel.currentStep == .generate {
+            if viewModel.currentStep == .generateSettings || viewModel.currentStep == .generate {
                 if let composite = viewModel.compositeImage {
                     compositeImageView(composite)
                         .transition(.opacity.animation(.easeOut(duration: 0.18)))
@@ -550,49 +549,6 @@ extension ImageCanvas {
         }
     }
 
-    @ViewBuilder
-    var displayModePill: some View {
-        VStack {
-            HStack {
-                Spacer()
-                HStack(spacing: 4) {
-                    ForEach(SimpleEditorViewModel.MeshDisplayMode.allCases, id: \.self) { mode in
-                        let isSelected = viewModel.meshDisplayMode == mode
-
-                        Button {
-                            withAnimation(.easeOut(duration: 0.15)) {
-                                viewModel.meshDisplayMode = mode
-                            }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: mode == .solid ? "cube.fill" : "cube")
-                                    .font(.system(size: 11, weight: isSelected ? .medium : .regular))
-                                Text(mode == .solid ? "Solid" : "Wire")
-                                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
-                            }
-                            .foregroundStyle(isSelected ? .white : .white.opacity(0.7))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(
-                                isSelected ? Color.white.opacity(0.2) : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 6)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(4)
-                .background(.ultraThinMaterial.opacity(0.8))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
-                )
-                .padding(AppDesign.Spacing.p16)
-            }
-            Spacer()
-        }
-    }
 
     @ViewBuilder
     var toggleOriginalButton: some View {

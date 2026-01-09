@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Generation panel for ContentViewSimple
+/// Generation panel for ContentViewSimple - shows progress and completion status
 struct GenerationPanel: View {
     @ObservedObject var viewModel: SimpleEditorViewModel
 
@@ -11,40 +11,14 @@ struct GenerationPanel: View {
                 generationProgressView
             } else if let url = viewModel.generated3DModelURL {
                 generationCompletedView(url: url)
-            } else {
-                generationSettingsView
             }
+            // Settings are now shown in GenerationSettingsPanel
         }
     }
 
     @ViewBuilder
     private var generationProgressView: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
-            // Real-time 3D preview during volume decoding
-            if let previewImage = viewModel.generationPreviewImage,
-               viewModel.generationStages[.volumeDecoding]?.status == .inProgress {
-                VStack(spacing: AppDesign.Spacing.p8) {
-                    Image(nsImage: previewImage)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(maxHeight: 200)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .strokeBorder(AppDesign.accent.opacity(0.3), lineWidth: 1)
-                        )
-                        .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
-                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
-                        .animation(.easeOut(duration: 0.2), value: previewImage)
-
-                    Text("Mesh Preview")
-                        .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.bottom, AppDesign.Spacing.p8)
-            }
-
             // Stage progress list
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(visibleStages, id: \.self) { stage in
@@ -92,167 +66,6 @@ struct GenerationPanel: View {
                     Text(viewModel.formatDuration(duration))
                         .font(.system(size: AppDesign.FontSize.caption))
                         .foregroundColor(.secondary)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var generationSettingsView: some View {
-        VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
-            // Quality Preset Section (unified model + quality dropdown)
-            VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-                AppDesign.SectionLabel("Quality")
-
-                Menu {
-                    // Fast model presets (mini)
-                    Section("Fast (Mini)") {
-                        ForEach(GenerationPreset.fastPresets, id: \.self) { preset in
-                            Button {
-                                viewModel.selectedPreset = preset
-                                viewModel.customSteps = CGFloat(preset.steps)
-                                viewModel.customResolution = CGFloat(preset.resolution)
-                            } label: {
-                                HStack {
-                                    Text(preset.rawValue)
-                                    if !viewModel.isSmallModelDownloaded {
-                                        Image(systemName: "arrow.down.circle")
-                                            .foregroundStyle(.orange)
-                                    }
-                                    Spacer()
-                                    Text(preset.estimatedTime)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                    }
-
-                    Divider()
-
-                    // Quality model presets (2.1)
-                    Section("Quality (2.1)") {
-                        // Info row explaining the download icon
-                        if !viewModel.isLargeModelDownloaded {
-                            Label("Requires \(SetupModelChoice.quality.downloadSize) download on first use", systemImage: "info.circle")
-                                .foregroundStyle(.secondary)
-                                .font(.caption)
-                        }
-
-                        ForEach(GenerationPreset.qualityPresets, id: \.self) { preset in
-                            Button {
-                                viewModel.selectedPreset = preset
-                                viewModel.customSteps = CGFloat(preset.steps)
-                                viewModel.customResolution = CGFloat(preset.resolution)
-                            } label: {
-                                HStack {
-                                    Text(preset.rawValue)
-                                    if !viewModel.isLargeModelDownloaded {
-                                        Image(systemName: "arrow.down.circle")
-                                            .foregroundStyle(.orange)
-                                    }
-                                    Spacer()
-                                    Text(preset.estimatedTime)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    HStack {
-                        Text(viewModel.selectedPreset.rawValue)
-                            .font(.system(size: AppDesign.FontSize.body))
-                        // Show download icon if needed model isn't downloaded
-                        if (viewModel.selectedPreset.usesLargeModel && !viewModel.isLargeModelDownloaded) ||
-                           (viewModel.selectedPreset.usesMiniRepo && !viewModel.isSmallModelDownloaded) {
-                            Image(systemName: "arrow.down.circle")
-                                .font(.system(size: AppDesign.FontSize.caption))
-                                .foregroundStyle(.orange)
-                        }
-                        Spacer()
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.system(size: AppDesign.FontSize.caption))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, AppDesign.Spacing.p12)
-                    .padding(.vertical, AppDesign.Spacing.p8)
-                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(Color.primary.opacity(0.15), lineWidth: 1)
-                    )
-                }
-                .buttonStyle(.plain)
-
-                HStack {
-                    Text(viewModel.selectedPreset.description)
-                        .font(.system(size: AppDesign.FontSize.caption))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(viewModel.selectedPreset.estimatedTime)
-                        .font(.system(size: AppDesign.FontSize.caption, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                }
-
-                // Show download warning when model needs downloading
-                if viewModel.selectedPreset.usesLargeModel && !viewModel.isLargeModelDownloaded {
-                    HStack(spacing: AppDesign.Spacing.p4) {
-                        Image(systemName: "arrow.down.circle")
-                            .font(.system(size: AppDesign.FontSize.caption))
-                            .foregroundStyle(AppDesign.warning)
-                        Text("Will download \(SetupModelChoice.quality.downloadSize) on first use")
-                            .font(.system(size: AppDesign.FontSize.caption))
-                            .foregroundStyle(AppDesign.warning)
-                    }
-                } else if viewModel.selectedPreset.usesMiniRepo && !viewModel.isSmallModelDownloaded {
-                    HStack(spacing: AppDesign.Spacing.p4) {
-                        Image(systemName: "arrow.down.circle")
-                            .font(.system(size: AppDesign.FontSize.caption))
-                            .foregroundStyle(AppDesign.warning)
-                        Text("Will download \(SetupModelChoice.fast.downloadSize) on first use")
-                            .font(.system(size: AppDesign.FontSize.caption))
-                            .foregroundStyle(AppDesign.warning)
-                    }
-                }
-            }
-
-            // Advanced Settings Section
-            VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        viewModel.showAdvancedSettings.toggle()
-                    }
-                } label: {
-                    HStack(spacing: AppDesign.Spacing.p6) {
-                        Image(systemName: viewModel.showAdvancedSettings ? "chevron.down" : "chevron.right")
-                            .font(.system(size: AppDesign.FontSize.caption, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                            .frame(width: 12)
-                        Text("Advanced Settings")
-                            .font(.system(size: AppDesign.FontSize.subheadline, weight: .medium))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                    }
-                }
-                .buttonStyle(.plain)
-
-                if viewModel.showAdvancedSettings {
-                    VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
-                        AppDesign.SliderRow(
-                            label: "Steps",
-                            value: $viewModel.customSteps,
-                            range: 10...100,
-                            step: 5
-                        )
-                        AppDesign.SliderRow(
-                            label: "Resolution",
-                            value: $viewModel.customResolution,
-                            range: 64...512,
-                            step: 32
-                        )
-                        AppDesign.HintText("Higher values produce better detail but take longer.")
-                    }
-                    .padding(.leading, AppDesign.Spacing.p16)
-                    .transition(.opacity)
                 }
             }
         }

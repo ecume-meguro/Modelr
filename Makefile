@@ -14,7 +14,7 @@ build: generate
 # Build and run the application
 # Usage: make run
 run: build
-	./build/Build/Products/Debug/Modelr.app/Contents/MacOS/Modelr
+	./build/Build/Products/Debug/Modelr.app/Contents/MacOS/Modelr --refresh-resources
 	
 debug3d: build
 	./build/Build/Products/Debug/Modelr.app/Contents/MacOS/Modelr --debug-3d-viewer

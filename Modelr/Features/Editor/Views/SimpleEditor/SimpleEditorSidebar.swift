@@ -23,13 +23,16 @@ struct SimpleEditorSidebar: View {
                     stepRow(stepNumber: 2, title: "Segment", isLast: false, locked: !viewModel.isSetupComplete) {
                         segmentContent
                     }
-                    stepRow(stepNumber: 3, title: "Touchup (optional)", isLast: false, locked: !viewModel.isSetupComplete) {
+                    stepRow(stepNumber: 3, title: "Touchup", isLast: false, locked: !viewModel.isSetupComplete, isOptional: true) {
                         touchupContent
                     }
-                    stepRow(stepNumber: 4, title: "Generate 3D", isLast: false, locked: !viewModel.isSetupComplete) {
+                    stepRow(stepNumber: 4, title: "Settings", isLast: false, locked: !viewModel.isSetupComplete, isOptional: true) {
+                        generateSettingsContent
+                    }
+                    stepRow(stepNumber: 5, title: "Generate 3D", isLast: false, locked: !viewModel.isSetupComplete) {
                         generateContent
                     }
-                    stepRow(stepNumber: 5, title: "Post-Process", isLast: true, locked: !viewModel.isSetupComplete) {
+                    stepRow(stepNumber: 6, title: "Post-Process", isLast: true, locked: !viewModel.isSetupComplete) {
                         postProcessContent
                     }
                 }
@@ -202,72 +205,131 @@ struct SimpleEditorSidebar: View {
         title: String,
         isLast: Bool,
         locked: Bool = false,
+        isOptional: Bool = false,
         @ViewBuilder content: () -> some View
     ) -> some View {
         let isDone = locked ? false : isStepCompleted(stepNumber)
         let isActive = locked ? false : isStepActive(stepNumber)
-        let showContent = !locked && (isActive || isDone)
+        // Optional steps only show content when active, not when done (they collapse immediately)
+        let showContent = !locked && (isActive || (!isOptional && isDone))
+        let isSkippedOptional = isOptional && isDone && !isActive
+        let connectorColor = locked ? Color.secondary.opacity(0.1) : (isStepCompleted(stepNumber) ? AppDesign.success : Color.secondary.opacity(0.2))
+        let prevConnectorColor = locked ? Color.secondary.opacity(0.1) : (stepNumber == 1 ? (viewModel.isSetupComplete ? AppDesign.success : Color.secondary.opacity(0.2)) : (isStepCompleted(stepNumber - 1) ? AppDesign.success : Color.secondary.opacity(0.2)))
 
         VStack(alignment: .leading, spacing: 0) {
-            // Top connector (always show for step 1+ since setup is step 0)
-            Rectangle()
-                .fill(locked ? Color.secondary.opacity(0.1) : (stepNumber == 1 ? (viewModel.isSetupComplete ? AppDesign.success : Color.secondary.opacity(0.2)) : (isStepCompleted(stepNumber - 1) ? AppDesign.success : Color.secondary.opacity(0.2))))
-                .frame(width: 2, height: 8)
-                .padding(.leading, 11)
+            if isSkippedOptional {
+                // Skipped optional step - show circle with bypass arc around it
+                // Alternate sides: odd steps go left, even steps go right
+                let goesRight = stepNumber % 2 == 0
 
-            // Header: Circle + Title (always vertically centered together)
-            HStack(spacing: AppDesign.Spacing.p12) {
-                stepCircle(stepNumber: stepNumber, isDone: isDone, isActive: isActive, locked: locked)
-
-                Text(title)
-                    .font(.system(size: AppDesign.FontSize.body, weight: isActive ? .semibold : .regular))
-                    .foregroundStyle(locked ? .tertiary : (isActive ? .primary : .secondary))
-                    .animation(.easeInOut(duration: 0.2), value: isActive)
-
-                if locked {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: AppDesign.FontSize.xs))
-                        .foregroundStyle(.tertiary)
-                }
-
-                Spacer()
-            }
-
-            // Content area with side connector
-            if showContent {
-                HStack(alignment: .top, spacing: AppDesign.Spacing.p12) {
-                    // Side connector bar (or matching spacer for last item)
-                    if !isLast {
-                        Rectangle()
-                            .fill(isStepCompleted(stepNumber) ? AppDesign.success : Color.secondary.opacity(0.2))
-                            .frame(width: 2)
-                            .padding(.leading, 11)
-                            .animation(.easeInOut(duration: 0.25), value: isStepCompleted(stepNumber))
-                    } else {
-                        // Match connector bar width (2px + 11px padding = 13px)
-                        Color.clear
-                            .frame(width: 2)
-                            .padding(.leading, 11)
-                    }
-
-                    // Content
-                    VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-                        content()
-                    }
-                    .padding(.top, AppDesign.Spacing.p8)
-                    .padding(.bottom, AppDesign.Spacing.p4)
-                }
-                .fixedSize(horizontal: false, vertical: true)
-                .transition(.asymmetric(
-                    insertion: .opacity.combined(with: .scale(scale: 0.98, anchor: .top)).animation(.spring(response: 0.25, dampingFraction: 0.85)),
-                    removal: .opacity.animation(.easeOut(duration: 0.12))
-                ))
-            } else if !isLast {
-                // Collapsed connector
+                // Top connector
                 Rectangle()
-                    .fill(locked ? Color.secondary.opacity(0.1) : (isStepCompleted(stepNumber) ? AppDesign.success : Color.secondary.opacity(0.2)))
-                    .frame(width: 2, height: 12)
+                    .fill(prevConnectorColor)
+                    .frame(width: 2, height: 8)
                     .padding(.leading, 11)
+
+                HStack(spacing: AppDesign.Spacing.p12) {
+                    // Circle with bypass arc overlay
+                    ZStack {
+                        // Greyed out circle
+                        stepCircle(stepNumber: stepNumber, isDone: isDone, isActive: isActive, locked: locked, isOptional: isOptional)
+
+                        // Bypass arc around the circle - same size as circle (24x24)
+                        BypassArc(goesRight: goesRight)
+                            .stroke(connectorColor, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                            .frame(width: 24, height: 24)
+                    }
+
+                    HStack(spacing: AppDesign.Spacing.p4) {
+                        Text(title)
+                            .font(.system(size: AppDesign.FontSize.body, weight: .regular))
+                            .foregroundStyle(.tertiary)
+
+                        Text("(skipped)")
+                            .font(.system(size: AppDesign.FontSize.xs))
+                            .foregroundStyle(.quaternary)
+                    }
+
+                    Spacer()
+                }
+
+                // Bottom connector
+                if !isLast {
+                    Rectangle()
+                        .fill(connectorColor)
+                        .frame(width: 2, height: 8)
+                        .padding(.leading, 11)
+                }
+            } else {
+                // Normal step layout
+                // Top connector (always show for step 1+ since setup is step 0)
+                Rectangle()
+                    .fill(prevConnectorColor)
+                    .frame(width: 2, height: 8)
+                    .padding(.leading, 11)
+
+                // Header: Circle + Title (always vertically centered together)
+                HStack(spacing: AppDesign.Spacing.p12) {
+                    stepCircle(stepNumber: stepNumber, isDone: isDone, isActive: isActive, locked: locked, isOptional: isOptional)
+
+                    HStack(spacing: AppDesign.Spacing.p4) {
+                        Text(title)
+                            .font(.system(size: AppDesign.FontSize.body, weight: isActive ? .semibold : .regular))
+                            .foregroundStyle(locked ? .tertiary : (isActive ? .primary : (isOptional ? .tertiary : .secondary)))
+                            .animation(.easeInOut(duration: 0.2), value: isActive)
+
+                        if isOptional && !isActive {
+                            Text("(optional)")
+                                .font(.system(size: AppDesign.FontSize.xs))
+                                .foregroundStyle(.quaternary)
+                        }
+                    }
+
+                    if locked {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: AppDesign.FontSize.xs))
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    Spacer()
+                }
+
+                // Content area with side connector
+                if showContent {
+                    HStack(alignment: .top, spacing: AppDesign.Spacing.p12) {
+                        // Side connector bar (or matching spacer for last item)
+                        if !isLast {
+                            Rectangle()
+                                .fill(connectorColor)
+                                .frame(width: 2)
+                                .padding(.leading, 11)
+                                .animation(.easeInOut(duration: 0.25), value: isStepCompleted(stepNumber))
+                        } else {
+                            // Match connector bar width (2px + 11px padding = 13px)
+                            Color.clear
+                                .frame(width: 2)
+                                .padding(.leading, 11)
+                        }
+
+                        // Content
+                        VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
+                            content()
+                        }
+                        .padding(.top, AppDesign.Spacing.p8)
+                        .padding(.bottom, AppDesign.Spacing.p4)
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.98, anchor: .top)).animation(.spring(response: 0.25, dampingFraction: 0.85)),
+                        removal: .opacity.animation(.easeOut(duration: 0.12))
+                    ))
+                } else if !isLast {
+                    // Collapsed connector
+                    Rectangle()
+                        .fill(connectorColor)
+                        .frame(width: 2, height: 12)
+                        .padding(.leading, 11)
+                }
             }
         }
         .opacity(locked ? 0.6 : 1.0)
@@ -275,14 +337,36 @@ struct SimpleEditorSidebar: View {
         .animation(.spring(response: 0.22, dampingFraction: 0.78), value: isDone)
     }
 
+    /// Shape for bypass arc around skipped optional steps - semicircle on one side
+    private struct BypassArc: Shape {
+        var goesRight: Bool = false
+
+        func path(in rect: CGRect) -> Path {
+            var path = Path()
+            let center = CGPoint(x: rect.midX, y: rect.midY)
+            let radius = rect.width / 2
+
+            if goesRight {
+                // Arc on the right side (from top to bottom, going right)
+                path.addArc(center: center, radius: radius, startAngle: .degrees(-90), endAngle: .degrees(90), clockwise: false)
+            } else {
+                // Arc on the left side (from top to bottom, going left)
+                path.addArc(center: center, radius: radius, startAngle: .degrees(-90), endAngle: .degrees(90), clockwise: true)
+            }
+            return path
+        }
+    }
+
     @ViewBuilder
-    private func stepCircle(stepNumber: Int, isDone: Bool, isActive: Bool, locked: Bool = false) -> some View {
+    private func stepCircle(stepNumber: Int, isDone: Bool, isActive: Bool, locked: Bool = false, isOptional: Bool = false) -> some View {
         ZStack {
             Circle()
-                .fill(locked ? Color.secondary.opacity(0.1) : (isDone ? AppDesign.success : (isActive ? AppDesign.accent : Color.secondary.opacity(0.2))))
+                // Optional steps when done show grayed circle, not green checkmark
+                .fill(locked ? Color.secondary.opacity(0.1) : (isDone ? (isOptional ? Color.secondary.opacity(0.15) : AppDesign.success) : (isActive ? AppDesign.accent : Color.secondary.opacity(0.2))))
                 .frame(width: 24, height: 24)
 
-            if isDone && !locked {
+            if isDone && !locked && !isOptional {
+                // Only non-optional steps get checkmark
                 Image(systemName: "checkmark")
                     .font(.system(size: AppDesign.FontSize.caption, weight: .bold))
                     .foregroundStyle(.white)
@@ -290,7 +374,7 @@ struct SimpleEditorSidebar: View {
             } else {
                 Text("\(stepNumber)")
                     .font(.system(size: AppDesign.FontSize.caption, weight: .bold, design: .monospaced))
-                    .foregroundStyle(locked ? Color.secondary.opacity(0.5) : (isActive ? Color.white : Color.secondary))
+                    .foregroundStyle(locked ? Color.secondary.opacity(0.5) : (isActive ? Color.white : Color.secondary.opacity(isOptional && !isActive ? 0.4 : 1)))
             }
         }
         .animation(.spring(response: 0.22, dampingFraction: 0.72), value: isDone)
@@ -302,10 +386,11 @@ struct SimpleEditorSidebar: View {
     private func isStepCompleted(_ stepNumber: Int) -> Bool {
         switch stepNumber {
         case 1: return viewModel.inputImage != nil
-        case 2: return viewModel.currentStep == .touchup || viewModel.currentStep == .generate || viewModel.currentStep == .postProcess
-        case 3: return viewModel.currentStep == .generate || viewModel.currentStep == .postProcess
-        case 4: return viewModel.currentStep == .postProcess
-        case 5: return false
+        case 2: return viewModel.currentStep == .touchup || viewModel.currentStep == .generateSettings || viewModel.currentStep == .generate || viewModel.currentStep == .postProcess
+        case 3: return viewModel.currentStep == .generateSettings || viewModel.currentStep == .generate || viewModel.currentStep == .postProcess
+        case 4: return viewModel.currentStep == .generate || viewModel.currentStep == .postProcess
+        case 5: return viewModel.currentStep == .postProcess
+        case 6: return false
         default: return false
         }
     }
@@ -315,8 +400,9 @@ struct SimpleEditorSidebar: View {
         case 1: return viewModel.currentStep == .input
         case 2: return viewModel.currentStep == .segment
         case 3: return viewModel.currentStep == .touchup
-        case 4: return viewModel.currentStep == .generate
-        case 5: return viewModel.currentStep == .postProcess
+        case 4: return viewModel.currentStep == .generateSettings
+        case 5: return viewModel.currentStep == .generate
+        case 6: return viewModel.currentStep == .postProcess
         default: return false
         }
     }
@@ -361,15 +447,15 @@ struct SimpleEditorSidebar: View {
                         }
                         .padding(.bottom, AppDesign.Spacing.p4)
 
-                        // Two equal options (both secondary so user must choose)
-                        HStack(spacing: AppDesign.Spacing.p8) {
-                            AppDesign.GlassButtonSecondary("Refine Mask", icon: "wand.and.stars", disabled: viewModel.totalValidMasks == 0) {
-                                viewModel.startTouchup()
-                            }
-                            AppDesign.GlassButtonSecondary("Generate 3D", icon: "cube.fill", disabled: viewModel.totalValidMasks == 0) {
-                                viewModel.transitionToGenerate()
-                            }
+                        // Generate with preset row
+                        generateWithPresetRow
+
+                        // Secondary option
+                        AppDesign.InlineButton("Refine Mask", icon: "wand.and.stars") {
+                            viewModel.startTouchup()
                         }
+                        .opacity(viewModel.totalValidMasks == 0 ? 0.5 : 1)
+                        .disabled(viewModel.totalValidMasks == 0)
 
                         AppDesign.InlineButton("Back to Input", icon: "arrow.left") {
                             viewModel.handleBackAction()
@@ -401,9 +487,9 @@ struct SimpleEditorSidebar: View {
                     TouchupPanel(viewModel: viewModel)
 
                     sectionFooter {
-                        AppDesign.GlassButton("Next: Generate 3D", icon: "cube.fill") {
-                            viewModel.transitionToGenerate()
-                        }
+                        // Generate with preset row (same as segment tab)
+                        generateWithPresetRow
+
                         AppDesign.InlineButton("Back to Segment", icon: "arrow.left") {
                             viewModel.handleBackAction()
                         }
@@ -413,10 +499,8 @@ struct SimpleEditorSidebar: View {
                     insertion: .opacity.animation(.easeOut(duration: 0.18)),
                     removal: .opacity.animation(.easeOut(duration: 0.1))
                 ))
-            } else {
-                AppDesign.CompletedRow("Mask refined")
-                    .transition(.opacity.animation(.easeOut(duration: 0.15)))
             }
+            // Optional step - no completed row shown when done
         }
         .alert("Lose Touchup Changes?", isPresented: $viewModel.showBackWarning) {
             Button("Cancel", role: .cancel) { }
@@ -427,21 +511,31 @@ struct SimpleEditorSidebar: View {
     }
 
     @ViewBuilder
+    private var generateSettingsContent: some View {
+        Group {
+            if viewModel.currentStep == .generateSettings {
+                GenerationSettingsPanel(viewModel: viewModel)
+
+                sectionFooter {
+                    AppDesign.GlassButton("Generate Model", icon: "sparkles") {
+                        viewModel.startGeneration()
+                    }
+                    AppDesign.InlineButton("Back to Segment", icon: "arrow.left") {
+                        viewModel.handleBackAction()
+                    }
+                }
+            }
+            // Optional step - no completed row shown when done
+        }
+    }
+
+    @ViewBuilder
     private var generateContent: some View {
         Group {
             if viewModel.currentStep == .generate {
                 GenerationPanel(viewModel: viewModel)
 
-                if !viewModel.isGenerating && viewModel.generated3DModelURL == nil {
-                    sectionFooter {
-                        AppDesign.GlassButton("Generate Model", icon: "sparkles") {
-                            viewModel.generate3D()
-                        }
-                        AppDesign.InlineButton("Back to Touchup", icon: "arrow.left") {
-                            viewModel.handleBackAction()
-                        }
-                    }
-                } else if viewModel.isGenerating {
+                if viewModel.isGenerating {
                     sectionFooter {
                         AppDesign.GlassButtonSecondary("Stop Generation", icon: "stop.fill", destructive: true) {
                             viewModel.stopGeneration()
@@ -456,7 +550,7 @@ struct SimpleEditorSidebar: View {
             Button("Cancel", role: .cancel) { }
             Button("Discard", role: .destructive) { viewModel.goBack() }
         } message: {
-            Text("The generated 3D model will be kept on disk, but you'll return to touchup mode.")
+            Text("The generated 3D model will be kept on disk, but you'll return to settings.")
         }
     }
 
@@ -509,5 +603,152 @@ struct SimpleEditorSidebar: View {
             content()
         }
         .padding(.top, AppDesign.Spacing.p12)
+    }
+
+    // MARK: - Generate with Preset Row
+
+    @ViewBuilder
+    private var generateWithPresetRow: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p6) {
+            // Split button: Generate action + Preset dropdown
+            HStack(spacing: 0) {
+                // Main generate button
+                Button {
+                    viewModel.generateImmediately(with: viewModel.selectedPreset)
+                } label: {
+                    HStack(spacing: AppDesign.Spacing.p6) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 11))
+                        Text("Generate with")
+                            .font(.system(size: AppDesign.FontSize.subheadline, weight: .semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.leading, AppDesign.Spacing.p10)
+                    .padding(.trailing, AppDesign.Spacing.p6)
+                    .padding(.vertical, AppDesign.Spacing.p6)
+                }
+                .buttonStyle(.plain)
+
+                // Separator
+                Rectangle()
+                    .fill(Color.white.opacity(0.3))
+                    .frame(width: 1)
+                    .padding(.vertical, 4)
+
+                // Preset dropdown menu (same as GenerationPanel)
+                Menu {
+                    // Fast model presets (mini)
+                    Section("Fast (Mini)") {
+                        ForEach(GenerationPreset.fastPresets, id: \.self) { preset in
+                            Button {
+                                viewModel.selectedPreset = preset
+                                viewModel.customSteps = CGFloat(preset.steps)
+                                viewModel.customResolution = CGFloat(preset.resolution)
+                            } label: {
+                                HStack {
+                                    Text(preset.rawValue)
+                                    if !viewModel.isSmallModelDownloaded {
+                                        Image(systemName: "arrow.down.circle")
+                                            .foregroundStyle(.orange)
+                                    }
+                                    Spacer()
+                                    Text(preset.estimatedTime)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+
+                    Divider()
+
+                    // Quality model presets (2.1)
+                    if !viewModel.isLargeModelDownloaded {
+                        Section("Quality (2.1) — Requires \(SetupModelChoice.quality.downloadSize) download") {
+                            ForEach(GenerationPreset.qualityPresets, id: \.self) { preset in
+                                Button {
+                                    viewModel.selectedPreset = preset
+                                    viewModel.customSteps = CGFloat(preset.steps)
+                                    viewModel.customResolution = CGFloat(preset.resolution)
+                                } label: {
+                                    HStack {
+                                        Text(preset.rawValue)
+                                        Image(systemName: "arrow.down.circle")
+                                            .foregroundStyle(.orange)
+                                        Spacer()
+                                        Text(preset.estimatedTime)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        Section("Quality (2.1)") {
+                            ForEach(GenerationPreset.qualityPresets, id: \.self) { preset in
+                                Button {
+                                    viewModel.selectedPreset = preset
+                                    viewModel.customSteps = CGFloat(preset.steps)
+                                    viewModel.customResolution = CGFloat(preset.resolution)
+                                } label: {
+                                    HStack {
+                                        Text(preset.rawValue)
+                                        Spacer()
+                                        Text(preset.estimatedTime)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Divider()
+
+                    // Custom settings option - goes to settings step
+                    Button {
+                        viewModel.transitionToGenerateSettings()
+                    } label: {
+                        Label("Custom Settings", systemImage: "slider.horizontal.3")
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(viewModel.selectedPreset.rawValue)
+                            .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.leading, AppDesign.Spacing.p6)
+                    .padding(.vertical, AppDesign.Spacing.p6)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+
+                // Explicit trailing space (Menu ignores label padding)
+                Spacer().frame(width: AppDesign.Spacing.p10)
+            }
+            .background(AppDesign.accent, in: RoundedRectangle(cornerRadius: 6))
+            .opacity(viewModel.totalValidMasks == 0 ? 0.5 : 1)
+            .allowsHitTesting(viewModel.totalValidMasks > 0)
+
+            // Download warning if needed
+            if viewModel.selectedPreset.usesLargeModel && !viewModel.isLargeModelDownloaded {
+                HStack(spacing: AppDesign.Spacing.p4) {
+                    Image(systemName: "arrow.down.circle")
+                        .font(.system(size: AppDesign.FontSize.xs))
+                        .foregroundStyle(AppDesign.warning)
+                    Text("Will download \(SetupModelChoice.quality.downloadSize) on first use")
+                        .font(.system(size: AppDesign.FontSize.xs))
+                        .foregroundStyle(AppDesign.warning)
+                }
+            } else if viewModel.selectedPreset.usesMiniRepo && !viewModel.isSmallModelDownloaded {
+                HStack(spacing: AppDesign.Spacing.p4) {
+                    Image(systemName: "arrow.down.circle")
+                        .font(.system(size: AppDesign.FontSize.xs))
+                        .foregroundStyle(AppDesign.warning)
+                    Text("Will download \(SetupModelChoice.fast.downloadSize) on first use")
+                        .font(.system(size: AppDesign.FontSize.xs))
+                        .foregroundStyle(AppDesign.warning)
+                }
+            }
+        }
     }
 }

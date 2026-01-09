@@ -13,6 +13,13 @@ struct ComponentModelViewer: NSViewRepresentable {
     let displayMode: SimpleEditorViewModel.MeshDisplayMode
     /// Pre-loaded SceneKit nodes for instant rendering (optional - falls back to loading from disk if empty)
     var preloadedNodes: [Int: SCNNode] = [:]
+    /// Custom color override (when user selects a paint color)
+    var customColor: NSColor? = nil
+
+    /// Check if artifacts are present (items in both keep and delete lists)
+    var hasArtifacts: Bool {
+        !keepIndices.isEmpty && !deleteIndices.isEmpty
+    }
 
     struct ComponentFile: Identifiable {
         let id = UUID()
@@ -39,6 +46,8 @@ struct ComponentModelViewer: NSViewRepresentable {
             isolatedIndex: isolatedIndex,
             displayMode: displayMode,
             preloadedNodes: preloadedNodes,
+            hasArtifacts: hasArtifacts,
+            customColor: customColor,
             into: scene,
             view: scnView
         )
@@ -56,6 +65,8 @@ struct ComponentModelViewer: NSViewRepresentable {
             highlightedIndex: highlightedIndex,
             isolatedIndex: isolatedIndex,
             displayMode: displayMode,
+            hasArtifacts: hasArtifacts,
+            customColor: customColor,
             in: scene
         )
     }
@@ -120,6 +131,7 @@ struct ComponentModelViewer: NSViewRepresentable {
         private let keepColor = NSColor(red: 0.2, green: 0.85, blue: 0.4, alpha: 1.0)      // Green
         private let deleteColor = NSColor(red: 0.95, green: 0.3, blue: 0.3, alpha: 1.0)   // Red
         private let highlightColor = NSColor(red: 1.0, green: 0.9, blue: 0.2, alpha: 1.0) // Yellow
+        private let neutralColor = NSColor(white: 0.7, alpha: 1.0)                         // Gray clay
 
         func loadComponents(
             _ files: [ComponentFile],
@@ -129,6 +141,8 @@ struct ComponentModelViewer: NSViewRepresentable {
             isolatedIndex: Int?,
             displayMode: SimpleEditorViewModel.MeshDisplayMode,
             preloadedNodes: [Int: SCNNode],
+            hasArtifacts: Bool,
+            customColor: NSColor?,
             into scene: SCNScene,
             view: SCNView
         ) {
@@ -162,7 +176,9 @@ struct ComponentModelViewer: NSViewRepresentable {
                             deleteIndices: deleteIndices,
                             highlightedIndex: highlightedIndex,
                             isolatedIndex: isolatedIndex,
-                            displayMode: displayMode
+                            displayMode: displayMode,
+                            hasArtifacts: hasArtifacts,
+                            customColor: customColor
                         )
                     }
 
@@ -205,7 +221,9 @@ struct ComponentModelViewer: NSViewRepresentable {
                                 deleteIndices: deleteIndices,
                                 highlightedIndex: highlightedIndex,
                                 isolatedIndex: isolatedIndex,
-                                displayMode: displayMode
+                                displayMode: displayMode,
+                                hasArtifacts: hasArtifacts,
+                                customColor: customColor
                             )
                             componentNode.addChildNode(cloned)
                         }
@@ -239,7 +257,9 @@ struct ComponentModelViewer: NSViewRepresentable {
             deleteIndices: Set<Int>,
             highlightedIndex: Int?,
             isolatedIndex: Int?,
-            displayMode: SimpleEditorViewModel.MeshDisplayMode
+            displayMode: SimpleEditorViewModel.MeshDisplayMode,
+            hasArtifacts: Bool,
+            customColor: NSColor?
         ) {
             applyMaterial(
                 node: node,
@@ -248,7 +268,9 @@ struct ComponentModelViewer: NSViewRepresentable {
                 deleteIndices: deleteIndices,
                 highlightedIndex: highlightedIndex,
                 isolatedIndex: isolatedIndex,
-                displayMode: displayMode
+                displayMode: displayMode,
+                hasArtifacts: hasArtifacts,
+                customColor: customColor
             )
         }
 
@@ -274,6 +296,8 @@ struct ComponentModelViewer: NSViewRepresentable {
             highlightedIndex: Int?,
             isolatedIndex: Int?,
             displayMode: SimpleEditorViewModel.MeshDisplayMode,
+            hasArtifacts: Bool,
+            customColor: NSColor?,
             in scene: SCNScene
         ) {
             for (index, node) in componentNodes {
@@ -292,7 +316,9 @@ struct ComponentModelViewer: NSViewRepresentable {
                     deleteIndices: deleteIndices,
                     highlightedIndex: highlightedIndex,
                     isolatedIndex: isolatedIndex,
-                    displayMode: displayMode
+                    displayMode: displayMode,
+                    hasArtifacts: hasArtifacts,
+                    customColor: customColor
                 )
             }
         }
@@ -304,13 +330,17 @@ struct ComponentModelViewer: NSViewRepresentable {
             deleteIndices: Set<Int>,
             highlightedIndex: Int?,
             isolatedIndex: Int?,
-            displayMode: SimpleEditorViewModel.MeshDisplayMode
+            displayMode: SimpleEditorViewModel.MeshDisplayMode,
+            hasArtifacts: Bool,
+            customColor: NSColor?
         ) {
             let color = colorForComponent(
                 index: index,
                 keepIndices: keepIndices,
                 deleteIndices: deleteIndices,
-                highlightedIndex: highlightedIndex
+                highlightedIndex: highlightedIndex,
+                hasArtifacts: hasArtifacts,
+                customColor: customColor
             )
 
             node.geometry?.materials.forEach { material in
@@ -327,7 +357,9 @@ struct ComponentModelViewer: NSViewRepresentable {
                     deleteIndices: deleteIndices,
                     highlightedIndex: highlightedIndex,
                     isolatedIndex: isolatedIndex,
-                    displayMode: displayMode
+                    displayMode: displayMode,
+                    hasArtifacts: hasArtifacts,
+                    customColor: customColor
                 )
             }
         }
@@ -339,13 +371,17 @@ struct ComponentModelViewer: NSViewRepresentable {
             deleteIndices: Set<Int>,
             highlightedIndex: Int?,
             isolatedIndex: Int?,
-            displayMode: SimpleEditorViewModel.MeshDisplayMode
+            displayMode: SimpleEditorViewModel.MeshDisplayMode,
+            hasArtifacts: Bool,
+            customColor: NSColor?
         ) {
             let color = colorForComponent(
                 index: index,
                 keepIndices: keepIndices,
                 deleteIndices: deleteIndices,
-                highlightedIndex: highlightedIndex
+                highlightedIndex: highlightedIndex,
+                hasArtifacts: hasArtifacts,
+                customColor: customColor
             )
 
             node.geometry?.materials.forEach { material in
@@ -361,7 +397,9 @@ struct ComponentModelViewer: NSViewRepresentable {
                     deleteIndices: deleteIndices,
                     highlightedIndex: highlightedIndex,
                     isolatedIndex: isolatedIndex,
-                    displayMode: displayMode
+                    displayMode: displayMode,
+                    hasArtifacts: hasArtifacts,
+                    customColor: customColor
                 )
             }
         }
@@ -389,22 +427,31 @@ struct ComponentModelViewer: NSViewRepresentable {
             index: Int,
             keepIndices: Set<Int>,
             deleteIndices: Set<Int>,
-            highlightedIndex: Int?
+            highlightedIndex: Int?,
+            hasArtifacts: Bool,
+            customColor: NSColor?
         ) -> NSColor {
             // Highlighted overrides everything - bright yellow
             if highlightedIndex == index {
                 return highlightColor
             }
 
-            // Keep = green, Delete = red
-            if keepIndices.contains(index) {
-                return keepColor
-            } else if deleteIndices.contains(index) {
-                return deleteColor
+            // Custom color takes priority (user paint selection)
+            if let custom = customColor {
+                return custom
             }
 
-            // Fallback (shouldn't happen) - gray
-            return NSColor.gray
+            // Only show keep/delete colors if there are actual artifacts (items in both lists)
+            if hasArtifacts {
+                if keepIndices.contains(index) {
+                    return keepColor
+                } else if deleteIndices.contains(index) {
+                    return deleteColor
+                }
+            }
+
+            // No artifacts or fallback - use neutral gray clay
+            return neutralColor
         }
     }
 }
@@ -416,8 +463,15 @@ struct ComponentModelViewerContainer: View {
     let deleteIndices: Set<Int>
     let highlightedIndex: Int?
     let isolatedIndex: Int?
-    let displayMode: SimpleEditorViewModel.MeshDisplayMode
+    @Binding var displayMode: SimpleEditorViewModel.MeshDisplayMode
     var preloadedNodes: [Int: SCNNode] = [:]
+    @Binding var customColor: NSColor?
+    @State private var showColorPicker = false
+
+    /// Check if artifacts are present (items in both keep and delete lists)
+    private var hasArtifacts: Bool {
+        !keepIndices.isEmpty && !deleteIndices.isEmpty
+    }
 
     var body: some View {
         ZStack {
@@ -433,40 +487,21 @@ struct ComponentModelViewerContainer: View {
                     highlightedIndex: highlightedIndex,
                     isolatedIndex: isolatedIndex,
                     displayMode: displayMode,
-                    preloadedNodes: preloadedNodes
+                    preloadedNodes: preloadedNodes,
+                    customColor: customColor
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
+                // Bottom-left vertical controls
                 VStack {
                     Spacer()
                     HStack {
-                        // Color legend
-                        HStack(spacing: AppDesign.Spacing.p12) {
-                            legendItem(color: .green, label: "Keep")
-                            legendItem(color: .red, label: "Delete")
-                            if highlightedIndex != nil {
-                                legendItem(color: .yellow, label: "Selected")
-                            }
-                        }
-                        .font(.system(size: AppDesign.FontSize.xs, weight: .medium))
-                        .foregroundColor(.white.opacity(0.8))
-                        .padding(.horizontal, AppDesign.Spacing.p12)
-                        .padding(.vertical, AppDesign.Spacing.p6)
-                        .background(.ultraThinMaterial.opacity(0.8))
-                        .clipShape(Capsule())
-
+                        viewerControls
                         Spacer()
-
-                        HStack(spacing: AppDesign.Spacing.p6) {
-                            Image(systemName: "hand.draw")
-                            Text("Drag to rotate")
+                        // Legend only when artifacts present
+                        if hasArtifacts {
+                            colorLegend
                         }
-                        .font(.system(size: AppDesign.FontSize.xs, weight: .medium))
-                        .foregroundColor(.white.opacity(0.8))
-                        .padding(.horizontal, AppDesign.Spacing.p12)
-                        .padding(.vertical, AppDesign.Spacing.p6)
-                        .background(.ultraThinMaterial.opacity(0.8))
-                        .clipShape(Capsule())
                     }
                 }
                 .padding(AppDesign.Spacing.p12)
@@ -483,6 +518,174 @@ struct ComponentModelViewerContainer: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(Color.white.opacity(0.1), lineWidth: 1)
         )
+    }
+
+    // MARK: - Viewer Controls (Bottom-Left, Vertical)
+
+    @ViewBuilder
+    private var viewerControls: some View {
+        VStack(spacing: 6) {
+            // Solid/Wire toggle
+            ForEach(SimpleEditorViewModel.MeshDisplayMode.allCases, id: \.self) { mode in
+                controlButton(
+                    icon: mode == .solid ? "cube.fill" : "cube",
+                    label: mode == .solid ? "Solid" : "Wire",
+                    isSelected: displayMode == mode
+                ) {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        displayMode = mode
+                    }
+                }
+            }
+
+            Divider()
+                .frame(width: 32)
+                .background(Color.white.opacity(0.2))
+                .padding(.vertical, 2)
+
+            // Paint button
+            controlButton(
+                icon: customColor != nil ? "paintbrush.fill" : "paintbrush",
+                label: "Paint",
+                isSelected: customColor != nil || showColorPicker,
+                tint: customColor.map { Color(nsColor: $0) }
+            ) {
+                showColorPicker.toggle()
+            }
+            .popover(isPresented: $showColorPicker, arrowEdge: .trailing) {
+                colorPickerPopover
+            }
+        }
+        .padding(8)
+        .background(.ultraThinMaterial.opacity(0.9))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private func controlButton(
+        icon: String,
+        label: String,
+        isSelected: Bool,
+        tint: Color? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 2) {
+                Image(systemName: icon)
+                    .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
+                Text(label)
+                    .font(.system(size: 9, weight: isSelected ? .semibold : .regular))
+            }
+            .foregroundStyle(tint ?? (isSelected ? .white : .white.opacity(0.7)))
+            .frame(width: 44, height: 40)
+            .background(
+                isSelected ? Color.white.opacity(0.2) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 6)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Color Picker
+
+    @ViewBuilder
+    private var colorPickerPopover: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+            Text("Model Color")
+                .font(.system(size: AppDesign.FontSize.caption, weight: .semibold))
+                .foregroundStyle(.secondary)
+
+            // Preset colors
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 28))], spacing: 8) {
+                // Reset to default
+                Button {
+                    customColor = nil
+                    showColorPicker = false
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(Color(white: 0.7))
+                            .frame(width: 28, height: 28)
+                        if customColor == nil {
+                            Circle()
+                                .strokeBorder(Color.white, lineWidth: 2)
+                                .frame(width: 28, height: 28)
+                        }
+                        Text("×")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
+                }
+                .buttonStyle(.plain)
+                .help("Default (Gray)")
+
+                ForEach(presetColors, id: \.self) { color in
+                    Button {
+                        customColor = color
+                        showColorPicker = false
+                    } label: {
+                        Circle()
+                            .fill(Color(nsColor: color))
+                            .frame(width: 28, height: 28)
+                            .overlay(
+                                Circle()
+                                    .strokeBorder(
+                                        customColor == color ? Color.white : Color.clear,
+                                        lineWidth: 2
+                                    )
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Divider()
+
+            // Custom color picker
+            ColorPicker("Custom", selection: Binding(
+                get: { Color(nsColor: customColor ?? NSColor.gray) },
+                set: { customColor = NSColor($0) }
+            ))
+            .labelsHidden()
+        }
+        .padding(AppDesign.Spacing.p12)
+        .frame(width: 180)
+    }
+
+    private var presetColors: [NSColor] {
+        [
+            NSColor(red: 0.95, green: 0.6, blue: 0.5, alpha: 1.0),   // Terracotta
+            NSColor(red: 0.9, green: 0.85, blue: 0.7, alpha: 1.0),  // Cream
+            NSColor(red: 0.6, green: 0.75, blue: 0.85, alpha: 1.0), // Sky blue
+            NSColor(red: 0.7, green: 0.85, blue: 0.7, alpha: 1.0),  // Mint
+            NSColor(red: 0.85, green: 0.7, blue: 0.85, alpha: 1.0), // Lavender
+            NSColor(red: 1.0, green: 0.85, blue: 0.5, alpha: 1.0),  // Gold
+            NSColor(red: 0.4, green: 0.4, blue: 0.45, alpha: 1.0),  // Dark gray
+            NSColor(red: 0.95, green: 0.95, blue: 0.95, alpha: 1.0) // White
+        ]
+    }
+
+    // MARK: - Color Legend
+
+    @ViewBuilder
+    private var colorLegend: some View {
+        HStack(spacing: AppDesign.Spacing.p12) {
+            legendItem(color: .green, label: "Keep")
+            legendItem(color: .red, label: "Delete")
+            if highlightedIndex != nil {
+                legendItem(color: .yellow, label: "Selected")
+            }
+        }
+        .font(.system(size: AppDesign.FontSize.xs, weight: .medium))
+        .foregroundColor(.white.opacity(0.8))
+        .padding(.horizontal, AppDesign.Spacing.p12)
+        .padding(.vertical, AppDesign.Spacing.p6)
+        .background(.ultraThinMaterial.opacity(0.8))
+        .clipShape(Capsule())
     }
 
     @ViewBuilder
