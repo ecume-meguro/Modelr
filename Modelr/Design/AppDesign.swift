@@ -49,6 +49,54 @@ enum AppDesign {
         static let xxl: CGFloat = 22
     }
 
+    // MARK: - Opacity Values (Standardized Tokens)
+
+    enum Opacity {
+        /// Subtle background tint (e.g., hover states, very light fills)
+        static let subtle: Double = 0.03
+        /// Light background tint (e.g., cards, selected states)
+        static let light: Double = 0.05
+        /// Soft background (e.g., secondary containers)
+        static let soft: Double = 0.08
+        /// Medium opacity (e.g., dividers, borders)
+        static let medium: Double = 0.1
+        /// Semi-transparent (e.g., overlays, badges)
+        static let semi: Double = 0.15
+        /// Moderate opacity (e.g., strong borders, inactive states)
+        static let moderate: Double = 0.2
+        /// Prominent opacity (e.g., shadows, disabled states)
+        static let prominent: Double = 0.3
+        /// High opacity (e.g., modal overlays)
+        static let high: Double = 0.5
+    }
+
+    // MARK: - Component Sizes
+
+    enum Size {
+        /// Workflow step circle diameter
+        static let stepCircle: CGFloat = 24
+        /// Sub-step indicator circle diameter
+        static let subStepCircle: CGFloat = 16
+        /// Connector line width
+        static let connectorWidth: CGFloat = 2
+        /// Connector offset from edge
+        static let connectorOffset: CGFloat = 11
+        /// Small connector segment height
+        static let connectorSegmentSmall: CGFloat = 8
+        /// Medium connector segment height
+        static let connectorSegmentMedium: CGFloat = 12
+        /// Icon size small
+        static let iconSmall: CGFloat = 10
+        /// Icon size medium
+        static let iconMedium: CGFloat = 12
+        /// Standard corner radius
+        static let cornerRadius: CGFloat = 8
+        /// Large corner radius
+        static let cornerRadiusLarge: CGFloat = 12
+        /// Button min height
+        static let buttonMinHeight: CGFloat = 32
+    }
+
     // MARK: - Semantic Colors
 
     static let accent = Color.accentColor
@@ -158,6 +206,8 @@ enum AppDesign {
             .tint(isDisabled ? Color.secondary.opacity(0.3) : accent)
             .disabled(isDisabled)
             .shadow(color: isDisabled ? .clear : accent.opacity(0.15), radius: 8, y: 2)
+            .accessibilityLabel(title)
+            .accessibilityHint(isDisabled ? "Button is disabled" : "Double-tap to activate")
         }
     }
 
@@ -191,6 +241,8 @@ enum AppDesign {
             .buttonStyle(.bordered)
             .tint(destructive ? .red : nil)
             .disabled(isDisabled)
+            .accessibilityLabel(title)
+            .accessibilityHint(destructive ? "This action cannot be undone" : "")
         }
     }
 
@@ -210,6 +262,9 @@ enum AppDesign {
             }
             .buttonStyle(.bordered)
             .tint(isSelected ? tint : nil)
+            .accessibilityLabel(title)
+            .accessibilityValue(isSelected ? "Selected" : "Not selected")
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
         }
     }
 
@@ -239,6 +294,7 @@ enum AppDesign {
                 .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(title)
         }
     }
 
@@ -267,6 +323,15 @@ enum AppDesign {
         let range: ClosedRange<CGFloat>
         var step: CGFloat = 1
         var valueSuffix: String = ""
+        var format: String? = nil  // Optional format string (e.g. "%.1f")
+
+        private var formattedValue: String {
+            if let format = format {
+                return String(format: format, Double(value))
+            } else {
+                return "\(Int(value))"
+            }
+        }
 
         var body: some View {
             VStack(alignment: .leading, spacing: Spacing.p4) {
@@ -275,7 +340,7 @@ enum AppDesign {
                         .font(.system(size: FontSize.subheadline))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(Int(value))\(valueSuffix)")
+                    Text("\(formattedValue)\(valueSuffix)")
                         .font(.system(size: FontSize.subheadline, weight: .medium, design: .monospaced))
                 }
 

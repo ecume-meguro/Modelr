@@ -1,4 +1,5 @@
 import Foundation
+import os.log
 
 /// Strategy for loading ML models based on available system memory
 enum ModelLoadingStrategy: String {
@@ -69,6 +70,23 @@ class ModelLoadingCoordinator: ObservableObject {
 
     private var startupTask: Task<Void, Never>?
     private var vlmStartupTask: Task<Void, Never>?
+
+    /// Maximum time to wait for a server to start (in seconds)
+    private static let startupTimeoutSeconds: TimeInterval = 120
+
+    /// Wait for a condition with timeout to prevent infinite loops
+    /// - Parameters:
+    ///   - condition: Closure that returns true while we should keep waiting
+    ///   - timeout: Maximum time to wait in seconds (defaults to 120s)
+    /// - Returns: true if condition became false (success), false if timed out
+    private func waitForCondition(_ condition: () -> Bool, timeout: TimeInterval? = nil) async -> Bool {
+        let effectiveTimeout = timeout ?? ModelLoadingCoordinator.startupTimeoutSeconds
+        let deadline = Date().addingTimeInterval(effectiveTimeout)
+        while condition() && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+        }
+        return !condition()
+    }
 
     private init() {
         self.systemRAM = ProcessInfo.processInfo.physicalMemory
@@ -252,10 +270,11 @@ class ModelLoadingCoordinator: ObservableObject {
             return true
         }
 
-        // Already starting, wait for it
+        // Already starting, wait for it with timeout
         if isStartingVLM {
-            while isStartingVLM {
-                try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+            let completed = await waitForCondition { self.isStartingVLM }
+            if !completed {
+                print("[ModelLoadingCoordinator] VLM startup wait timed out")
             }
             return isVLMReady
         }
@@ -275,6 +294,8 @@ class ModelLoadingCoordinator: ObservableObject {
         return try await manager.describeImage(imagePath: imagePath)
     }
 
+    // MARK: - Hunyuan Server Management
+
     /// Ensure Hunyuan server is running (starts if needed)
     /// For conservative strategy, this should be called before generation
     func ensureHunyuanReady(env: PythonEnvironment) async -> Bool {
@@ -283,11 +304,11 @@ class ModelLoadingCoordinator: ObservableObject {
             return true
         }
 
-        // Already starting, wait for it
+        // Already starting, wait for it with timeout
         if isStartingHunyuan {
-            // Wait for startup to complete
-            while isStartingHunyuan {
-                try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+            let completed = await waitForCondition { self.isStartingHunyuan }
+            if !completed {
+                print("[ModelLoadingCoordinator] Hunyuan startup wait timed out")
             }
             return isHunyuanReady
         }
@@ -315,10 +336,11 @@ class ModelLoadingCoordinator: ObservableObject {
             return true
         }
 
-        // Already starting, wait for it
+        // Already starting, wait for it with timeout
         if isStartingHunyuan {
-            while isStartingHunyuan {
-                try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+            let completed = await waitForCondition { self.isStartingHunyuan }
+            if !completed {
+                print("[ModelLoadingCoordinator] Hunyuan startup wait timed out")
             }
             // Check if the started variant matches what we need
             if hunyuanVariant == variant && isHunyuanReady {
@@ -350,6 +372,9 @@ class ModelLoadingCoordinator: ObservableObject {
         outputPath: String,
         steps: Int,
         resolution: Int,
+        guidanceScale: Double = 5.0,
+        boxV: Double = 1.01,
+        mcLevel: Double = 0.0,
         onProgress: ((String, String, Double) -> Void)?
     ) async throws -> URL {
         guard let manager = hunyuanProcessManager, manager.isRunning else {
@@ -362,7 +387,10 @@ class ModelLoadingCoordinator: ObservableObject {
             maskPath: maskPath,
             outputPath: outputPath,
             steps: steps,
-            resolution: resolution
+            resolution: resolution,
+            guidanceScale: guidanceScale,
+            boxV: boxV,
+            mcLevel: mcLevel
         )
 
         // Track progress from both JSON callbacks AND tqdm stderr parsing
@@ -503,7 +531,10 @@ class ModelLoadingCoordinator: ObservableObject {
     }
 
     /// Called before generation step - handles model offloading for conservative strategy
-    func prepareForGeneration(env: PythonEnvironment) async -> Bool {
+    /// - Parameters:
+    ///   - env: Python environment
+    ///   - variant: The model variant to load ("mini" or "std")
+    func prepareForGeneration(env: PythonEnvironment, variant: String = "mini") async -> Bool {
         if strategy == .conservative {
             print("[ModelLoadingCoordinator] Conservative strategy: Offloading SAM model before generation...")
             env.stopPersistentWorker()
@@ -511,14 +542,14 @@ class ModelLoadingCoordinator: ObservableObject {
             // Small delay to ensure resources are released
             try? await Task.sleep(nanoseconds: 500_000_000)  // 0.5 seconds
 
-            print("[ModelLoadingCoordinator] SAM model offloaded, starting Hunyuan server...")
+            print("[ModelLoadingCoordinator] SAM model offloaded, starting Hunyuan server (variant: \(variant))...")
 
-            // Start Hunyuan server for generation
-            return await ensureHunyuanReady(env: env)
+            // Start Hunyuan server for generation with the requested variant
+            return await ensureHunyuanReady(env: env, variant: variant)
         }
 
-        // For aggressive strategy, Hunyuan should already be running
-        return await ensureHunyuanReady(env: env)
+        // For aggressive strategy, ensure correct variant is running
+        return await ensureHunyuanReady(env: env, variant: variant)
     }
 
     /// Called after generation completes

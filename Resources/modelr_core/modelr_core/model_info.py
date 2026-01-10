@@ -95,7 +95,7 @@ def get_model_size(model_key: str, use_fallback: bool = True) -> int:
     """Get the download size for a model in bytes by querying HuggingFace Hub.
 
     Args:
-        model_key: One of "hunyuan-mini", "hunyuan-std", "sam3"
+        model_key: One of "hunyuan-mini", "hunyuan-std", "sam3", "vlm-qwen3"
         use_fallback: If True, return fallback size when query fails
 
     Returns:
@@ -122,7 +122,7 @@ def get_model_size_formatted(model_key: str) -> str:
     """Get a human-readable size string for a model.
 
     Args:
-        model_key: One of "hunyuan-mini", "hunyuan-std", "sam3"
+        model_key: One of "hunyuan-mini", "hunyuan-std", "sam3", "vlm-qwen3"
 
     Returns:
         Formatted string like "~3.8 GB"

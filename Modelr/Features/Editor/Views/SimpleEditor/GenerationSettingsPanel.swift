@@ -1,98 +1,247 @@
 import SwiftUI
 
-/// Settings panel for 3D generation (presets, steps, resolution)
+/// Settings panel for 3D generation (Hunyuan-only)
 struct GenerationSettingsPanel: View {
     @ObservedObject var viewModel: SimpleEditorViewModel
+    @State private var showAdvanced = false
+    @State private var selectedVariant: HunyuanVariant = .mini
 
     var body: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p16) {
+            // Model & Preset Selection
+            modelAndPresetSection
+
+            // Download warning if model needs downloading
+            downloadWarningSection
+
+            // Advanced settings (collapsible)
+            advancedSection
+        }
+        .onAppear {
+            // Sync variant from current preset
+            selectedVariant = viewModel.selectedPreset.variant
+            syncSlidersWithPreset()
+        }
+    }
+
+    // MARK: - Model & Preset Section
+
+    @ViewBuilder
+    private var modelAndPresetSection: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
-            // Quality Preset Section
-            VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-                AppDesign.SectionLabel("Quality")
+            // Model selector - side by side buttons
+            modelSelectorButtons
 
-                Menu {
-                    ForEach(GenerationPreset.allCases, id: \.self) { preset in
-                        Button {
-                            viewModel.selectedPreset = preset
-                            viewModel.customSteps = CGFloat(preset.steps)
-                            viewModel.customResolution = CGFloat(preset.resolution)
-                        } label: {
-                            HStack {
-                                Text(preset.rawValue)
-                                if !viewModel.isSmallModelDownloaded {
-                                    Image(systemName: "arrow.down.circle")
-                                        .foregroundStyle(.orange)
-                                }
-                                Spacer()
-                                Text(preset.estimatedTime)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                } label: {
-                    HStack {
-                        Text(viewModel.selectedPreset.rawValue)
-                            .font(.system(size: AppDesign.FontSize.body))
-                        // Show download icon if model isn't downloaded
-                        if !viewModel.isSmallModelDownloaded {
-                            Image(systemName: "arrow.down.circle")
-                                .font(.system(size: AppDesign.FontSize.caption))
-                                .foregroundStyle(.orange)
-                        }
-                        Spacer()
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.system(size: AppDesign.FontSize.caption))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, AppDesign.Spacing.p12)
-                    .padding(.vertical, AppDesign.Spacing.p8)
-                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(Color.primary.opacity(0.15), lineWidth: 1)
-                    )
-                }
-                .buttonStyle(.plain)
+            // Quality preset selector - segmented style
+            qualityPresetSelector
+        }
+    }
 
-                HStack {
-                    Text(viewModel.selectedPreset.description)
-                        .font(.system(size: AppDesign.FontSize.caption))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(viewModel.selectedPreset.estimatedTime)
-                        .font(.system(size: AppDesign.FontSize.caption, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                }
+    // MARK: - Quality Preset Selector
 
-                // Show download warning when model needs downloading
-                if !viewModel.isSmallModelDownloaded {
-                    HStack(spacing: AppDesign.Spacing.p4) {
-                        Image(systemName: "arrow.down.circle")
-                            .font(.system(size: AppDesign.FontSize.caption))
-                            .foregroundStyle(AppDesign.warning)
-                        Text("Will download \(SetupModelChoice.fast.downloadSize) on first use")
-                            .font(.system(size: AppDesign.FontSize.caption))
-                            .foregroundStyle(AppDesign.warning)
-                    }
+    @ViewBuilder
+    private var qualityPresetSelector: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
+            // Segmented buttons
+            HStack(spacing: 1) {
+                ForEach(selectedVariant.presets) { preset in
+                    qualityButton(for: preset)
                 }
             }
+            .background(Color.primary.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
 
-            // Settings sliders
-            VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
-                AppDesign.SliderRow(
-                    label: "Steps",
-                    value: $viewModel.customSteps,
-                    range: 10...100,
-                    step: 5
-                )
-                AppDesign.SliderRow(
-                    label: "Resolution",
-                    value: $viewModel.customResolution,
-                    range: 64...512,
-                    step: 32
-                )
-                AppDesign.HintText("Higher values produce better detail but take longer.")
+            // Time estimate for selected preset
+            HStack(spacing: AppDesign.Spacing.p4) {
+                Image(systemName: "clock")
+                    .font(.system(size: AppDesign.FontSize.xs))
+                Text("Estimated: \(viewModel.selectedPreset.estimatedTime)")
+                    .font(.system(size: AppDesign.FontSize.xs))
+            }
+            .foregroundStyle(.tertiary)
+        }
+    }
+
+    @ViewBuilder
+    private func qualityButton(for preset: GenerationPreset) -> some View {
+        let isSelected = viewModel.selectedPreset == preset
+
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                viewModel.selectedPreset = preset
+                syncSlidersWithPreset()
+            }
+        } label: {
+            Text(preset.shortName)
+                .font(.system(size: AppDesign.FontSize.caption, weight: isSelected ? .semibold : .regular))
+                .foregroundStyle(isSelected ? .primary : .secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, AppDesign.Spacing.p6)
+                .background(isSelected ? Color.primary.opacity(0.1) : Color.clear)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Model Selector Buttons
+
+    @ViewBuilder
+    private var modelSelectorButtons: some View {
+        HStack(spacing: AppDesign.Spacing.p8) {
+            ForEach(HunyuanVariant.allCases) { variant in
+                modelButton(for: variant)
             }
         }
+    }
+
+    @ViewBuilder
+    private func modelButton(for variant: HunyuanVariant) -> some View {
+        let isSelected = selectedVariant == variant
+
+        Button {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                selectedVariant = variant
+                viewModel.selectedPreset = variant.defaultPreset
+                syncSlidersWithPreset()
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: AppDesign.Spacing.p4) {
+                Text(variant.shortName)
+                    .font(.system(size: AppDesign.FontSize.subheadline, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+
+                Text(variant.description)
+                    .font(.system(size: AppDesign.FontSize.xs))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(AppDesign.Spacing.p10)
+            .background(isSelected ? AppDesign.accent.opacity(0.08) : Color.primary.opacity(0.03))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isSelected ? AppDesign.accent.opacity(0.5) : Color.primary.opacity(0.08), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isSelected)
+    }
+
+    // MARK: - Download Warning
+
+    @ViewBuilder
+    private var downloadWarningSection: some View {
+        if viewModel.selectedPreset.requiresDownload {
+            HStack(spacing: AppDesign.Spacing.p8) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundStyle(AppDesign.warning)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Model will be downloaded")
+                        .font(.system(size: AppDesign.FontSize.subheadline, weight: .medium))
+                    Text("\(viewModel.selectedPreset.variant.downloadSize) download required before generation")
+                        .font(.system(size: AppDesign.FontSize.xs))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+            }
+            .padding(AppDesign.Spacing.p10)
+            .background(AppDesign.warning.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    // MARK: - Advanced Section
+
+    @ViewBuilder
+    private var advancedSection: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
+            // Collapsible header
+            Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    showAdvanced.toggle()
+                }
+            } label: {
+                HStack {
+                    Text("Advanced")
+                        .font(.system(size: AppDesign.FontSize.subheadline, weight: .medium))
+                        .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    Image(systemName: showAdvanced ? "chevron.up" : "chevron.down")
+                        .font(.system(size: AppDesign.FontSize.xs, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.vertical, AppDesign.Spacing.p4)
+            }
+            .buttonStyle(.plain)
+
+            // Collapsible content
+            if showAdvanced {
+                VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+                    Divider()
+
+                    hunyuanSettings
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var hunyuanSettings: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+            AppDesign.SliderRow(
+                label: "Diffusion Steps",
+                value: $viewModel.customSteps,
+                range: 10...100,
+                step: 5
+            )
+            AppDesign.SliderRow(
+                label: "Octree Resolution",
+                value: $viewModel.customResolution,
+                range: 64...512,
+                step: 32
+            )
+            AppDesign.SliderRow(
+                label: "Guidance Scale",
+                value: $viewModel.customGuidanceScaleHunyuan,
+                range: 1.0...10.0,
+                step: 0.5,
+                format: "%.1f"
+            )
+            AppDesign.SliderRow(
+                label: "Bounding Box Scale",
+                value: $viewModel.customBoxV,
+                range: 0.8...1.5,
+                step: 0.01,
+                format: "%.2f"
+            )
+            AppDesign.SliderRow(
+                label: "Surface Level",
+                value: $viewModel.customMcLevel,
+                range: -0.5...0.5,
+                step: 0.05,
+                format: "%.2f"
+            )
+            AppDesign.HintText("Steps & resolution affect quality. Guidance controls input adherence. Box scale adjusts model size. Surface level shifts the mesh boundary.")
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func syncSlidersWithPreset() {
+        let preset = viewModel.selectedPreset
+
+        // Hunyuan settings
+        viewModel.customSteps = CGFloat(preset.steps)
+        viewModel.customResolution = CGFloat(preset.resolution)
+        viewModel.customGuidanceScaleHunyuan = 5.0  // Default CFG
+        viewModel.customBoxV = 1.01  // Default bounding box
+        viewModel.customMcLevel = 0.0  // Default surface level
     }
 }

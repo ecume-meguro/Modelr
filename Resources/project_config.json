@@ -8,8 +8,8 @@
     "hunyuan3d": {
       "default_steps": 50,
       "default_resolution": 384,
-      "large_model_size_gb": 7.4,
-      "mini_model_size_gb": 3.8
+      "mini_model_size_gb": 3.84,
+      "std_model_size_gb": 8.5
     }
   },
   "limits": {

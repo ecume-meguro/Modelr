@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import os.log
 
 /// Status of the generation process
 enum GenerationStatus: Equatable {
@@ -29,18 +30,24 @@ class GenerationService: ObservableObject {
         maskPath: String,
         steps: Int,
         resolution: Int,
-        modelVariant: String = "std"
+        modelVariant: String = "std",
+        guidanceScale: Double = 5.0,
+        boxV: Double = 1.01,
+        mcLevel: Double = 0.0
     ) async {
         status = .preparing
         startTime = Date()
         duration = nil
-        
+
         await env.generate3DModel(
             imagePath: imagePath,
             maskPath: maskPath,
             steps: steps,
             resolution: resolution,
             modelVariant: modelVariant,
+            guidanceScale: guidanceScale,
+            boxV: boxV,
+            mcLevel: mcLevel,
             progress: { [weak self] progressString in
                 Task { @MainActor in
                     self?.handleProgressUpdate(progressString)

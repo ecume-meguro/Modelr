@@ -6,7 +6,7 @@ struct PythonRequest: Codable {
     let command: String
     let params: [String: AnyCodable]
     let messageId: String
-    
+
     init(command: String, params: [String: AnyCodable] = [:]) {
         self.command = command
         self.params = params
@@ -17,11 +17,11 @@ struct PythonRequest: Codable {
 /// A type-safe wrapper for heterogeneous dictionary values in JSON
 struct AnyCodable: Codable {
     let value: Any
-    
+
     init(_ value: Any) {
         self.value = value
     }
-    
+
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if let x = try? container.decode(Bool.self) { value = x }
@@ -32,7 +32,7 @@ struct AnyCodable: Codable {
         else if let x = try? container.decode([AnyCodable].self) { value = x.map { $0.value } }
         else { throw DecodingError.dataCorruptedError(in: container, debugDescription: "AnyCodable value cannot be decoded") }
     }
-    
+
     func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         if let x = value as? Bool { try container.encode(x) }
@@ -137,8 +137,21 @@ struct HunyuanRequest: Codable {
     let outputPath: String?
     let steps: Int?
     let resolution: Int?
+    let guidanceScale: Double?
+    let boxV: Double?
+    let mcLevel: Double?
 
-    init(command: String, imagePath: String? = nil, maskPath: String? = nil, outputPath: String? = nil, steps: Int? = nil, resolution: Int? = nil) {
+    init(
+        command: String,
+        imagePath: String? = nil,
+        maskPath: String? = nil,
+        outputPath: String? = nil,
+        steps: Int? = nil,
+        resolution: Int? = nil,
+        guidanceScale: Double? = nil,
+        boxV: Double? = nil,
+        mcLevel: Double? = nil
+    ) {
         self.messageId = UUID().uuidString
         self.command = command
         self.imagePath = imagePath
@@ -146,6 +159,9 @@ struct HunyuanRequest: Codable {
         self.outputPath = outputPath
         self.steps = steps
         self.resolution = resolution
+        self.guidanceScale = guidanceScale
+        self.boxV = boxV
+        self.mcLevel = mcLevel
     }
 }
 

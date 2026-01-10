@@ -1,3 +1,4 @@
+import os.log
 import SwiftUI
 import Foundation
 import Combine
@@ -43,7 +44,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         /// Whether this step is optional (can be skipped)
         var isOptional: Bool {
             switch self {
-            case .touchup, .generateSettings: return true
+            case .touchup: return true  // Only touchup is optional now
             default: return false
             }
         }
@@ -185,11 +186,17 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     @Published var generationStatus = ""
     @Published var compositeImage: NSImage?
     @Published var generationDuration: TimeInterval?
-    @Published var selectedPreset: QualityPreset = .normal
+    @Published var selectedPreset: GenerationPreset = SettingsManager.shared.defaultPreset
     @Published var showAdvancedSettings = false
-    @Published var customSteps: CGFloat = 10   // matches turboNormal preset
+
+    // Hunyuan custom settings
+    @Published var customSteps: CGFloat = 35
     @Published var customResolution: CGFloat = 256
+    @Published var customGuidanceScaleHunyuan: CGFloat = 5.0
+    @Published var customBoxV: CGFloat = 1.01
+    @Published var customMcLevel: CGFloat = 0.0
     @Published var generationStages: [GenerationStage: StageProgress] = [:]
+    @Published var generationSetupLogs: [String] = []
     @Published var isSmallModelDownloaded: Bool = false
     /// Tracks the step user was on before starting generation (for returning on cancel/stop)
     var stepBeforeGeneration: Step?
@@ -213,6 +220,8 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     @Published var processedModelURL: URL?
     @Published var selectedExportFormat: ExportFormat = .obj
     @Published var componentFiles: [ComponentFile] = []
+    /// Tracks the temp directory for mesh components (for cleanup)
+    var meshComponentsTempDirectory: URL?
 
     /// Pre-loaded SceneKit nodes for instant post-process rendering (keyed by component index)
     @Published var preloadedComponentNodes: [Int: SCNNode] = [:]
@@ -378,7 +387,8 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     /// Check if models are downloaded
     func checkModelsDownloaded() {
         isSmallModelDownloaded = PathManager.isHunyuanModelDownloaded(variant: "mini")
-        print("[Setup] Model status - Mini: \(isSmallModelDownloaded)")
+        let downloaded = isSmallModelDownloaded
+        print("[Setup] Model status - Mini: \(downloaded)")
     }
 
     // MARK: - Image Loading

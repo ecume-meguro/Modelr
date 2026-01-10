@@ -1,3 +1,4 @@
+import os.log
 import SwiftUI
 
 // MARK: - Multi-Segmentation Management

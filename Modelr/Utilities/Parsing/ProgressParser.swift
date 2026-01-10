@@ -187,6 +187,30 @@ enum ProgressParser {
         return nil
     }
     
+    /// Extract step detail as a formatted string (e.g., "5/25")
+    /// - Parameter progressString: The progress string
+    /// - Returns: Formatted step detail or empty string
+    static func formatStepDetail(_ progressString: String) -> String {
+        if let steps = extractSteps(progressString) {
+            return "\(steps.current)/\(steps.total)"
+        }
+        return ""
+    }
+
+    /// Extract non-numeric detail text from parentheses (e.g., "Extracting mesh...")
+    /// - Parameter progressString: The progress string
+    /// - Returns: Detail text or empty string
+    static func extractDetailText(_ progressString: String) -> String {
+        if let parenMatch = progressString.range(of: #"\(([^)]+)\)"#, options: .regularExpression) {
+            let content = String(progressString[parenMatch]).trimmingCharacters(in: CharacterSet(charactersIn: "()"))
+            // Skip if it looks like a step count
+            if content.range(of: #"^\d+/\d+$"#, options: .regularExpression) == nil {
+                return content
+            }
+        }
+        return ""
+    }
+
     /// Extract speed from progress string
     /// - Parameter progressString: The progress string
     /// - Returns: Speed in iterations per second or nil

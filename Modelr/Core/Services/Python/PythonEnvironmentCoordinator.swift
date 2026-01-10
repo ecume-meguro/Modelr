@@ -1,19 +1,8 @@
+import os.log
 import Foundation
 import AppKit
 
-/// Available 3D model generators
-enum GeneratorModel: String, CaseIterable, Identifiable {
-    case hunyuan = "Hunyuan3D-2"
-    
-    var id: String { rawValue }
-    
-    var description: String {
-        switch self {
-        case .hunyuan:
-            return "Tencent's Hunyuan3D-2 (shape only, fast)"
-        }
-    }
-}
+// Note: GeneratorModel is defined in GenerationModels.swift
 
 /// Coordinates all Python-related services (dependencies, processes, communication)
 ///
@@ -257,6 +246,9 @@ deinit {
         steps: Int,
         resolution: Int,
         modelVariant: String = "std",
+        guidanceScale: Double = 5.0,
+        boxV: Double = 1.01,
+        mcLevel: Double = 0.0,
         progress: @escaping (String) -> Void,
         preview: ((Data) -> Void)? = nil,
         completion: @escaping (Result<URL, Error>) -> Void
@@ -266,7 +258,14 @@ deinit {
             return
         }
 
-        let outputURL = PathManager.generatedModelPath()
+        let outputURL = PathManager.generatedModelPath(
+            variant: modelVariant,
+            steps: steps,
+            resolution: resolution,
+            guidanceScale: guidanceScale != 5.0 ? guidanceScale : nil,
+            boxV: boxV != 1.01 ? boxV : nil,
+            mcLevel: mcLevel != 0.0 ? mcLevel : nil
+        )
         let outputPath = outputURL.path
 
         await MainActor.run {
@@ -289,6 +288,9 @@ deinit {
                     outputPath: outputPath,
                     steps: steps,
                     resolution: resolution,
+                    guidanceScale: guidanceScale,
+                    boxV: boxV,
+                    mcLevel: mcLevel,
                     onProgress: { stage, detail, value in
                         // Format progress string with stage info for the UI parser
                         // stage is "loading", "diffusion", "volume_decoding", "saving"

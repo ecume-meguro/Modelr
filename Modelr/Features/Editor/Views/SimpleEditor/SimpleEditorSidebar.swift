@@ -482,10 +482,14 @@ struct SimpleEditorSidebar: View {
                         }
                         .padding(.bottom, AppDesign.Spacing.p4)
 
-                        // Generate with preset row
-                        generateWithPresetRow
+                        // Continue to generation settings
+                        AppDesign.GlassButton("Continue to Settings", icon: "slider.horizontal.3") {
+                            viewModel.transitionToGenerateSettings()
+                        }
+                        .opacity(viewModel.totalValidMasks == 0 ? 0.5 : 1)
+                        .allowsHitTesting(viewModel.totalValidMasks > 0)
 
-                        // Secondary option
+                        // Secondary option - refine mask
                         AppDesign.InlineButton("Refine Mask", icon: "wand.and.stars") {
                             viewModel.startTouchup()
                         }
@@ -530,8 +534,10 @@ struct SimpleEditorSidebar: View {
                     TouchupPanel(viewModel: viewModel)
 
                     sectionFooter {
-                        // Generate with preset row (same as segment tab)
-                        generateWithPresetRow
+                        // Continue to generation settings
+                        AppDesign.GlassButton("Continue to Settings", icon: "slider.horizontal.3") {
+                            viewModel.transitionToGenerateSettings()
+                        }
 
                         AppDesign.InlineButton(viewModel.backButtonLabel, icon: "arrow.left") {
                             viewModel.handleBackAction()
@@ -706,136 +712,4 @@ struct SimpleEditorSidebar: View {
         }
     }
 
-    // MARK: - Generate with Preset Row
-
-    @ViewBuilder
-    private var generateWithPresetRow: some View {
-        VStack(alignment: .leading, spacing: AppDesign.Spacing.p6) {
-            // Split button: Generate action + Preset dropdown
-            HStack(spacing: 0) {
-                // Main generate button
-                Button {
-                    viewModel.generateImmediately(with: viewModel.selectedPreset)
-                } label: {
-                    HStack(spacing: AppDesign.Spacing.p6) {
-                        Image(systemName: "sparkles")
-                            .font(.system(size: 11))
-                        Text("Generate with")
-                            .font(.system(size: AppDesign.FontSize.subheadline, weight: .semibold))
-                    }
-                    .foregroundStyle(.white)
-                    .padding(.leading, AppDesign.Spacing.p10)
-                    .padding(.trailing, AppDesign.Spacing.p6)
-                    .padding(.vertical, AppDesign.Spacing.p6)
-                }
-                .buttonStyle(.plain)
-
-                // Separator
-                Rectangle()
-                    .fill(Color.white.opacity(0.3))
-                    .frame(width: 1)
-                    .padding(.vertical, 4)
-
-                // Preset dropdown menu
-                Menu {
-                    // Standard presets (use mini model)
-                    ForEach(GenerationPreset.allCases.filter { !$0.usesHunyuan21 }, id: \.self) { preset in
-                        Button {
-                            viewModel.selectedPreset = preset
-                            viewModel.customSteps = CGFloat(preset.steps)
-                            viewModel.customResolution = CGFloat(preset.resolution)
-                        } label: {
-                            HStack {
-                                Text(preset.rawValue)
-                                if !viewModel.isSmallModelDownloaded {
-                                    Image(systemName: "arrow.down.circle")
-                                        .foregroundStyle(.orange)
-                                }
-                                Spacer()
-                                Text(preset.estimatedTime)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-
-                    Divider()
-
-                    // Hunyuan 2.1 presets (larger model)
-                    Section {
-                        ForEach(GenerationPreset.allCases.filter { $0.usesHunyuan21 }, id: \.self) { preset in
-                            Button {
-                                viewModel.selectedPreset = preset
-                                viewModel.customSteps = CGFloat(preset.steps)
-                                viewModel.customResolution = CGFloat(preset.resolution)
-                            } label: {
-                                HStack {
-                                    Text(preset.rawValue)
-                                    if !PathManager.isHunyuan21Downloaded {
-                                        Image(systemName: "arrow.down.circle.fill")
-                                            .foregroundStyle(.orange)
-                                    }
-                                    Spacer()
-                                    Text(preset.estimatedTime)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                    } header: {
-                        Label("Hunyuan 2.1", systemImage: "sparkles")
-                    }
-
-                    Divider()
-
-                    // Custom settings option - goes to settings step
-                    Button {
-                        viewModel.transitionToGenerateSettings()
-                    } label: {
-                        Label("Custom Settings", systemImage: "slider.horizontal.3")
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(viewModel.selectedPreset.rawValue)
-                            .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .semibold))
-                    }
-                    .foregroundStyle(.white)
-                    .padding(.leading, AppDesign.Spacing.p6)
-                    .padding(.vertical, AppDesign.Spacing.p6)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-
-                // Explicit trailing space (Menu ignores label padding)
-                Spacer().frame(width: AppDesign.Spacing.p10)
-            }
-            .background(AppDesign.accent, in: RoundedRectangle(cornerRadius: 6))
-            .opacity(viewModel.totalValidMasks == 0 ? 0.5 : 1)
-            .allowsHitTesting(viewModel.totalValidMasks > 0)
-
-            // Download warning if needed
-            if !viewModel.isSmallModelDownloaded {
-                HStack(spacing: AppDesign.Spacing.p4) {
-                    Image(systemName: "arrow.down.circle")
-                        .font(.system(size: AppDesign.FontSize.xs))
-                        .foregroundStyle(AppDesign.warning)
-                    Text("Will download \(SetupModelChoice.fast.downloadSize) on first use")
-                        .font(.system(size: AppDesign.FontSize.xs))
-                        .foregroundStyle(AppDesign.warning)
-                }
-            }
-
-            // Hunyuan 2.1 download warning
-            if viewModel.selectedPreset.usesHunyuan21 && !PathManager.isHunyuan21Downloaded {
-                HStack(spacing: AppDesign.Spacing.p4) {
-                    Image(systemName: "arrow.down.circle.fill")
-                        .font(.system(size: AppDesign.FontSize.xs))
-                        .foregroundStyle(AppDesign.warning)
-                    Text("Hunyuan 2.1 (\(viewModel.selectedPreset.modelDownloadSize)) will download on first use")
-                        .font(.system(size: AppDesign.FontSize.xs))
-                        .foregroundStyle(AppDesign.warning)
-                }
-            }
-        }
-    }
 }

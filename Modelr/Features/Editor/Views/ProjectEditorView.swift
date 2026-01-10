@@ -213,8 +213,22 @@ struct ProjectEditorView: View {
 
         // Restore generation settings
         if let metadata = metadata {
-            if let preset = metadata.selectedPreset {
-                viewModel.selectedPreset = QualityPreset(rawValue: preset) ?? .normal
+            if let presetRaw = metadata.selectedPreset {
+                // Try new preset format first, then fallback to migrating old format
+                if let preset = GenerationPreset(rawValue: presetRaw) {
+                    viewModel.selectedPreset = preset
+                } else {
+                    // Migrate old preset names to new ones
+                    let migratedPreset: GenerationPreset = switch presetRaw {
+                    case "Draft": .miniDraft
+                    case "Normal": .miniNormal
+                    case "High": .miniHigh
+                    case "Max": .miniMax
+                    case "Ultra": .stdNormal
+                    default: SettingsManager.shared.defaultPreset
+                    }
+                    viewModel.selectedPreset = migratedPreset
+                }
             }
             if let steps = metadata.customSteps {
                 viewModel.customSteps = CGFloat(steps)
@@ -240,26 +254,51 @@ struct ProjectEditorView: View {
             try? await Task.sleep(nanoseconds: 50_000_000) // 50ms polling
         }
 
-        // Restore saved mask if it exists
+        // Restore saved mask if it exists - MUST also populate the segmentation entry
         let maskPath = PathManager.projectMaskPath(for: projectId)
         if FileManager.default.fileExists(atPath: maskPath.path),
            let maskImage = NSImage(contentsOf: maskPath) {
             viewModel.editableMaskImage = maskImage
             viewModel.hasMaskEdits = metadata?.hasMaskEdits ?? false
+
+            // CRITICAL: Also populate the segmentation entry with the saved mask
+            // This ensures hasValidMask returns true and UI shows the mask correctly
+            if viewModel.activeSegmentationIndex < viewModel.segmentations.count {
+                viewModel.segmentations[viewModel.activeSegmentationIndex].allMasks = [
+                    (image: maskImage, score: 1.0, url: maskPath)
+                ]
+                viewModel.segmentations[viewModel.activeSegmentationIndex].selectedMaskIndices = [0]
+                viewModel.segmentations[viewModel.activeSegmentationIndex].isSearchPerformed = true
+            }
         }
 
-        // Restore 3D model if it exists
+        // Restore 3D model if it exists (check both .obj and .glb extensions)
         if savedModelPath != nil {
-            let modelPath = PathManager.projectModelPath(for: projectId)
-            if FileManager.default.fileExists(atPath: modelPath.path) {
-                viewModel.generated3DModelURL = modelPath
+            if let existingModelPath = PathManager.existingProjectModelPath(for: projectId) {
+                viewModel.generated3DModelURL = existingModelPath
+                // Mark that we have a completed generation
+                viewModel.generationStages[.saving] = StageProgress(status: .completed, progress: 1.0, detail: "")
             }
         }
 
         // Restore workflow step (after all data is loaded)
+        // Also mark appropriate steps as visited so navigation works correctly
         if targetStep.rawValue > SimpleEditorViewModel.Step.segment.rawValue {
+            // Mark all steps up to target as visited
+            for step in SimpleEditorViewModel.Step.allCases {
+                if step.rawValue <= targetStep.rawValue {
+                    viewModel.visitedSteps.insert(step)
+                }
+            }
             withAnimation(.easeOut(duration: 0.25)) {
                 viewModel.currentStep = targetStep
+            }
+
+            // If restoring to postProcess step with a model, trigger mesh analysis
+            if targetStep == .postProcess && viewModel.generated3DModelURL != nil {
+                Task {
+                    await viewModel.analyzeMesh()
+                }
             }
         }
 
@@ -267,10 +306,15 @@ struct ProjectEditorView: View {
     }
 
     private func saveProjectState(immediate: Bool) async {
+        // CRITICAL: Don't save during project initialization - it would overwrite the correct state
+        guard !isLoading else { return }
+        guard !viewModel.isInitializingProject else { return }
         guard var proj = project else { return }
 
-        // Update workflow step
-        proj.workflowStep = viewModel.currentStep.rawValue
+        // Only save workflow step if we're past the segment step (not during initial load)
+        // This prevents saving setup/input step when we should be on a later step
+        let stepToSave = viewModel.currentStep.rawValue
+        proj.workflowStep = stepToSave
         proj.touch()
 
         do {
@@ -290,18 +334,29 @@ struct ProjectEditorView: View {
                 metadata.selectedMaskIndices = Array(viewModel.segmentations[viewModel.activeSegmentationIndex].selectedMaskIndices)
             }
 
-            // Save mask if in segment step or later (when we have a mask)
-            if immediate && viewModel.currentStep.rawValue >= SimpleEditorViewModel.Step.segment.rawValue {
+            // Save mask whenever we have one (not just on immediate save)
+            if viewModel.currentStep.rawValue >= SimpleEditorViewModel.Step.segment.rawValue {
                 await saveMaskImage()
             }
 
             // Save 3D model reference if generated
             if let modelURL = viewModel.generated3DModelURL {
-                let projectModelPath = PathManager.projectModelPath(for: projectId)
-                if !FileManager.default.fileExists(atPath: projectModelPath.path) {
+                // Get the extension from the original model file
+                let modelExt = modelURL.pathExtension.isEmpty ? "obj" : modelURL.pathExtension
+                let projectModelPath = PathManager.projectModelPath(for: projectId, extension: modelExt)
+
+                // Copy the model file if it doesn't exist OR if the source is different
+                if !FileManager.default.fileExists(atPath: projectModelPath.path) ||
+                   modelURL.path != projectModelPath.path {
+                    // Remove any old model files (both .obj and .glb)
+                    try? FileManager.default.removeItem(at: PathManager.projectModelPath(for: projectId, extension: "obj"))
+                    try? FileManager.default.removeItem(at: PathManager.projectModelPath(for: projectId, extension: "glb"))
                     try? FileManager.default.copyItem(at: modelURL, to: projectModelPath)
                 }
-                metadata.generatedModelPath = "model.obj"
+                metadata.generatedModelPath = "model.\(modelExt)"
+            } else {
+                // Clear model reference if no model exists
+                metadata.generatedModelPath = nil
             }
 
             try ProjectManager.shared.saveMetadata(metadata)

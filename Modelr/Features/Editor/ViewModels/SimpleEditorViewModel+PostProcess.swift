@@ -1,3 +1,4 @@
+import os.log
 import SwiftUI
 import SceneKit
 import ModelIO
@@ -57,7 +58,10 @@ extension SimpleEditorViewModel {
 
         // Phase 2: Extract components (30% - 60%)
         updateHandoffProgress(progress: 0.3, detail: "Extracting...")
+        // Clean up previous temp directory if it exists
+        cleanupMeshComponentsTempDirectory()
         let tempDir = NSTemporaryDirectory() + "mesh_components_\(UUID().uuidString)"
+        meshComponentsTempDirectory = URL(fileURLWithPath: tempDir)
         let extractResult = await runMeshProcessor(
             command: "extract_all",
             inputPath: modelURL.path,
@@ -113,8 +117,12 @@ extension SimpleEditorViewModel {
         updateHandoffProgress(progress: 0.95, detail: "Ready")
 
         let totalElapsed = Date().timeIntervalSince(startTime)
-        print("[PostProcess] Total pre-load complete in \(String(format: "%.2f", totalElapsed))s - \(preloadedNodes.count) SceneKit nodes cached with materials")
-        print("[PostProcess] State: componentFiles=\(componentFiles.count), preloadedNodes=\(preloadedComponentNodes.count), meshComponents=\(meshComponents.count)")
+        let nodeCount = preloadedNodes.count
+        print("[PostProcess] Total pre-load complete in \(String(format: "%.2f", totalElapsed))s - \(nodeCount) SceneKit nodes cached with materials")
+        let compCount = self.componentFiles.count
+        let preloadCount = self.preloadedComponentNodes.count
+        let meshCount = self.meshComponents.count
+        print("[PostProcess] State: componentFiles=\(compCount), preloadedNodes=\(preloadCount), meshComponents=\(meshCount)")
     }
 
     /// Pre-load SceneKit nodes from component files WITH materials pre-applied (runs on background thread)
@@ -280,9 +288,14 @@ extension SimpleEditorViewModel {
         await MainActor.run {
             isExtractingComponents = true
             componentFiles.removeAll()
+            // Clean up previous temp directory if it exists
+            cleanupMeshComponentsTempDirectory()
         }
 
         let tempDir = NSTemporaryDirectory() + "mesh_components_\(UUID().uuidString)"
+        await MainActor.run {
+            meshComponentsTempDirectory = URL(fileURLWithPath: tempDir)
+        }
 
         let result = await runMeshProcessor(
             command: "extract_all",
@@ -541,5 +554,26 @@ extension SimpleEditorViewModel {
                 continuation.resume(returning: nil)
             }
         }
+    }
+
+    // MARK: - Temp Directory Cleanup
+
+    /// Clean up the mesh components temp directory
+    func cleanupMeshComponentsTempDirectory() {
+        guard let tempDir = meshComponentsTempDirectory else { return }
+
+        // Run cleanup on background thread to avoid blocking
+        Task.detached(priority: .utility) {
+            do {
+                if FileManager.default.fileExists(atPath: tempDir.path) {
+                    try FileManager.default.removeItem(at: tempDir)
+                    print("[PostProcess] Cleaned up temp directory: \(tempDir.lastPathComponent)")
+                }
+            } catch {
+                print("[PostProcess] Failed to cleanup temp directory: \(error.localizedDescription)")
+            }
+        }
+
+        meshComponentsTempDirectory = nil
     }
 }

@@ -111,10 +111,23 @@ struct ImageCanvas: View {
                 ))
             }
 
-            // Generate settings and generate steps: show composite image throughout (including during handoff)
-            // Don't show the 3D model until we transition to postProcess
-            if viewModel.currentStep == .generateSettings || viewModel.currentStep == .generate {
+            // Generate settings: always show composite image
+            if viewModel.currentStep == .generateSettings {
                 if let composite = viewModel.compositeImage {
+                    compositeImageView(composite)
+                        .transition(.opacity.animation(.easeOut(duration: 0.18)))
+                } else {
+                    // Loading placeholder while composite is being created
+                    ProgressView()
+                        .scaleEffect(1.2)
+                        .transition(.opacity.animation(.easeOut(duration: 0.15)))
+                }
+            }
+
+            // Generate step: show composite during generation
+            if viewModel.currentStep == .generate {
+                if let composite = viewModel.compositeImage {
+                    // Show composite during generation
                     compositeImageView(composite)
                         .transition(.opacity.animation(.easeOut(duration: 0.18)))
                 } else {

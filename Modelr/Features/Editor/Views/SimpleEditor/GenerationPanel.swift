@@ -22,6 +22,11 @@ struct GenerationPanel: View {
         viewModel.generationStages.isEmpty
     }
 
+    /// Check if the model is already preloaded
+    private var isModelPreloaded: Bool {
+        return ModelLoadingCoordinator.shared.isHunyuanReady
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p16) {
             if viewModel.isGenerating || viewModel.isInHandoff {
@@ -51,13 +56,14 @@ struct GenerationPanel: View {
                     StageProgressRowView(
                         stage: stage,
                         stageData: viewModel.generationStages[stage] ?? StageProgress(),
-                        isPreloaded: stage == .loading && ModelLoadingCoordinator.shared.isHunyuanReady,
+                        isPreloaded: stage == .loading && isModelPreloaded,
                         downloadInfo: stage == .downloading ? (
                             progress: viewModel.formattedDownloadProgress,
                             speed: viewModel.formattedDownloadSpeed,
                             remaining: viewModel.formattedTimeRemaining,
                             hasData: viewModel.downloadTotalBytes > 0
                         ) : nil,
+                        setupLogs: stage == .setup ? viewModel.generationSetupLogs : nil,
                         stageTextColor: viewModel.stageTextColor
                     )
                 }
@@ -66,12 +72,15 @@ struct GenerationPanel: View {
         .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.generationStages.map { "\($0.key):\($0.value.status)" })
     }
 
-    /// Returns stages to display, filtering out downloading if not applicable
+    /// Returns stages to display based on selected model, filtering out downloading if not applicable
     private var visibleStages: [GenerationStage] {
-        GenerationStage.allCases.filter { stage in
+        // Get stages specific to the selected model family
+        let modelStages = GenerationStage.stages(for: viewModel.selectedPreset.modelFamily)
+
+        return modelStages.filter { stage in
             if stage == .downloading {
-                // Show downloading stage if the model isn't downloaded
-                return !viewModel.isSmallModelDownloaded
+                // Show downloading stage only if the model needs downloading
+                return viewModel.selectedPreset.requiresDownload
             }
             return true
         }
@@ -171,14 +180,17 @@ private struct StageProgressRowView: View {
     let stageData: StageProgress
     let isPreloaded: Bool
     let downloadInfo: (progress: String, speed: String, remaining: String, hasData: Bool)?
+    let setupLogs: [String]?
     let stageTextColor: (StageStatus) -> Color
 
     @State private var progressAnimated: Double = 0
 
     private var isActive: Bool { stageData.status == .inProgress }
+    private var hasSetupLogs: Bool { stage == .setup && !(setupLogs?.isEmpty ?? true) }
     private var hasSubContent: Bool {
         (isActive && stageData.progress > 0) ||
-        (stage == .downloading && isActive && (downloadInfo?.hasData ?? false))
+        (stage == .downloading && isActive && (downloadInfo?.hasData ?? false)) ||
+        (hasSetupLogs && isActive)
     }
 
     var body: some View {
@@ -192,7 +204,7 @@ private struct StageProgressRowView: View {
             }
             .padding(.vertical, AppDesign.Spacing.p4)
 
-            // Expandable sub-content (progress bar, download stats)
+            // Expandable sub-content (progress bar, download stats, setup logs)
             if hasSubContent {
                 VStack(alignment: .leading, spacing: AppDesign.Spacing.p2) {
                     if stageData.progress > 0 {
@@ -203,6 +215,11 @@ private struct StageProgressRowView: View {
 
                     if stage == .downloading, let info = downloadInfo, info.hasData {
                         downloadStatsRow(info: info)
+                    }
+
+                    // Setup logs console
+                    if hasSetupLogs, let logs = setupLogs {
+                        setupLogsSection(logs: logs)
                     }
                 }
                 .padding(.leading, 24) // Align with text after icon
@@ -270,8 +287,8 @@ private struct StageProgressRowView: View {
 
             Spacer()
 
-            // Step count badge (e.g., "5/25") - always show for diffusion/volumeDecoding when active
-            if isActive && !stageData.detail.isEmpty {
+            // Step count badge (e.g., "5/25") - show for active stages except setup (which has console logs)
+            if isActive && !stageData.detail.isEmpty && stage != .setup {
                 stepCountBadge
             }
 
@@ -330,5 +347,23 @@ private struct StageProgressRowView: View {
                 .contentTransition(.numericText())
         }
         .animation(.easeInOut(duration: 0.2), value: info.progress)
+    }
+
+    @ViewBuilder
+    private func setupLogsSection(logs: [String]) -> some View {
+        // Show last 6 lines, auto-updated
+        let tailLogs = Array(logs.suffix(6))
+
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(tailLogs.enumerated()), id: \.offset) { _, line in
+                Text(line)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(.easeOut(duration: 0.15), value: logs.count)
     }
 }

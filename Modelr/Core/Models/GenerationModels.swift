@@ -1,24 +1,154 @@
 import Foundation
 
-enum GenerationPreset: String, CaseIterable, Identifiable {
-    // Hunyuan3D-2 Mini presets (fast, smaller model)
-    case draft = "Draft"
-    case normal = "Normal"
-    case high = "High"
-    case max = "Max"
+// MARK: - Hunyuan Model Variants
 
-    // Hunyuan3D-2.1 Standard preset (larger model, better quality)
-    case ultra = "Ultra"
+/// Hunyuan model variants available for 3D generation
+enum HunyuanVariant: String, CaseIterable, Identifiable, Codable {
+    case mini = "mini"      // Hunyuan3D-2 Mini - faster, smaller
+    case standard = "std"   // Hunyuan3D-2.1 Standard - higher quality
 
     var id: String { rawValue }
 
-    /// The model variant to use
+    var displayName: String {
+        switch self {
+        case .mini: return "Hunyuan3D-2 Mini"
+        case .standard: return "Hunyuan3D-2.1 Standard"
+        }
+    }
+
+    var shortName: String {
+        switch self {
+        case .mini: return "Mini"
+        case .standard: return "Standard"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .mini: return "Fast generation with good quality"
+        case .standard: return "Higher quality with more details"
+        }
+    }
+
+    var downloadSize: String {
+        switch self {
+        case .mini: return "~3.8 GB"
+        case .standard: return "~8.5 GB"
+        }
+    }
+
+    var sizeBytes: Int64 {
+        switch self {
+        case .mini: return AppConstants.hunyuanMiniModelBytes
+        case .standard: return AppConstants.hunyuanStdModelBytes
+        }
+    }
+
+    var isDownloaded: Bool {
+        PathManager.isHunyuanModelDownloaded(variant: rawValue)
+    }
+
+    /// Presets available for this variant
+    var presets: [GenerationPreset] {
+        switch self {
+        case .mini:
+            return [.miniDraft, .miniNormal, .miniHigh, .miniMax]
+        case .standard:
+            return [.stdDraft, .stdNormal, .stdHigh, .stdMax]
+        }
+    }
+
+    var defaultPreset: GenerationPreset {
+        switch self {
+        case .mini: return .miniNormal
+        case .standard: return .stdNormal
+        }
+    }
+
+    var color: String {
+        switch self {
+        case .mini: return "blue"
+        case .standard: return "purple"
+        }
+    }
+}
+
+/// Generator model families
+enum GeneratorModel: String, CaseIterable, Identifiable {
+    case hunyuan = "Hunyuan3D"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .hunyuan: return "Hunyuan3D"
+        }
+    }
+
+    /// All variants available for this model
+    var variants: [HunyuanVariant] {
+        switch self {
+        case .hunyuan:
+            return HunyuanVariant.allCases
+        }
+    }
+
+    /// All presets across all variants
+    var allPresets: [GenerationPreset] {
+        switch self {
+        case .hunyuan:
+            return GenerationPreset.allCases
+        }
+    }
+}
+
+enum GenerationPreset: String, CaseIterable, Identifiable {
+    // Hunyuan3D-2 Mini presets (fast, smaller model ~3.8GB)
+    case miniDraft = "Mini Draft"
+    case miniNormal = "Mini Normal"
+    case miniHigh = "Mini High"
+    case miniMax = "Mini Max"
+
+    // Hunyuan3D-2.1 Standard presets (higher quality ~8.5GB)
+    case stdDraft = "Standard Draft"
+    case stdNormal = "Standard Normal"
+    case stdHigh = "Standard High"
+    case stdMax = "Standard Max"
+
+    var id: String { rawValue }
+
+    /// Display name without variant prefix
+    var shortName: String {
+        switch self {
+        case .miniDraft, .stdDraft: return "Draft"
+        case .miniNormal, .stdNormal: return "Normal"
+        case .miniHigh, .stdHigh: return "High"
+        case .miniMax, .stdMax: return "Max"
+        }
+    }
+
+    /// The model family to use
+    var modelFamily: GeneratorModel {
+        return .hunyuan
+    }
+
+    /// The model variant within the family
     var modelVariant: String {
         switch self {
-        case .draft, .normal, .high, .max:
+        case .miniDraft, .miniNormal, .miniHigh, .miniMax:
             return "mini"
-        case .ultra:
+        case .stdDraft, .stdNormal, .stdHigh, .stdMax:
             return "std"
+        }
+    }
+
+    /// The variant enum
+    var variant: HunyuanVariant {
+        switch self {
+        case .miniDraft, .miniNormal, .miniHigh, .miniMax:
+            return .mini
+        case .stdDraft, .stdNormal, .stdHigh, .stdMax:
+            return .standard
         }
     }
 
@@ -27,58 +157,57 @@ enum GenerationPreset: String, CaseIterable, Identifiable {
         modelVariant == "std"
     }
 
-    /// Whether this preset requires a separate model download
-    var requiresAdditionalDownload: Bool {
-        usesHunyuan21
+    /// Whether the required model is downloaded
+    var isModelDownloaded: Bool {
+        variant.isDownloaded
     }
 
-    /// Download size for the required model (approximate)
-    var modelDownloadSize: String {
-        switch self {
-        case .ultra:
-            return "~8.5 GB"
-        default:
-            return ""
-        }
+    /// Whether this preset requires a model download before use
+    var requiresDownload: Bool {
+        !isModelDownloaded
     }
+
+    // MARK: - Hunyuan-specific settings
 
     var steps: Int {
         switch self {
-        case .draft: return 25
-        case .normal: return 35
-        case .high: return 50
-        case .max: return 75
-        case .ultra: return 50
+        case .miniDraft, .stdDraft: return 25
+        case .miniNormal, .stdNormal: return 35
+        case .miniHigh, .stdHigh: return 50
+        case .miniMax, .stdMax: return 75
         }
     }
 
     var resolution: Int {
         switch self {
-        case .draft: return 192
-        case .normal: return 256
-        case .high: return 384
-        case .max: return 512
-        case .ultra: return 512
+        case .miniDraft, .stdDraft: return 192
+        case .miniNormal, .stdNormal: return 256
+        case .miniHigh, .stdHigh: return 384
+        case .miniMax, .stdMax: return 512
         }
     }
 
+    // MARK: - Display properties
+
     var description: String {
         switch self {
-        case .draft: return "Quick preview"
-        case .normal: return "Balanced"
-        case .high: return "High quality"
-        case .max: return "Maximum quality"
-        case .ultra: return "Hunyuan 2.1 model"
+        case .miniDraft, .stdDraft: return "Quick preview"
+        case .miniNormal, .stdNormal: return "Balanced"
+        case .miniHigh, .stdHigh: return "High quality"
+        case .miniMax, .stdMax: return "Maximum quality"
         }
     }
 
     var estimatedTime: String {
         switch self {
-        case .draft: return "~1m"
-        case .normal: return "~2m"
-        case .high: return "~4m"
-        case .max: return "~6m"
-        case .ultra: return "~8m"
+        case .miniDraft: return "~1m"
+        case .miniNormal: return "~2m"
+        case .miniHigh: return "~4m"
+        case .miniMax: return "~6m"
+        case .stdDraft: return "~2m"
+        case .stdNormal: return "~4m"
+        case .stdHigh: return "~6m"
+        case .stdMax: return "~10m"
         }
     }
 }
@@ -134,13 +263,27 @@ struct GenerationProgress {
 
 /// Stages of the 3D generation pipeline
 enum GenerationStage: String, CaseIterable {
+    // Common stages
+    case setup = "Setting Up"
     case downloading = "Downloading Model"
     case extracting = "Extracting"
     case loading = "Loading Model"
+
+    // Hunyuan-specific stages
     case diffusion = "Diffusion Sampling"
     case volumeDecoding = "Volume Decoding"
+
+    // Common end stages
     case saving = "Saving"
     case handoff = "Handing Off"
+
+    /// Get stages for a specific model family
+    static func stages(for model: GeneratorModel) -> [GenerationStage] {
+        switch model {
+        case .hunyuan:
+            return [.downloading, .extracting, .loading, .diffusion, .volumeDecoding, .saving, .handoff]
+        }
+    }
 }
 
 /// Progress information for a generation stage

@@ -1,3 +1,4 @@
+import os.log
 import SwiftUI
 
 // MARK: - Navigation
@@ -10,6 +11,13 @@ extension SimpleEditorViewModel {
     func previousVisitedStep(from step: Step) -> Step? {
         var candidate = step.previous
         while let c = candidate {
+            // Skip the generate step when coming from postProcess - it's a transient processing step
+            // Users should go back to settings to adjust and regenerate, not to the generate step
+            if step == .postProcess && c == .generate {
+                candidate = c.previous
+                continue
+            }
+
             // Only return steps that were actually visited
             if visitedSteps.contains(c) {
                 return c
@@ -117,7 +125,10 @@ extension SimpleEditorViewModel {
             compositeImage = nil
         case .generate:
             // Clear generation state when going back
-            compositeImage = nil
+            // Keep compositeImage if going back to generateSettings (so user sees their preview)
+            if targetStep != .generateSettings {
+                compositeImage = nil
+            }
             generated3DModelURL = nil
             generationStages = [:]
             generationStatus = ""
@@ -151,16 +162,16 @@ extension SimpleEditorViewModel {
             preloadedComponentNodes.removeAll()
             meshDisplayMode = .solid
             customModelColor = nil
+            // Clean up temp mesh component files
+            cleanupMeshComponentsTempDirectory()
 
-            // If going back to generate step, keep the model so user can see it
-            // Otherwise clear it (going further back means starting fresh)
-            if targetStep != .generate {
-                generated3DModelURL = nil
-                generationStages = [:]
-                generationStatus = ""
-                generationStartTime = nil
-                generationDuration = nil
-            }
+            // Clear generation state (model is cached for restoration)
+            // Keep compositeImage when going to generateSettings so user sees preview
+            generated3DModelURL = nil
+            generationStages = [:]
+            generationStatus = ""
+            generationStartTime = nil
+            generationDuration = nil
         }
     }
 
@@ -252,6 +263,8 @@ extension SimpleEditorViewModel {
         preloadedComponentNodes.removeAll()
         meshDisplayMode = .solid
         customModelColor = nil
+        // Clean up temp mesh component files
+        cleanupMeshComponentsTempDirectory()
 
         // UI state
         zoomScale = 1.0

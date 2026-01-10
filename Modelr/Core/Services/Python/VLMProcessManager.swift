@@ -1,3 +1,4 @@
+import os.log
 import Foundation
 
 /// Manages the persistent VLM Python server process for object detection
@@ -97,7 +98,8 @@ class VLMProcessManager {
             ProcessCleanup.shared.registerProcess(pid)
         }
 
-        print("[VLM] Server started with PID \(process?.processIdentifier ?? -1)")
+        let vlmPid = process?.processIdentifier ?? -1
+        print("[VLM] Server started with PID \(vlmPid)")
     }
 
     /// Stop the server synchronously
@@ -228,7 +230,16 @@ class VLMProcessManager {
     /// Wait for the ready signal from the server
     func waitForReady(timeout: TimeInterval) async throws -> VLMResponse {
         return try await withCheckedThrowingContinuation { continuation in
-            final class ResumeTracker { var resumed = false }
+            // Thread-safe tracker to prevent double-resume of continuation
+            final class ResumeTracker: @unchecked Sendable {
+                private let lock = NSLock()
+                private var _resumed = false
+
+                var resumed: Bool {
+                    get { lock.lock(); defer { lock.unlock() }; return _resumed }
+                    set { lock.lock(); defer { lock.unlock() }; _resumed = newValue }
+                }
+            }
             let tracker = ResumeTracker()
 
             continuationLock.lock()
@@ -252,7 +263,10 @@ class VLMProcessManager {
                     return
                 }
                 tracker.resumed = true
-                self?.pendingContinuations.removeAll { _ in false }
+                // Remove pending continuation that hasn't been consumed yet
+                if let strongSelf = self, !strongSelf.pendingContinuations.isEmpty {
+                    strongSelf.pendingContinuations.removeFirst()
+                }
                 self?.continuationLock.unlock()
                 continuation.resume(throwing: PythonError.timeout)
             }
@@ -278,16 +292,23 @@ class VLMProcessManager {
         try stdin.write(contentsOf: Data(jsonString.utf8))
 
         return try await withCheckedThrowingContinuation { continuation in
-            final class CompletionTracker {
-                var completed = false
-                let lock = NSLock()
+            // Thread-safe tracker to prevent double-resume of continuation
+            final class CompletionTracker: @unchecked Sendable {
+                private var _completed = false
+                private let lock = NSLock()
 
                 func tryComplete() -> Bool {
                     lock.lock()
                     defer { lock.unlock() }
-                    if completed { return false }
-                    completed = true
+                    if _completed { return false }
+                    _completed = true
                     return true
+                }
+
+                var isCompleted: Bool {
+                    lock.lock()
+                    defer { lock.unlock() }
+                    return _completed
                 }
             }
             let tracker = CompletionTracker()

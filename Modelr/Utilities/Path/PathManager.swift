@@ -1,8 +1,59 @@
+import os.log
 import Foundation
 
 /// Centralized path management for Modelr application
+///
+/// Organized into sub-namespaces:
+/// - `PathManager.Config` - Configuration files and markers
+/// - `PathManager.Models` - ML model files (SAM, Hunyuan, VLM)
+/// - `PathManager.Environments` - Python virtual environments
+/// - `PathManager.Projects` - User project directories
+/// - `PathManager.Outputs` - Generated outputs
 struct PathManager {
-    
+
+    // MARK: - Sub-Namespaces (Convenience Aliases)
+
+    /// Configuration-related paths
+    enum Config {
+        static var directory: URL { PathManager.configDirectory }
+        static var projectConfig: URL { PathManager.projectConfigPath }
+        static var setupMarker: URL { PathManager.setupCompletionMarkerPath }
+        static var resourcesMarker: URL { PathManager.resourcesMarkerPath }
+        static var environmentMarker: URL { PathManager.environmentMarkerPath }
+    }
+
+    /// Model-related paths
+    enum Models {
+        static var directory: URL { PathManager.modelsDirectory }
+        static var hubDirectory: URL { PathManager.modelsHubDirectory }
+        static var checkpoints: URL { PathManager.checkpointsDirectory }
+
+        static func isHunyuanDownloaded(variant: String) -> Bool {
+            PathManager.isHunyuanModelDownloaded(variant: variant)
+        }
+    }
+
+    /// Python environment paths
+    enum Environments {
+        static var directory: URL { PathManager.environmentsDirectory }
+        static var sam: URL { PathManager.samEnvironmentDirectory }
+        static var hunyuan: URL { PathManager.hunyuanEnvironmentDirectory }
+        static var vlm: URL { PathManager.vlmEnvironmentDirectory }
+        static var tools: URL { PathManager.toolsEnvironmentDirectory }
+    }
+
+    /// Output-related paths
+    enum Outputs {
+        static var directory: URL { PathManager.outputsDirectory }
+        static var models3D: URL { PathManager.outputs3DDirectory }
+        static var images: URL { PathManager.outputsImagesDirectory }
+    }
+
+    /// Projects-related paths
+    enum Projects {
+        static var directory: URL { PathManager.projectsDirectory }
+    }
+
     /// Get the application support directory for Modelr
     static var appSupportDirectory: URL {
         guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
@@ -18,7 +69,7 @@ struct PathManager {
         }
         return appSupport.appendingPathComponent(AppConstants.legacyAppSupportDirectoryName, isDirectory: true)
     }
-    
+
     /// Ensure application support directory exists
     static func ensureAppSupportDirectoryExists() throws {
         try migrateLegacyRootDirectoryIfNeeded()
@@ -130,6 +181,15 @@ struct PathManager {
 
         // Also update environment marker to sync with setup completion
         try updateEnvironmentMarker()
+    }
+
+    /// Mark setup as complete (default variant)
+    static func markSetupComplete() {
+        do {
+            try markSetupComplete(modelVariant: "mini")
+        } catch {
+            print("[PathManager] Failed to mark setup complete: \(error)")
+        }
     }
 
     /// Current app version from bundle
@@ -346,9 +406,22 @@ struct PathManager {
         projectDirectory(for: projectId).appendingPathComponent("mask.png")
     }
 
-    /// Get the path to a project's generated 3D model
-    static func projectModelPath(for projectId: UUID) -> URL {
-        projectDirectory(for: projectId).appendingPathComponent("model.obj")
+    /// Get the path to a project's generated 3D model (with specific extension)
+    static func projectModelPath(for projectId: UUID, extension ext: String = "obj") -> URL {
+        projectDirectory(for: projectId).appendingPathComponent("model.\(ext)")
+    }
+
+    /// Find existing model file in project (checks for both .obj and .glb)
+    static func existingProjectModelPath(for projectId: UUID) -> URL? {
+        let objPath = projectModelPath(for: projectId, extension: "obj")
+        let glbPath = projectModelPath(for: projectId, extension: "glb")
+
+        if FileManager.default.fileExists(atPath: glbPath.path) {
+            return glbPath
+        } else if FileManager.default.fileExists(atPath: objPath.path) {
+            return objPath
+        }
+        return nil
     }
 
     /// App Support subfolder for logs
@@ -380,12 +453,12 @@ struct PathManager {
     static var vlmEnvironmentDirectory: URL {
         environmentsDirectory.appendingPathComponent("vlm", isDirectory: true)
     }
-    
+
     /// Legacy venvDirectory (no longer used)
     static var venvDirectory: URL {
         appSupportDirectory.appendingPathComponent(AppConstants.venvDirectoryName, isDirectory: true)
     }
-    
+
     /// Project directory for SAM (scripts + pyproject)
     static var samProjectDirectory: URL {
         libScriptsDirectory.appendingPathComponent("sam", isDirectory: true)
@@ -410,27 +483,27 @@ struct PathManager {
     static var hunyuanDirectory: URL {
         hunyuanProjectDirectory
     }
-    
+
     /// Get path for Hunyuan3D virtual environment
     static var hunyuanVenvDirectory: URL {
         hunyuanEnvironmentDirectory.appendingPathComponent(AppConstants.venvDirectoryName, isDirectory: true)
     }
-    
+
     /// Get path for Python runtimes directory
     static var pythonRuntimesDirectory: URL {
         binDirectory.appendingPathComponent("python", isDirectory: true)
     }
-    
+
     /// Get path for UV cache directory
     static var uvCacheDirectory: URL {
         cacheDirectory.appendingPathComponent("uv", isDirectory: true)
     }
-    
+
     /// Get path for SAM wrapper script
     static var samWrapperPath: URL {
         samProjectDirectory.appendingPathComponent(AppConstants.samWrapperFileName)
     }
-    
+
     /// Get path for Hunyuan wrapper script
     static var hunyuanWrapperPath: URL {
         hunyuanProjectDirectory.appendingPathComponent(AppConstants.hunyuanWrapperFileName)
@@ -440,12 +513,12 @@ struct PathManager {
     static var vlmWrapperPath: URL {
         vlmProjectDirectory.appendingPathComponent(AppConstants.vlmWrapperFileName)
     }
-    
+
     /// Get path for SAM pyproject file
     static var samPyprojectPath: URL {
         samProjectDirectory.appendingPathComponent(AppConstants.samPyprojectFileName)
     }
-    
+
     /// Get path for Hunyuan pyproject file in Hunyuan directory
     static var hunyuanPyprojectPath: URL {
         hunyuanProjectDirectory.appendingPathComponent(AppConstants.hunyuanPyprojectFileName)
@@ -460,29 +533,65 @@ struct PathManager {
     static var vlmVenvDirectory: URL {
         vlmEnvironmentDirectory.appendingPathComponent(AppConstants.venvDirectoryName, isDirectory: true)
     }
-    
+
     /// Get path for mask file
     static var maskFilePath: URL {
         workingDirectory.appendingPathComponent(AppConstants.maskFileName)
     }
-    
+
     /// Get path for temporary drop file
     static var tempDropFilePath: URL {
         workingDirectory.appendingPathComponent(AppConstants.tempDropFileName)
     }
-    
+
     /// Get path for backend working copy file
     static var backendWorkingCopyFilePath: URL {
         workingDirectory.appendingPathComponent(AppConstants.backendWorkingCopyFileName)
     }
-    
-    /// Get path for generated 3D model with timestamp
-    static func generatedModelPath() -> URL {
+
+    /// Get path for generated 3D model with descriptive filename
+    /// - Parameters:
+    ///   - variant: Model variant ("mini" or "std")
+    ///   - steps: Number of diffusion steps
+    ///   - resolution: Octree resolution
+    ///   - guidanceScale: Guidance scale (optional, included if non-default)
+    ///   - boxV: Bounding box scale (optional, included if non-default)
+    ///   - mcLevel: Surface level (optional, included if non-default)
+    static func generatedModelPath(
+        variant: String = "mini",
+        steps: Int = 35,
+        resolution: Int = 256,
+        guidanceScale: Double? = nil,
+        boxV: Double? = nil,
+        mcLevel: Double? = nil
+    ) -> URL {
         let timestamp = Int(Date().timeIntervalSince1970)
-        return outputs3DDirectory.appendingPathComponent("\(AppConstants.generatedModelPrefix)\(timestamp).obj")
+        let variantName = variant == "std" ? "Standard" : "Mini"
+
+        // Build filename parts
+        var parts = [AppConstants.generatedModelPrefix.trimmingCharacters(in: CharacterSet(charactersIn: "_"))]
+        parts.append(variantName)
+        parts.append("\(steps)s")
+        parts.append("\(resolution)px")
+
+        // Add non-default advanced settings
+        if let cfg = guidanceScale, cfg != 5.0 {
+            parts.append("cfg\(String(format: "%.1f", cfg))")
+        }
+        if let box = boxV, box != 1.01 {
+            parts.append("box\(String(format: "%.2f", box))")
+        }
+        if let mc = mcLevel, mc != 0.0 {
+            parts.append("mc\(String(format: "%.2f", mc))")
+        }
+
+        parts.append("\(timestamp)")
+
+        let filename = parts.joined(separator: "_") + ".obj"
+        return outputs3DDirectory.appendingPathComponent(filename)
     }
-    
-    /// Get path for a specific generated 3D model
+
+    /// Get path for a specific generated 3D model (legacy)
     static func generatedModelPath(timestamp: Int) -> URL {
         return outputs3DDirectory.appendingPathComponent("\(AppConstants.generatedModelPrefix)\(timestamp).obj")
     }
@@ -582,40 +691,40 @@ struct PathManager {
             }
         }
     }
-    
+
     /// Check if a file exists at the given path
     static func fileExists(at url: URL) -> Bool {
         return SecureFileManager.shared.fileExists(at: url)
     }
-    
+
     /// Ensure a directory exists at the given path
     static func ensureDirectoryExists(at url: URL) throws {
         try SecureFileManager.shared.ensureDirectoryExists(at: url)
     }
-    
+
     /// Remove a file or directory if it exists
     static func removeIfExists(at url: URL) throws {
         try SecureFileManager.shared.removeIfExists(at: url)
     }
-    
+
     /// Copy a file from source to destination, removing destination first if it exists
     static func copyFile(from source: URL, to destination: URL) throws {
         try SecureFileManager.shared.copyFile(from: source, to: destination)
     }
-    
+
     /// Get UV binary path from bundle
     static func uvBinaryPath(resourcePathOverride: String? = nil) -> String? {
         if let override = resourcePathOverride {
             return (override as NSString).appendingPathComponent("uv")
         }
-        
+
         var uvPath = Bundle.main.path(forResource: "uv", ofType: nil)
         if uvPath == nil {
             uvPath = Bundle.main.path(forResource: "uv", ofType: nil, inDirectory: "Resources")
         }
         return uvPath
     }
-    
+
     /// Calculate the size of a directory asynchronously using 'du'
     static func getDirectorySize(_ url: URL) async -> Int64 {
         await withCheckedContinuation { continuation in
@@ -626,7 +735,7 @@ struct PathManager {
                 process.arguments = ["-sk", url.path]
                 process.standardOutput = pipe
                 process.standardError = nil
-                
+
                 do {
                     try process.run()
                     process.waitUntilExit()
@@ -644,9 +753,7 @@ struct PathManager {
             }
         }
     }
-    
-    /// Check if self-test setup is complete
-    
+
     /// Check if a Hunyuan3D model variant is downloaded
     /// - Parameter variant: "mini" for Hunyuan3D-2mini, "std" for Hunyuan3D-2.1
     static func isHunyuanModelDownloaded(variant: String) -> Bool {
@@ -675,7 +782,7 @@ struct PathManager {
     static var isHunyuan21Downloaded: Bool {
         isHunyuanModelDownloaded(variant: "std")
     }
-    
+
     private static func checkModelExists(dirName: String, in parentDir: URL) -> Bool {
         let fileManager = FileManager.default
         let modelPath = parentDir.appendingPathComponent(dirName)
@@ -684,17 +791,19 @@ struct PathManager {
             return false
         }
 
-        // Check for snapshots directory with actual safetensors files
+        // Check for snapshots directory with actual model weight files
+        // Mini models use .safetensors, Standard (2.1) uses .ckpt files
         let snapshotsDir = modelPath.appendingPathComponent("snapshots")
         if fileManager.fileExists(atPath: snapshotsDir.path) {
-            // Look for any snapshot hash directory containing safetensors files
+            // Look for any snapshot hash directory containing model weight files
             if let snapshots = try? fileManager.contentsOfDirectory(atPath: snapshotsDir.path) {
                 for snapshot in snapshots {
                     let snapshotPath = snapshotsDir.appendingPathComponent(snapshot)
                     if let files = try? fileManager.contentsOfDirectory(atPath: snapshotPath.path) {
-                        // Check for safetensors in root or subdirectories
+                        // Check for model weights in root or subdirectories
                         for file in files {
-                            if file.hasSuffix(".safetensors") {
+                            // Check for .safetensors (Mini) or .ckpt (Standard 2.1)
+                            if file.hasSuffix(".safetensors") || file.hasSuffix(".ckpt") {
                                 return true
                             }
                             // Check subdirectories (like hunyuan3d-dit-v2-1)
@@ -702,7 +811,7 @@ struct PathManager {
                             var isDir: ObjCBool = false
                             if fileManager.fileExists(atPath: subPath.path, isDirectory: &isDir), isDir.boolValue {
                                 if let subFiles = try? fileManager.contentsOfDirectory(atPath: subPath.path) {
-                                    if subFiles.contains(where: { $0.hasSuffix(".safetensors") }) {
+                                    if subFiles.contains(where: { $0.hasSuffix(".safetensors") || $0.hasSuffix(".ckpt") }) {
                                         return true
                                     }
                                 }

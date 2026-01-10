@@ -115,13 +115,14 @@ class HunyuanGenerator:
     """Manages Hunyuan3D model generation."""
 
     # Model variant mapping: variant -> (repo_id, subfolder, use_safetensors)
+    # Note: Hunyuan3D-2.1 (std) uses .ckpt files, not .safetensors
     VARIANT_MAP = {
-        # Mini variants (all in same repo, different subfolders)
+        # Mini variants (all in same repo, different subfolders) - use safetensors
         "mini": ("tencent/Hunyuan3D-2mini", "hunyuan3d-dit-v2-mini", True),
         "mini-fast": ("tencent/Hunyuan3D-2mini", "hunyuan3d-dit-v2-mini-fast", True),
         "mini-turbo": ("tencent/Hunyuan3D-2mini", "hunyuan3d-dit-v2-mini-turbo", True),
-        # Standard 2.1 model
-        "std": ("tencent/Hunyuan3D-2.1", "hunyuan3d-dit-v2-1", True),
+        # Standard 2.1 model - uses .ckpt files (no safetensors available)
+        "std": ("tencent/Hunyuan3D-2.1", "hunyuan3d-dit-v2-1", False),
     }
 
     def __init__(self, model_variant: str = "std"):
@@ -134,12 +135,10 @@ class HunyuanGenerator:
         try:
             from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
 
-            log_info("Modelr hunyuan_wrapper: safetensors-only warmup enabled")
-
             repo_id, subfolder, use_safetensors = self.VARIANT_MAP.get(
                 self.model_variant, self.VARIANT_MAP["std"]
             )
-            log_info(f"Loading Hunyuan3D pipeline: {repo_id}/{subfolder}")
+            log_info(f"Loading Hunyuan3D pipeline: {repo_id}/{subfolder} (safetensors={use_safetensors})")
 
             configured_hy3dgen_models = os.environ.get("HY3DGEN_MODELS")
             inferred_hy3dgen_models = Path(HUNYUAN_CACHE_DIR).parent / "hy3dgen"
@@ -150,19 +149,36 @@ class HunyuanGenerator:
                 os.environ["HY3DGEN_MODELS"] = str(hy3dgen_models_dir)
             hy3dgen_models_dir.mkdir(parents=True, exist_ok=True)
 
-            snapshot_path = snapshot_download(
-                repo_id=repo_id,
-                allow_patterns=[
+            # Build download patterns based on model type
+            # Hunyuan3D-2.1 uses .ckpt files, Mini uses .safetensors
+            if use_safetensors:
+                allow_patterns = [
                     f"{subfolder}/*.safetensors",
                     f"{subfolder}/*.json",
                     f"{subfolder}/*.yaml",
                     f"{subfolder}/*.yml",
                     f"{subfolder}/*.txt",
-                ],
-                ignore_patterns=[
+                ]
+                ignore_patterns = [
                     f"{subfolder}/*.ckpt",
                     f"{subfolder}/*.ckpt.*",
-                ],
+                ]
+            else:
+                # For .ckpt models (like Hunyuan3D-2.1), download the checkpoint
+                allow_patterns = [
+                    f"{subfolder}/*.ckpt",
+                    f"{subfolder}/*.json",
+                    f"{subfolder}/*.yaml",
+                    f"{subfolder}/*.yml",
+                    f"{subfolder}/*.txt",
+                ]
+                ignore_patterns = []
+                log_info(f"[DOWNLOAD] Downloading model weights (this may take a while for ~8GB)...")
+
+            snapshot_path = snapshot_download(
+                repo_id=repo_id,
+                allow_patterns=allow_patterns,
+                ignore_patterns=ignore_patterns,
                 cache_dir=str(HUNYUAN_CACHE_DIR),
             )
             log_info(f"Using local snapshot: {snapshot_path}")
@@ -194,8 +210,14 @@ class HunyuanGenerator:
                         shutil.copy2(target, dst)
 
                 link_into_local("config.yaml")
-                for st in snapshot_weights_dir.glob("*.safetensors"):
-                    link_into_local(st.name)
+                # Link weight files based on model type
+                if use_safetensors:
+                    for st in snapshot_weights_dir.glob("*.safetensors"):
+                        link_into_local(st.name)
+                else:
+                    for ckpt in snapshot_weights_dir.glob("*.ckpt"):
+                        link_into_local(ckpt.name)
+                # Link metadata files
                 for meta in snapshot_weights_dir.glob("*.json"):
                     link_into_local(meta.name)
                 for meta in snapshot_weights_dir.glob("*.yml"):
@@ -207,48 +229,64 @@ class HunyuanGenerator:
             except Exception as e:
                 log_debug(f"Failed to stage hy3dgen local model dir: {e}")
 
-            try:
-                snapshot_dir = Path(snapshot_path)
-                repo_root = snapshot_dir.parent.parent
-                blobs_dir = repo_root / "blobs"
-                weights_dir = snapshot_dir / subfolder
+            # Only prune .ckpt files if we're using safetensors (have both available)
+            # Don't prune if we're intentionally using .ckpt files
+            if use_safetensors:
+                try:
+                    snapshot_dir = Path(snapshot_path)
+                    repo_root = snapshot_dir.parent.parent
+                    blobs_dir = repo_root / "blobs"
+                    weights_dir = snapshot_dir / subfolder
 
-                if weights_dir.exists():
-                    safetensors = list(weights_dir.glob("**/*.safetensors"))
-                    ckpts = list(weights_dir.glob("**/*.ckpt")) + list(weights_dir.glob("**/*.ckpt.*"))
-                    if safetensors and ckpts:
-                        for ckpt in ckpts:
-                            target_blob: Optional[Path] = None
-                            if ckpt.is_symlink():
+                    if weights_dir.exists():
+                        safetensors = list(weights_dir.glob("**/*.safetensors"))
+                        ckpts = list(weights_dir.glob("**/*.ckpt")) + list(weights_dir.glob("**/*.ckpt.*"))
+                        if safetensors and ckpts:
+                            for ckpt in ckpts:
+                                target_blob: Optional[Path] = None
+                                if ckpt.is_symlink():
+                                    try:
+                                        target_blob = ckpt.resolve(strict=False)
+                                    except Exception:
+                                        target_blob = None
+
                                 try:
-                                    target_blob = ckpt.resolve(strict=False)
-                                except Exception:
-                                    target_blob = None
+                                    ckpt.unlink(missing_ok=True)
+                                except TypeError:
+                                    if ckpt.exists() or ckpt.is_symlink():
+                                        ckpt.unlink()
 
-                            try:
-                                ckpt.unlink(missing_ok=True)
-                            except TypeError:
-                                if ckpt.exists() or ckpt.is_symlink():
-                                    ckpt.unlink()
+                                if target_blob is not None:
+                                    try:
+                                        if blobs_dir in target_blob.parents and target_blob.exists():
+                                            target_blob.unlink()
+                                    except Exception:
+                                        pass
 
-                            if target_blob is not None:
-                                try:
-                                    if blobs_dir in target_blob.parents and target_blob.exists():
-                                        target_blob.unlink()
-                                except Exception:
-                                    pass
+                            log_info("Pruned cached .ckpt weights (keeping .safetensors)")
+                except Exception as e:
+                    log_debug(f"Failed to prune ckpt weights: {e}")
 
-                        log_info("Pruned cached .ckpt weights (keeping .safetensors)")
-            except Exception as e:
-                log_debug(f"Failed to prune ckpt weights: {e}")
-
-            self.pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-                repo_id,
-                subfolder=subfolder,
-                device=self.device,
-                use_safetensors=use_safetensors,
-                variant="fp16",
-            )
+            # Load the pipeline with appropriate settings
+            # For .ckpt models, don't specify variant as the file is already named model.fp16.ckpt
+            if use_safetensors:
+                self.pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+                    repo_id,
+                    subfolder=subfolder,
+                    device=self.device,
+                    use_safetensors=True,
+                    variant="fp16",
+                )
+            else:
+                # For .ckpt files, load without variant specification
+                # The hy3dgen library will find model.fp16.ckpt
+                log_info(f"Loading from .ckpt checkpoint...")
+                self.pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+                    repo_id,
+                    subfolder=subfolder,
+                    device=self.device,
+                    use_safetensors=False,
+                )
             return self.pipeline
         except Exception as e:
             raise ModelLoadError(f"Failed to load Hunyuan3D pipeline: {e}")
@@ -259,12 +297,20 @@ class HunyuanGenerator:
         output_path: str,
         num_steps: int = 50,
         octree_resolution: int = 384,
+        guidance_scale: float = 5.0,
+        box_v: float = 1.01,
+        mc_level: float = 0.0,
         progress_callback: Optional[Callable[[str, float, Optional[str]], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None
     ) -> str:
         """Generate 3D model.
 
         Args:
+            num_steps: Number of diffusion steps (more = better quality, slower)
+            octree_resolution: Marching cubes resolution (higher = more detail)
+            guidance_scale: CFG strength - how closely to follow input (1.0-10.0)
+            box_v: Bounding box scale factor (default 1.01)
+            mc_level: Marching cubes isosurface level (default 0.0)
             cancel_check: Optional callable that returns True if generation should be cancelled.
                          Checked at the start of each diffusion step for clean cancellation.
         """
@@ -272,7 +318,7 @@ class HunyuanGenerator:
             self.load()
 
         try:
-            log_info(f"Generating 3D shape (steps={num_steps}, resolution={octree_resolution})...")
+            log_info(f"Generating 3D shape (steps={num_steps}, resolution={octree_resolution}, cfg={guidance_scale})...")
 
             # Track if we've sent any progress (to detect if callback isn't supported)
             steps_reported = [0]
@@ -309,6 +355,9 @@ class HunyuanGenerator:
                         image=image,
                         octree_resolution=octree_resolution,
                         num_inference_steps=num_steps,
+                        guidance_scale=guidance_scale,
+                        box_v=box_v,
+                        mc_level=mc_level,
                         callback=step_callback,
                         callback_steps=1,
                         enable_pbar=True,  # tqdm goes to stderr, won't interfere with JSON on stdout
@@ -323,6 +372,9 @@ class HunyuanGenerator:
                         image=image,
                         octree_resolution=octree_resolution,
                         num_inference_steps=num_steps,
+                        guidance_scale=guidance_scale,
+                        box_v=box_v,
+                        mc_level=mc_level,
                         enable_pbar=True,
                     )[0]
 
@@ -389,6 +441,9 @@ class HunyuanServer:
         output_path = request.get("outputPath")
         steps = request.get("steps", 50)
         resolution = request.get("resolution", 384)
+        guidance_scale = request.get("guidanceScale", 5.0)
+        box_v = request.get("boxV", 1.01)
+        mc_level = request.get("mcLevel", 0.0)
 
         if not image_path or not os.path.exists(image_path):
             return {"success": False, "error": "Image not found", "messageId": message_id}
@@ -452,6 +507,9 @@ class HunyuanServer:
                 output_path=output_path,
                 num_steps=steps,
                 octree_resolution=resolution,
+                guidance_scale=guidance_scale,
+                box_v=box_v,
+                mc_level=mc_level,
                 progress_callback=progress_callback,
                 cancel_check=should_cancel
             )

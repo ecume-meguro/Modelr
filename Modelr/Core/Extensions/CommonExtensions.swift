@@ -27,6 +27,50 @@ extension View {
             value: value
         )
     }
+
+    /// Apply snappy spring for micro-interactions (checkmarks, toggles)
+    func withSnappySpring<V: Equatable>(value: V) -> some View {
+        self.animation(
+            .spring(response: 0.22, dampingFraction: 0.72),
+            value: value
+        )
+    }
+
+    /// Apply gentle spring for larger content transitions
+    func withGentleSpring<V: Equatable>(value: V) -> some View {
+        self.animation(
+            .spring(response: 0.28, dampingFraction: 0.82),
+            value: value
+        )
+    }
+
+    /// Apply quick ease-out for fade transitions
+    func withQuickFade<V: Equatable>(value: V) -> some View {
+        self.animation(.easeOut(duration: 0.18), value: value)
+    }
+
+    /// Apply subtle ease-in-out for state changes
+    func withSubtleTransition<V: Equatable>(value: V) -> some View {
+        self.animation(.easeInOut(duration: 0.2), value: value)
+    }
+}
+
+// MARK: - Standard Transitions
+
+extension AnyTransition {
+    /// Standard content insertion transition
+    static var contentInsertion: AnyTransition {
+        .asymmetric(
+            insertion: .opacity.combined(with: .scale(scale: 0.98, anchor: .top))
+                .animation(.spring(response: 0.25, dampingFraction: 0.85)),
+            removal: .opacity.animation(.easeOut(duration: 0.12))
+        )
+    }
+
+    /// Quick fade transition for overlays
+    static var quickFade: AnyTransition {
+        .opacity.animation(.easeOut(duration: 0.15))
+    }
 }
 
 /// Execute a closure with standard spring animation
@@ -93,17 +137,34 @@ final class CancellableTask<T> {
     }
 
     /// Start a new task with weak self capture pattern
+    /// If the owner is deallocated before the task runs, the task is cancelled silently
     func start<Owner: AnyObject>(
         owner: Owner,
-        operation: @escaping (Owner) async -> T
-    ) {
+        operation: @escaping (Owner) async -> T?
+    ) where T == Optional<Any> {
         cancel()
         task = Task { [weak owner] in
             guard let owner = owner else {
-                // Return a default value - caller should handle this case
-                fatalError("Owner deallocated before task could run")
+                // Owner deallocated - return nil instead of crashing
+                return nil
             }
             return await operation(owner)
+        }
+    }
+
+    /// Start a new task with weak self capture pattern (non-optional return)
+    /// If the owner is deallocated before the task runs, the task completes with no effect
+    func start<Owner: AnyObject>(
+        owner: Owner,
+        operation: @escaping (Owner) async -> Void
+    ) where T == Void {
+        cancel()
+        task = Task { [weak owner] in
+            guard let owner = owner else {
+                // Owner deallocated - silently complete
+                return
+            }
+            await operation(owner)
         }
     }
 

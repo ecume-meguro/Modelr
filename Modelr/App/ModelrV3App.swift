@@ -1,15 +1,18 @@
+import os.log
 import SwiftUI
 
 /// Navigation state for the app
 enum AppView: Equatable {
-    case projectBrowser
-    case editor(projectId: UUID)
+    case setup           // Initial setup wizard
+    case projectBrowser  // Project list
+    case editor(projectId: UUID)  // Editor for a specific project
 }
 
 @main
 struct ModelrApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @State private var currentView: AppView = .projectBrowser
+    @State private var needsSetup: Bool = false
 
     // Check for debug mode via command line argument or environment variable
     // Launch with: --debug-3d-viewer or set DEBUG_3D_VIEWER=1
@@ -42,25 +45,72 @@ struct ModelrApp: App {
     }
 
     var body: some Scene {
+        // Main window
         WindowGroup {
-            Group {
-                switch currentView {
-                case .projectBrowser:
-                    ProjectBrowserView { projectId in
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                            currentView = .editor(projectId: projectId)
-                        }
+            mainContent
+                .onAppear {
+                    // Check if setup is needed on first appear
+                    if !PathManager.isSetupComplete {
+                        needsSetup = true
+                        currentView = .setup
                     }
-                case .editor(let projectId):
-                    ProjectEditorView(projectId: projectId) {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                            currentView = .projectBrowser
-                        }
-                    }
-                    .id(projectId) // Force new view for each project - prevents state bleeding between projects
                 }
+        }
+        .commands {
+            // Add Settings command (Cmd+,)
+            CommandGroup(after: .appSettings) {
+                Button("Settings...") {
+                    openSettings()
+                }
+                .keyboardShortcut(",", modifiers: .command)
             }
         }
+
+        // Settings window (macOS standard)
+        Settings {
+            SettingsWindow()
+        }
+    }
+
+    @ViewBuilder
+    private var mainContent: some View {
+        Group {
+            switch currentView {
+            case .setup:
+                SetupWizardView {
+                    // Setup complete - transition to project browser
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                        needsSetup = false
+                        currentView = .projectBrowser
+                    }
+                }
+
+            case .projectBrowser:
+                ProjectBrowserView { projectId in
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        currentView = .editor(projectId: projectId)
+                    }
+                }
+
+            case .editor(let projectId):
+                ProjectEditorView(projectId: projectId) {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        currentView = .projectBrowser
+                    }
+                }
+                .id(projectId) // Force new view for each project - prevents state bleeding between projects
+            }
+        }
+    }
+
+    /// Open the Settings window
+    private func openSettings() {
+        // Settings window is handled by the Settings scene
+        // This is a fallback for programmatic opening
+        if let url = URL(string: "x-apple.systempreferences:") {
+            // This won't work for our custom settings, but Settings scene handles Cmd+,
+        }
+        // The Settings scene automatically handles opening via Cmd+,
     }
 }
 

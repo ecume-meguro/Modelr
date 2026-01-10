@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import os.log
 
 // MARK: - Generation
 extension SimpleEditorViewModel {
@@ -37,6 +38,7 @@ extension SimpleEditorViewModel {
                     Task {
                         await ModelLoadingCoordinator.shared.onGenerationComplete(env: self.env)
                     }
+
                     // Start pre-loading mesh analysis and wait for it before transitioning
                     Task { @MainActor in
                         print("[Gen] Starting handoff task...")
@@ -52,7 +54,7 @@ extension SimpleEditorViewModel {
                             // Transition to post-process (also sets state directly, letting implicit animations work)
                             self.transitionToPostProcess()
 
-                            print("[Gen] transitionToPostProcess returned, currentStep=\(self.currentStep)")
+                            print("[Gen] transitionToPostProcess returned, currentStep=\(String(describing: self.currentStep))")
                         }
 
                         // Run preload (this does the heavy Python processing AND SceneKit preloading)
@@ -90,11 +92,13 @@ extension SimpleEditorViewModel {
     }
 
     /// Immediately start generation with a preset (skips the settings screen)
-    func generateImmediately(with preset: GenerationPreset = .normal) {
-        selectedPreset = preset
-        customSteps = CGFloat(preset.steps)
-        customResolution = CGFloat(preset.resolution)
-        transitionToGenerateInternal(autoStart: true, preset: preset)
+    func generateImmediately(with preset: GenerationPreset? = nil) {
+        if let preset = preset {
+            selectedPreset = preset
+            customSteps = CGFloat(preset.steps)
+            customResolution = CGFloat(preset.resolution)
+        }
+        transitionToGenerateInternal(autoStart: true, preset: selectedPreset)
     }
 
     /// Prepare composite image for generation (called when entering settings or generating)
@@ -127,7 +131,10 @@ extension SimpleEditorViewModel {
                     }.value
                 }()
 
-                guard let mask = maskToUse else { return }
+                guard let mask = maskToUse else {
+                    print("[Generation] Warning: Failed to create mask for composite preview")
+                    return
+                }
 
                 // Store the mask if we just created it
                 if editableMaskImage == nil {
@@ -135,7 +142,10 @@ extension SimpleEditorViewModel {
                 }
 
                 // Create composite in background
-                guard let source = source else { return }
+                guard let source = source else {
+                    print("[Generation] Warning: No source image for composite preview")
+                    return
+                }
                 let composite = await Task.detached(priority: .userInitiated) {
                     ImageService.shared.createCompositeImage(source: source, mask: mask)
                 }.value
@@ -200,8 +210,10 @@ extension SimpleEditorViewModel {
                 }()
 
                 guard let mask = maskToUse else {
-                    // Reset isGenerating if we can't proceed
+                    // Reset isGenerating and notify user of the failure
                     isGenerating = false
+                    lastError = AppError.imageProcessing("Failed to create mask. Please ensure you have selected an object to segment.")
+                    showErrorAlert = true
                     return
                 }
 
@@ -212,8 +224,10 @@ extension SimpleEditorViewModel {
 
                 // Create composite in background
                 guard let source = source else {
-                    // Reset isGenerating if we can't proceed
+                    // Reset isGenerating and notify user of the failure
                     isGenerating = false
+                    lastError = AppError.imageProcessing("No source image available. Please load an image first.")
+                    showErrorAlert = true
                     return
                 }
                 let composite = await Task.detached(priority: .userInitiated) {
@@ -247,6 +261,8 @@ extension SimpleEditorViewModel {
     func generate3D() {
         guard let composite = compositeImage,
               let mask = editableMaskImage else {
+            // CRITICAL: Reset isGenerating on early failure to prevent stuck UI
+            isGenerating = false
             lastError = AppError.generation("No composite image or mask available")
             showErrorAlert = true
             return
@@ -255,6 +271,8 @@ extension SimpleEditorViewModel {
         // Use the centralized ImageService to convert images to PNG, preserving alpha
         guard let tempImagePath = ImageService.shared.convertToPNG(image: composite, originalName: "composite"),
               let tempMaskPath = ImageService.shared.convertToPNG(image: mask, originalName: "mask") else {
+            // CRITICAL: Reset isGenerating on early failure to prevent stuck UI
+            isGenerating = false
             lastError = AppError.imageProcessing("Failed to create temporary images for processing")
             showErrorAlert = true
             return
@@ -271,6 +289,12 @@ extension SimpleEditorViewModel {
         generationStages = [:]
         lastError = nil
 
+        // Generate using Hunyuan
+        generateHunyuan(imagePath: tempImagePath, maskPath: tempMaskPath)
+    }
+
+    /// Generate 3D model using Hunyuan
+    private func generateHunyuan(imagePath: String, maskPath: String) {
         generationTask = Task { [weak self] in
             guard let self = self else { return }
 
@@ -279,8 +303,9 @@ extension SimpleEditorViewModel {
                 try Task.checkCancellation()
 
                 // Prepare for generation (offloads SAM if using conservative strategy)
+                // Pass the model variant to ensure the correct Hunyuan model is loaded
                 let coordinator = ModelLoadingCoordinator.shared
-                let ready = await coordinator.prepareForGeneration(env: self.env)
+                let ready = await coordinator.prepareForGeneration(env: self.env, variant: self.selectedPreset.modelVariant)
 
                 guard ready else {
                     throw AppError.generation("Failed to prepare generation environment")
@@ -290,17 +315,20 @@ extension SimpleEditorViewModel {
                 try Task.checkCancellation()
 
                 await ServiceContainer.shared.generationService.generate(
-                    imagePath: tempImagePath,
-                    maskPath: tempMaskPath,
+                    imagePath: imagePath,
+                    maskPath: maskPath,
                     steps: Int(self.customSteps),
                     resolution: Int(self.customResolution),
-                    modelVariant: self.selectedPreset.modelVariant
+                    modelVariant: self.selectedPreset.modelVariant,
+                    guidanceScale: Double(self.customGuidanceScaleHunyuan),
+                    boxV: Double(self.customBoxV),
+                    mcLevel: Double(self.customMcLevel)
                 )
             } catch is CancellationError {
-                print("[Generation] Generation cancelled")
+                print("[Generation] Hunyuan generation cancelled")
                 self.isGenerating = false
             } catch {
-                print("[Generation] Error: \(error)")
+                print("[Generation] Hunyuan error: \(error)")
                 self.isGenerating = false
                 self.lastError = (error as? AppError) ?? AppError.generation(error.localizedDescription)
                 self.showErrorAlert = true
@@ -313,7 +341,7 @@ extension SimpleEditorViewModel {
         generationTask?.cancel()
         generationTask = nil
 
-        // Cancel via the Hunyuan server (this is where generation actually runs)
+        // Cancel via the coordinator
         ModelLoadingCoordinator.shared.cancelGeneration()
 
         // Also cancel via the service to reset status
@@ -338,12 +366,40 @@ extension SimpleEditorViewModel {
         generate3D()
     }
 
+    /// Reset generation state when changing models or starting fresh
+    /// Call this when model preset changes to clear any stale state
+    func resetGenerationState() {
+        // Cancel any ongoing generation
+        generationTask?.cancel()
+        generationTask = nil
+
+        // Clear all generation state
+        isGenerating = false
+        generationStages = [:]
+        generationStatus = ""
+        generationStartTime = nil
+        generationDuration = nil
+        lastError = nil
+
+        // Clear composite (will be regenerated)
+        compositeImage = nil
+
+        // Reset download monitoring
+        resetDownloadMonitoringState()
+
+        print("[Gen] Generation state reset (model changed)")
+    }
+
     func updateGenerationStages(status: String, percent: Double = 0) {
         // Extract step info from status string (handles formats like "Stage (5/25)" or "Stage: 5/25")
-        let stepDetail = extractStepDetail(from: status)
+        let stepDetail = ProgressParser.formatStepDetail(status)
 
         if status.contains("Downloading") || status.contains("Fetching") {
-            if !isSmallModelDownloaded {
+            // Check if the model being used is already downloaded
+            let variant = selectedPreset.modelVariant
+            let isModelDownloaded = variant == "std" ? PathManager.isHunyuan21Downloaded : isSmallModelDownloaded
+
+            if !isModelDownloaded {
                 let info = ProgressParser.parseDetailedProgress(status)
                 let progress = info.percentComplete / 100.0
                 let detail = info.currentStep > 0 ? "\(info.currentStep)/\(info.totalSteps)" : "Downloading..."
@@ -354,12 +410,22 @@ extension SimpleEditorViewModel {
 
                 // Start download monitoring if not already started
                 if downloadTotalBytes == 0 {
-                    // Determine the correct directory and total bytes for the monitor
+                    // Determine the correct directory and total bytes for the monitor based on variant
                     let modelrDir = PathManager.appSupportDirectory
                     let hfCacheDir = modelrDir.appendingPathComponent("Cache/hf_cache/hub")
-                    let modelCacheName = "models--tencent--Hunyuan3D-2mini"
+
+                    let modelCacheName: String
+                    let total: Int64
+
+                    if variant == "std" {
+                        modelCacheName = "models--tencent--Hunyuan3D-2.1"
+                        total = AppConstants.hunyuanStdModelBytes
+                    } else {
+                        modelCacheName = "models--tencent--Hunyuan3D-2mini"
+                        total = AppConstants.hunyuanMiniModelBytes
+                    }
+
                     let modelCacheDir = hfCacheDir.appendingPathComponent(modelCacheName)
-                    let total = AppConstants.hunyuanMiniModelBytes
 
                     downloadMonitor.startMonitoring(directory: modelCacheDir, totalBytes: Int64(total)) { [weak self] (monitor: DownloadMonitor) in
                         guard let self = self else { return }
@@ -394,7 +460,7 @@ extension SimpleEditorViewModel {
                 detail = "\(info.currentStep)/\(info.totalSteps)"
             } else if detail.isEmpty {
                 // Try to extract detail like "Extracting mesh..." from the status
-                detail = extractDetailText(from: status)
+                detail = ProgressParser.extractDetailText(status)
             }
             // Calculate STAGE-SPECIFIC progress from step counts, NOT overall progress
             let stageProgress: Double
@@ -450,7 +516,7 @@ extension SimpleEditorViewModel {
                 }
             }
         } else if status.contains("Saving") {
-            let detail = extractDetailText(from: status)
+            let detail = ProgressParser.extractDetailText(status)
             withFastSpring {
                 markPreviousStagesCompleted(before: .saving)
                 generationStages[.volumeDecoding] = StageProgress(status: .completed, progress: 1.0, detail: "")
@@ -459,39 +525,17 @@ extension SimpleEditorViewModel {
         }
     }
 
-    /// Extract step detail from status string (handles formats like "Stage (5/25)" or "5/25")
-    private func extractStepDetail(from status: String) -> String {
-        // Try to find step counts in parentheses first (e.g., "Diffusion Sampling (5/25)")
-        if let parenMatch = status.range(of: #"\((\d+)/(\d+)\)"#, options: .regularExpression) {
-            let stepStr = String(status[parenMatch])
-            return stepStr.trimmingCharacters(in: CharacterSet(charactersIn: "()"))
-        }
-        // Fall back to ProgressParser
-        if let steps = ProgressParser.extractSteps(status) {
-            return "\(steps.current)/\(steps.total)"
-        }
-        return ""
-    }
-
-    /// Extract non-numeric detail text from status (e.g., "Extracting mesh..." from "Volume Decoding (Extracting mesh...)")
-    private func extractDetailText(from status: String) -> String {
-        // Try to find text in parentheses that isn't a step count
-        if let parenMatch = status.range(of: #"\(([^)]+)\)"#, options: .regularExpression) {
-            let content = String(status[parenMatch]).trimmingCharacters(in: CharacterSet(charactersIn: "()"))
-            // Skip if it looks like a step count
-            if content.range(of: #"^\d+/\d+$"#, options: .regularExpression) == nil {
-                return content
-            }
-        }
-        return ""
-    }
+    // Progress parsing is now centralized in ProgressParser:
+    // - Use ProgressParser.formatStepDetail() instead of extractStepDetail()
+    // - Use ProgressParser.extractDetailText() instead of extractDetailText()
 
     func markPreviousStagesCompleted(before stage: GenerationStage) {
-        let allStages = GenerationStage.allCases
-        guard let targetIndex = allStages.firstIndex(of: stage) else { return }
+        // Use model-specific stages to avoid marking irrelevant stages
+        let modelStages = GenerationStage.stages(for: selectedPreset.modelFamily)
+        guard let targetIndex = modelStages.firstIndex(of: stage) else { return }
 
         for i in 0..<targetIndex {
-            let prevStage = allStages[i]
+            let prevStage = modelStages[i]
             if generationStages[prevStage]?.status != .completed {
                 generationStages[prevStage] = StageProgress(status: .completed, progress: 1.0, detail: "")
             }
@@ -499,13 +543,17 @@ extension SimpleEditorViewModel {
     }
 
     func markAllStagesCompleted() {
-        for stage in GenerationStage.allCases {
+        // Use model-specific stages
+        let modelStages = GenerationStage.stages(for: selectedPreset.modelFamily)
+        for stage in modelStages {
             generationStages[stage] = StageProgress(status: .completed, progress: 1.0, detail: "")
         }
     }
 
     func markRemainingStagesCancelled() {
-        for stage in GenerationStage.allCases {
+        // Use model-specific stages
+        let modelStages = GenerationStage.stages(for: selectedPreset.modelFamily)
+        for stage in modelStages {
             if generationStages[stage]?.status != .completed {
                 generationStages[stage] = StageProgress(status: .cancelled, progress: 0, detail: "")
             }

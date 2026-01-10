@@ -1,3 +1,4 @@
+import os.log
 import Foundation
 
 /// Manages Python dependency installation and environment setup
@@ -57,7 +58,7 @@ class PythonDependencyService {
             report(.failed, "SAM environment sync failed", nil, false)
             return false
         }
-        
+
         report(.downloadingSAM, "Downloading segmentation model...", nil, false)
         await warmupSAMModel(uvPath: uvPath, onProgress: onProgress)
 
@@ -80,7 +81,7 @@ class PythonDependencyService {
             report(.failed, "Hunyuan environment sync failed", nil, false)
             return false
         }
-        
+
         report(.downloadingHunyuan, "Downloading 3D generation model (\(modelChoice.displayName))...", nil, false)
         await downloadHunyuanModel(uvPath: uvPath, variant: modelChoice.modelVariant, onProgress: onProgress)
 
@@ -233,7 +234,7 @@ class PythonDependencyService {
         process.executableURL = URL(fileURLWithPath: uvPath)
         process.arguments = ["sync", "--python", pythonVersion]
         process.currentDirectoryURL = workingDir
-        
+
         var env = createPythonEnvironment(venvPath: venvPath, modelsHubDir: PathManager.modelsHubDirectory)
         env["UV_LINK_MODE"] = "copy"
         process.environment = env

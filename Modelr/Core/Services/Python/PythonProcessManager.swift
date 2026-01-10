@@ -1,3 +1,4 @@
+import os.log
 import Foundation
 
 /// Manages the lifecycle of Python worker processes

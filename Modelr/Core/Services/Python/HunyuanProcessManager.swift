@@ -1,3 +1,4 @@
+import os.log
 import Foundation
 
 /// Manages the persistent Hunyuan Python server process
@@ -98,11 +99,12 @@ class HunyuanProcessManager {
         try process?.run()
 
         // Register for cleanup on app termination
-        if let pid = process?.processIdentifier {
-            ProcessCleanup.shared.registerProcess(pid)
+        let processId = process?.processIdentifier ?? -1
+        if processId > 0 {
+            ProcessCleanup.shared.registerProcess(processId)
         }
 
-        print("[Hunyuan] Server started with PID \(process?.processIdentifier ?? -1)")
+        print("[Hunyuan] Server started with PID \(processId)")
     }
 
     /// Cancel current generation.
@@ -268,7 +270,16 @@ class HunyuanProcessManager {
     func waitForReady(timeout: TimeInterval) async throws -> HunyuanResponse {
         return try await withCheckedThrowingContinuation { continuation in
             // Use a class to track whether continuation has been resumed
-            final class ResumeTracker { var resumed = false }
+            // Thread-safe tracker to prevent double-resume of continuation
+            final class ResumeTracker: @unchecked Sendable {
+                private let lock = NSLock()
+                private var _resumed = false
+
+                var resumed: Bool {
+                    get { lock.lock(); defer { lock.unlock() }; return _resumed }
+                    set { lock.lock(); defer { lock.unlock() }; _resumed = newValue }
+                }
+            }
             let tracker = ResumeTracker()
 
             continuationLock.lock()
@@ -292,8 +303,11 @@ class HunyuanProcessManager {
                     return
                 }
                 tracker.resumed = true
-                // Remove our handler if still present
-                self?.pendingContinuations.removeAll { _ in false } // Just unlock, handler was already consumed or will be ignored
+                // Remove pending continuation that hasn't been consumed yet
+                // Since we're timing out, we need to remove the handler we just added
+                if let strongSelf = self, !strongSelf.pendingContinuations.isEmpty {
+                    strongSelf.pendingContinuations.removeFirst()
+                }
                 self?.continuationLock.unlock()
                 continuation.resume(throwing: PythonError.timeout)
             }
@@ -322,23 +336,23 @@ class HunyuanProcessManager {
         // For generate commands, we need to handle multiple progress responses
         // before getting the final complete/error response
         return try await withCheckedThrowingContinuation { continuation in
-            // Use a class to track completion state safely across closures
-            final class CompletionTracker {
-                var completed = false
-                let lock = NSLock()
+            // Thread-safe tracker to prevent double-resume of continuation
+            final class CompletionTracker: @unchecked Sendable {
+                private var _completed = false
+                private let lock = NSLock()
 
                 func tryComplete() -> Bool {
                     lock.lock()
                     defer { lock.unlock() }
-                    if completed { return false }
-                    completed = true
+                    if _completed { return false }
+                    _completed = true
                     return true
                 }
 
                 var isCompleted: Bool {
                     lock.lock()
                     defer { lock.unlock() }
-                    return completed
+                    return _completed
                 }
             }
             let tracker = CompletionTracker()
