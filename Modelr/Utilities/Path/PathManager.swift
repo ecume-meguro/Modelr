@@ -538,10 +538,6 @@ struct PathManager {
         vlmProjectDirectory.appendingPathComponent(AppConstants.vlmWrapperFileName)
     }
 
-    /// Get path for T2I wrapper script
-    static var t2iWrapperPath: URL {
-        inferenceProjectDirectory.appendingPathComponent("t2i_wrapper.py")
-    }
 
     /// Get path for SAM pyproject file
     static var samPyprojectPath: URL {
@@ -812,16 +808,6 @@ struct PathManager {
         isHunyuanModelDownloaded(variant: "std")
     }
 
-    /// Check if Stable Diffusion 1.5 model is downloaded (for T2I)
-    static var isT2IModelDownloaded: Bool {
-        // SD 1.5 model ID: stable-diffusion-v1-5/stable-diffusion-v1-5
-        let modelDirName = "models--stable-diffusion-v1-5--stable-diffusion-v1-5"
-        let directHub = modelsHubDirectory
-        let hfHomeStyleHub = modelsHubDirectory.appendingPathComponent("hub", isDirectory: true)
-
-        return checkModelExists(dirName: modelDirName, in: directHub)
-            || checkModelExists(dirName: modelDirName, in: hfHomeStyleHub)
-    }
 
     private static func checkModelExists(dirName: String, in parentDir: URL) -> Bool {
         let fileManager = FileManager.default

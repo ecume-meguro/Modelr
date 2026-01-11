@@ -118,34 +118,17 @@ struct ProjectEditorView: View {
         .background(Color(NSColor.windowBackgroundColor))
     }
 
-    /// Whether this project uses text-to-model mode
-    private var isTextToModelMode: Bool {
-        project?.mode == .textToModel
-    }
-
     @ViewBuilder
     private var sidebarContent: some View {
-        Group {
-            if isTextToModelMode {
-                TextToModelSidebar(viewModel: viewModel, onClose: handleClose)
-            } else {
-                SimpleEditorSidebar(viewModel: viewModel, onClose: handleClose)
-            }
-        }
-        .navigationSplitViewColumnWidth(min: 280, ideal: 360, max: 420)
+        SimpleEditorSidebar(viewModel: viewModel, onClose: handleClose)
+            .navigationSplitViewColumnWidth(min: 280, ideal: 360, max: 420)
     }
 
     @ViewBuilder
     private var canvasContent: some View {
-        Group {
-            if isTextToModelMode && viewModel.t2mGeneratedImage == nil {
-                TextToModelCanvas(viewModel: viewModel)
-            } else {
-                ImageCanvas(viewModel: viewModel)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(NSColor.windowBackgroundColor))
+        ImageCanvas(viewModel: viewModel)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(NSColor.windowBackgroundColor))
     }
 
     private func handleClose() {

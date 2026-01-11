@@ -364,9 +364,17 @@ struct SegmentationEntryView: View {
             // Clear button
             if entry.hasValidMask || entry.boundingBox != nil {
                 HStack {
-                    AppDesign.InlineButton("Clear", icon: "trash") {
-                        viewModel.clearActiveSegmentation()
+                    Button(action: viewModel.clearActiveSegmentation) {
+                        HStack(spacing: AppDesign.Spacing.p6) {
+                            Image(systemName: "trash")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            Text("Clear")
+                                .font(.system(size: AppDesign.FontSize.caption))
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    .buttonStyle(.plain)
                     Spacer()
                 }
             }

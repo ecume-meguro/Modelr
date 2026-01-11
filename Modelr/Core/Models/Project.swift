@@ -3,26 +3,22 @@ import Foundation
 /// Project creation mode - determines the workflow
 enum ProjectMode: String, Codable, CaseIterable {
     case imageToModel  // Existing: Image → Segment → 3D
-    case textToModel   // New: Text → Image → 3D
 
     var displayName: String {
         switch self {
         case .imageToModel: return "Image to Model"
-        case .textToModel: return "Text to Model"
         }
     }
 
     var icon: String {
         switch self {
         case .imageToModel: return "photo"
-        case .textToModel: return "text.cursor"
         }
     }
 
     var description: String {
         switch self {
         case .imageToModel: return "Upload an image and convert it to 3D"
-        case .textToModel: return "Describe what you want and generate 3D"
         }
     }
 }
@@ -106,14 +102,6 @@ struct ProjectMetadata: Codable {
 
     // Merged mask path (the combined mask used for generation)
     var mergedMaskPath: String?
-
-    // Text-to-Model specific fields
-    var t2iPrompt: String?              // User's text prompt for image generation
-    var t2iNegativePrompt: String?      // Negative prompt for T2I
-    var t2iGeneratedImagePath: String?  // Path to T2I-generated image (used as Hunyuan input)
-    var t2iSeed: Int?                   // Seed used for T2I generation (for reproducibility)
-    var t2iSteps: Int?                  // Number of diffusion steps used
-    var t2iGuidanceScale: Float?        // CFG scale used
 
     init(projectId: UUID) {
         self.projectId = projectId

@@ -39,7 +39,6 @@ class PreloadManager: ObservableObject {
         case idle
         case preloadingVLM
         case preloadingSAM
-        case preloadingT2I
         case preloadingThumbnails
         case ready
         case failed(String)
@@ -49,7 +48,6 @@ class PreloadManager: ObservableObject {
             case .idle: return "Idle"
             case .preloadingVLM: return "Loading VLM..."
             case .preloadingSAM: return "Loading SAM..."
-            case .preloadingT2I: return "Loading T2I..."
             case .preloadingThumbnails: return "Loading thumbnails..."
             case .ready: return "Ready"
             case .failed(let error): return "Failed: \(error)"
@@ -86,7 +84,7 @@ class PreloadManager: ObservableObject {
 
     var isPreloading: Bool {
         switch mlPreloadStatus {
-        case .preloadingVLM, .preloadingSAM, .preloadingT2I, .preloadingThumbnails:
+        case .preloadingVLM, .preloadingSAM, .preloadingThumbnails:
             return true
         default:
             return false
@@ -161,18 +159,12 @@ class PreloadManager: ObservableObject {
             await preloadThumbnails()
 
         case .aggressive:
-            // > 16GB: Preload everything including T2I
+            // > 16GB: Preload everything
             mlPreloadStatus = .preloadingVLM
             await preloadVLM()
 
             mlPreloadStatus = .preloadingSAM
             await preloadSAM()
-
-            // Preload T2I if model is downloaded
-            if PathManager.isT2IModelDownloaded {
-                mlPreloadStatus = .preloadingT2I
-                await preloadT2I()
-            }
 
             // Start Hunyuan in background (fire and forget)
             startHunyuanInBackground()
@@ -188,12 +180,6 @@ class PreloadManager: ObservableObject {
         isMLReady = true
     }
 
-    /// Preload T2I model in background
-    private func preloadT2I() async {
-        // T2I uses the inference venv, so just ensure the wrapper is ready
-        // Actual model loading happens when T2IProcessManager.start() is called
-        print("[PreloadManager] T2I preload skipped - model loads on first use")
-    }
 
     /// Preload models for a specific project mode
     func preloadForMode(_ mode: ProjectMode) async {
@@ -210,11 +196,6 @@ class PreloadManager: ObservableObject {
                 mlPreloadStatus = .preloadingVLM
                 await preloadVLM()
             }
-
-        case .textToModel:
-            // T2I + Hunyuan for text-to-model workflow
-            // T2I loads on first generation; Hunyuan preloads in background
-            startHunyuanInBackground()
         }
 
         mlPreloadStatus = .ready

@@ -353,7 +353,6 @@ class PythonDependencyService {
             PathManager.samProjectDirectory.appendingPathComponent(AppConstants.samWrapperFileName),
             PathManager.vlmProjectDirectory.appendingPathComponent(AppConstants.vlmWrapperFileName),
             PathManager.toolsProjectDirectory.appendingPathComponent("mesh_processor.py"),
-            PathManager.t2iWrapperPath,
             // Hunyuan (separate environment)
             PathManager.hunyuanProjectDirectory.appendingPathComponent("pyproject.toml"),
             PathManager.hunyuanProjectDirectory.appendingPathComponent(AppConstants.hunyuanWrapperFileName)
@@ -395,14 +394,11 @@ class PythonDependencyService {
             let sharedMlxDst = PathManager.sharedDirectory.appendingPathComponent("mlx-sam3", isDirectory: true)
             try copyDirectoryFiltered(from: sharedMlxSrc, to: sharedMlxDst)
 
-            // Unified inference environment (SAM + VLM + Tools + T2I)
+            // Unified inference environment (SAM + VLM + Tools)
             try PathManager.ensureDirectoryExists(at: PathManager.inferenceProjectDirectory)
             let inferencePyprojectDst = PathManager.inferenceProjectDirectory.appendingPathComponent("pyproject.toml")
             try copyFile(from: source.appendingPathComponent("pyproject_inference.toml"), to: inferencePyprojectDst)
             normalizeUvLocalSourcePaths(inPyprojectAt: inferencePyprojectDst)
-
-            // T2I wrapper script (uses inference venv)
-            try copyFile(from: source.appendingPathComponent("t2i_wrapper.py"), to: PathManager.inferenceProjectDirectory.appendingPathComponent("t2i_wrapper.py"))
 
             // SAM wrapper script (uses inference venv)
             try PathManager.ensureDirectoryExists(at: PathManager.samProjectDirectory)

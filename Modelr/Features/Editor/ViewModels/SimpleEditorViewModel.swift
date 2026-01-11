@@ -139,18 +139,6 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     @Published var autoDetectedLabel: String?
     var autoDetectionTask: Task<Void, Never>?
 
-    // MARK: - Text-to-Model State (T2I)
-    @Published var t2mCurrentStep: TextToModelStep = .prompt
-    @Published var t2mPrompt: String = ""
-    @Published var t2mNegativePrompt: String = ""
-    @Published var t2mSeed: Int? = nil
-    @Published var t2mGeneratedImage: NSImage? = nil
-    @Published var t2mGeneratedImagePath: String? = nil
-    @Published var isGeneratingT2I: Bool = false
-    @Published var t2mProgress: Float = 0
-    @Published var t2mProgressDetail: String = ""
-    var t2iTask: Task<Void, Never>?
-
     // MARK: - Image Initialization State
     /// Whether the current image has been successfully initialized with SAM backend
     @Published var isImageInitializedWithSAM: Bool = false

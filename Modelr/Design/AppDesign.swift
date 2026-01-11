@@ -202,6 +202,7 @@ enum AppDesign {
                 }
             }
             .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.roundedRectangle(radius: 8))
             .controlSize(.large)
             .tint(isDisabled ? Color.secondary.opacity(0.3) : accent)
             .disabled(isDisabled)
@@ -239,6 +240,8 @@ enum AppDesign {
                 }
             }
             .buttonStyle(.bordered)
+            .buttonBorderShape(.roundedRectangle(radius: 8))
+            .controlSize(.large)
             .tint(destructive ? .red : nil)
             .disabled(isDisabled)
             .accessibilityLabel(title)
@@ -261,6 +264,8 @@ enum AppDesign {
                     .font(.system(size: FontSize.body, weight: isSelected ? .semibold : .regular))
             }
             .buttonStyle(.bordered)
+            .buttonBorderShape(.roundedRectangle(radius: 8))
+            .controlSize(.large)
             .tint(isSelected ? tint : nil)
             .accessibilityLabel(title)
             .accessibilityValue(isSelected ? "Selected" : "Not selected")
@@ -293,7 +298,7 @@ enum AppDesign {
                     Text(title)
                         .font(.system(size: FontSize.subheadline, weight: .medium))
                 }
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .foregroundStyle(isHovered ? .primary : .secondary)
                 .padding(.horizontal, Spacing.p8)
                 .padding(.vertical, Spacing.p6)

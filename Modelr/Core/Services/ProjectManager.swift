@@ -144,38 +144,6 @@ class ProjectManager: ObservableObject {
         return try await createProject(from: imageURL, name: imageName)
     }
 
-    /// Create a new text-to-model project (no source image yet)
-    func createTextToModelProject(name: String = "New Text Project") async throws -> Project {
-        let projectId = UUID()
-        let projectDir = PathManager.projectDirectory(for: projectId)
-
-        // Create project directory
-        try PathManager.ensureDirectoryExists(at: projectDir)
-
-        // Create project with text-to-model mode
-        let project = Project(
-            id: projectId,
-            name: name,
-            thumbnailPath: nil,
-            sourceImagePath: nil,  // Will be set after T2I generates an image
-            workflowStep: 1,
-            mode: .textToModel
-        )
-
-        // Save project manifest
-        try saveProject(project)
-
-        // Create initial metadata
-        let metadata = ProjectMetadata(projectId: projectId)
-        try saveMetadata(metadata)
-
-        // Add to list and sort
-        projects.append(project)
-        projects.sort { $0.modifiedAt > $1.modifiedAt }
-
-        return project
-    }
-
     // MARK: - Project Saving
 
     /// Save project manifest to disk

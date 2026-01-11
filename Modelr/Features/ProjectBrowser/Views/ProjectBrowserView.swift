@@ -237,18 +237,6 @@ struct ProjectBrowserView: View {
         .sheet(isPresented: $showRenameSheet) {
             renameSheet
         }
-        .sheet(isPresented: $showingModeSelection) {
-            NewProjectModeSheet(
-                onSelectImageToModel: {
-                    showingModeSelection = false
-                    showingFileImporter = true
-                },
-                onSelectTextToModel: {
-                    showingModeSelection = false
-                    createTextToModelProject()
-                }
-            )
-        }
         .alert("Delete \(selectionCount) Project\(selectionCount == 1 ? "" : "s")?", isPresented: $showDeleteConfirmation) {
             Button("Cancel", role: .cancel) { }
             Button("Delete", role: .destructive) {
@@ -324,7 +312,7 @@ struct ProjectBrowserView: View {
                     }
 
                     Button {
-                        showingModeSelection = true
+                        showingFileImporter = true
                     } label: {
                         Label("New Project", systemImage: "plus")
                     }
@@ -836,17 +824,6 @@ struct ProjectBrowserView: View {
         }
     }
 
-    private func createTextToModelProject() {
-        Task { @MainActor in
-            do {
-                let project = try await projectManager.createTextToModelProject()
-                onOpenProject(project.id)
-            } catch {
-                print("[ProjectBrowser] Failed to create text-to-model project: \(error)")
-            }
-        }
-    }
-
     // MARK: - Rename Sheet
 
     @ViewBuilder
@@ -953,109 +930,5 @@ struct ExampleImageCard: View {
                 ProgressView().controlSize(.small)
             }
         }
-    }
-}
-
-// MARK: - New Project Mode Sheet
-
-struct NewProjectModeSheet: View {
-    let onSelectImageToModel: () -> Void
-    let onSelectTextToModel: () -> Void
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var hoveredMode: ProjectMode?
-
-    var body: some View {
-        VStack(spacing: 24) {
-            // Header
-            VStack(spacing: 8) {
-                Text("Create New Project")
-                    .font(.system(size: 20, weight: .semibold))
-                Text("Choose how you want to create your 3D model")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.top, 8)
-
-            // Mode options
-            HStack(spacing: 16) {
-                ForEach(ProjectMode.allCases, id: \.self) { mode in
-                    ModeOptionCard(
-                        mode: mode,
-                        isHovered: hoveredMode == mode,
-                        onSelect: {
-                            switch mode {
-                            case .imageToModel:
-                                onSelectImageToModel()
-                            case .textToModel:
-                                onSelectTextToModel()
-                            }
-                        }
-                    )
-                    .onHover { hovering in
-                        hoveredMode = hovering ? mode : nil
-                    }
-                }
-            }
-
-            // Cancel button
-            Button("Cancel") {
-                dismiss()
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .padding(.top, 4)
-        }
-        .padding(32)
-        .frame(width: 480)
-    }
-}
-
-struct ModeOptionCard: View {
-    let mode: ProjectMode
-    let isHovered: Bool
-    let onSelect: () -> Void
-
-    var body: some View {
-        Button(action: onSelect) {
-            VStack(spacing: 16) {
-                // Icon
-                ZStack {
-                    Circle()
-                        .fill(isHovered ? Color.accentColor : Color.secondary.opacity(0.15))
-                        .frame(width: 56, height: 56)
-
-                    Image(systemName: mode.icon)
-                        .font(.system(size: 24))
-                        .foregroundStyle(isHovered ? .white : .primary)
-                }
-
-                // Text
-                VStack(spacing: 4) {
-                    Text(mode.displayName)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.primary)
-
-                    Text(mode.description)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .frame(width: 180, height: 160)
-            .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(isHovered ? Color.accentColor.opacity(0.1) : Color.primary.opacity(0.03))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(isHovered ? Color.accentColor : Color.primary.opacity(0.1), lineWidth: isHovered ? 2 : 1)
-            )
-        }
-        .buttonStyle(.plain)
-        .animation(.easeInOut(duration: 0.15), value: isHovered)
     }
 }

@@ -555,15 +555,24 @@ struct SimpleEditorSidebar: View {
                         .allowsHitTesting(viewModel.totalValidMasks > 0)
 
                         // Secondary option - refine mask
-                        AppDesign.InlineButton("Refine Mask", icon: "wand.and.stars") {
+                        AppDesign.GlassButtonSecondary("Refine Mask", icon: "wand.and.stars") {
                             viewModel.startTouchup()
                         }
                         .opacity(viewModel.totalValidMasks == 0 ? 0.5 : 1)
                         .disabled(viewModel.totalValidMasks == 0)
 
-                        AppDesign.InlineButton(viewModel.backButtonLabel, icon: "arrow.left") {
-                            viewModel.handleBackAction()
+                        // Back navigation as text
+                        Button(action: viewModel.handleBackAction) {
+                            HStack(spacing: AppDesign.Spacing.p6) {
+                                Image(systemName: "arrow.left")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                Text(viewModel.backButtonLabel)
+                                    .font(.system(size: AppDesign.FontSize.caption))
+                                    .foregroundStyle(.secondary)
+                            }
                         }
+                        .buttonStyle(.plain)
 
                         // Restore cached generation option
                         if viewModel.hasCachedGeneration {
@@ -604,9 +613,18 @@ struct SimpleEditorSidebar: View {
                             viewModel.transitionToGenerateSettings()
                         }
 
-                        AppDesign.InlineButton(viewModel.backButtonLabel, icon: "arrow.left") {
-                            viewModel.handleBackAction()
+                        // Back navigation as text
+                        Button(action: viewModel.handleBackAction) {
+                            HStack(spacing: AppDesign.Spacing.p6) {
+                                Image(systemName: "arrow.left")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                Text(viewModel.backButtonLabel)
+                                    .font(.system(size: AppDesign.FontSize.caption))
+                                    .foregroundStyle(.secondary)
+                            }
                         }
+                        .buttonStyle(.plain)
 
                         // Restore cached generation option
                         if viewModel.hasCachedGeneration {
@@ -642,9 +660,19 @@ struct SimpleEditorSidebar: View {
                     AppDesign.GlassButton("Generate Model", icon: "sparkles") {
                         viewModel.startGeneration()
                     }
-                    AppDesign.InlineButton(viewModel.backButtonLabel, icon: "arrow.left") {
-                        viewModel.handleBackAction()
+
+                    // Back navigation as text
+                    Button(action: viewModel.handleBackAction) {
+                        HStack(spacing: AppDesign.Spacing.p6) {
+                            Image(systemName: "arrow.left")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            Text(viewModel.backButtonLabel)
+                                .font(.system(size: AppDesign.FontSize.caption))
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    .buttonStyle(.plain)
                 }
             }
             // Optional step - no completed row shown when done
@@ -678,14 +706,33 @@ struct SimpleEditorSidebar: View {
                         AppDesign.GlassButton("Continue to Post-Process", icon: "arrow.right") {
                             viewModel.transitionToPostProcess()
                         }
-                        AppDesign.InlineButton(viewModel.backButtonLabel, icon: "arrow.left") {
-                            viewModel.handleBackAction()
+
+                        // Back navigation as text
+                        Button(action: viewModel.handleBackAction) {
+                            HStack(spacing: AppDesign.Spacing.p6) {
+                                Image(systemName: "arrow.left")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                Text(viewModel.backButtonLabel)
+                                    .font(.system(size: AppDesign.FontSize.caption))
+                                    .foregroundStyle(.secondary)
+                            }
                         }
+                        .buttonStyle(.plain)
                     } else {
                         // No model, not generating - show back option (stopped/failed/idle state)
-                        AppDesign.InlineButton(viewModel.backButtonLabel, icon: "arrow.left") {
-                            viewModel.handleBackAction()
+                        // Back navigation as text
+                        Button(action: viewModel.handleBackAction) {
+                            HStack(spacing: AppDesign.Spacing.p6) {
+                                Image(systemName: "arrow.left")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                Text(viewModel.backButtonLabel)
+                                    .font(.system(size: AppDesign.FontSize.caption))
+                                    .foregroundStyle(.secondary)
+                            }
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             } else if viewModel.currentStep == .postProcess {
@@ -706,9 +753,18 @@ struct SimpleEditorSidebar: View {
             PostProcessPanel(viewModel: viewModel)
 
             sectionFooter {
-                AppDesign.InlineButton(viewModel.backButtonLabel, icon: "arrow.left") {
-                    viewModel.handleBackAction()
+                // Back navigation as text
+                Button(action: viewModel.handleBackAction) {
+                    HStack(spacing: AppDesign.Spacing.p6) {
+                        Image(systemName: "arrow.left")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Text(viewModel.backButtonLabel)
+                            .font(.system(size: AppDesign.FontSize.caption))
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                .buttonStyle(.plain)
             }
         }
     }
