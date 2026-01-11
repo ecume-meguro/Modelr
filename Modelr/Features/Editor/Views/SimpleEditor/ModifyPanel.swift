@@ -17,26 +17,50 @@ struct ModifyPanel: View {
             // Header with info
             headerSection
 
-            // Type picker (Voxelize or Low Poly) - left aligned
-            // Note: macOS segmented controls have ~3pt internal leading padding,
-            // so we use negative offset to align visually with text content
-            Picker("", selection: $selection) {
-                ForEach(ModifySelection.allCases, id: \.self) { type in
-                    Text(type.rawValue).tag(type)
+            // Type picker and clear button row
+            HStack(alignment: .center, spacing: AppDesign.Spacing.p12) {
+                // Type picker (Voxelize or Low Poly) - left aligned
+                // Note: macOS segmented controls have ~3pt internal leading padding,
+                // so we use negative offset to align visually with text content
+                Picker("", selection: $selection) {
+                    ForEach(ModifySelection.allCases, id: \.self) { type in
+                        Text(type.rawValue).tag(type)
+                    }
                 }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .fixedSize()
+                .offset(x: -3)
+                .onChange(of: selection) { _, newValue in
+                    // Reset values when switching
+                    viewModel.voxelResolution = 0
+                    viewModel.lowPolyReduction = 0
+                    viewModel.modifiedModelURL = nil
+                    viewModel.modifyType = newValue == .voxelize ? .voxelize : .lowPoly
+                }
+
+                // Clear modifications button (show when modifications are active)
+                if viewModel.modifiedModelURL != nil {
+                    Button {
+                        viewModel.voxelResolution = 0
+                        viewModel.lowPolyReduction = 0
+                        viewModel.modifyType = .none
+                        viewModel.modifiedModelURL = nil
+                        viewModel.originalFaceCount = 0
+                        viewModel.modifiedFaceCount = 0
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 16))
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Clear modifications")
+                }
+
+                Spacer()
             }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .fixedSize()
             .frame(maxWidth: .infinity, alignment: .leading)
-            .offset(x: -3)
-            .onChange(of: selection) { _, newValue in
-                // Reset values when switching
-                viewModel.voxelResolution = 0
-                viewModel.lowPolyReduction = 0
-                viewModel.modifiedModelURL = nil
-                viewModel.modifyType = newValue == .voxelize ? .voxelize : .lowPoly
-            }
 
             // Settings based on selected type
             if selection == .voxelize {
@@ -60,6 +84,14 @@ struct ModifyPanel: View {
                         .foregroundStyle(.secondary)
                 }
             }
+
+            // Export section (show when there's a model to export)
+            if viewModel.modifiedModelURL != nil || viewModel.processedModelURL != nil || viewModel.generated3DModelURL != nil {
+                Divider()
+                    .padding(.vertical, AppDesign.Spacing.p4)
+
+                exportSection
+            }
         }
     }
 
@@ -77,16 +109,23 @@ struct ModifyPanel: View {
     @ViewBuilder
     private var voxelizeSettings: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
-            // Slider (0 = off, up to 0.085 = voxel pitch)
-            AppDesign.SliderRow(
+            // Slider with editable text field (0 = off, 0.015-0.085 = voxel pitch, minimum 0.015 to prevent timeouts)
+            EditableSliderRow(
                 label: "Voxel Size",
                 value: $viewModel.voxelResolution,
                 range: 0...0.085,
                 step: 0.001,
-                format: "%.3f"
+                format: "%.3f",
+                minimumValue: 0.015
             )
-            .onChange(of: viewModel.voxelResolution) { _, newValue in
-                if newValue > 0 {
+            .onChange(of: viewModel.voxelResolution) { oldValue, newValue in
+                // Snap to 0.015 minimum if user tries to set below (but allow 0 for disabled)
+                if newValue > 0 && newValue < 0.015 {
+                    viewModel.voxelResolution = 0.015
+                    return
+                }
+
+                if newValue >= 0.015 {
                     // Clear low poly when using voxelize
                     viewModel.lowPolyReduction = 0
                     viewModel.modifyType = .voxelize
@@ -102,7 +141,7 @@ struct ModifyPanel: View {
                 Image(systemName: "info.circle")
                     .font(.system(size: AppDesign.FontSize.caption))
                     .foregroundStyle(.secondary)
-                Text("Smaller values = more detail. Set to 0 to disable.")
+                Text("Smaller = more detail. Minimum 0.015. Set to 0 to disable.")
                     .font(.system(size: AppDesign.FontSize.xs))
                     .foregroundStyle(.secondary)
             }
@@ -114,12 +153,13 @@ struct ModifyPanel: View {
     @ViewBuilder
     private var lowPolySettings: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
-            // Slider (0 = off, up to 99.9% reduction for extremely low poly)
-            AppDesign.SliderRow(
+            // Slider with editable text field (0 = off, up to 99.9% reduction for extremely low poly)
+            EditableSliderRow(
                 label: "Reduction",
                 value: $viewModel.lowPolyReduction,
                 range: 0...99.9,
                 step: 0.1,
+                format: "%.1f",
                 valueSuffix: "%"
             )
             .onChange(of: viewModel.lowPolyReduction) { _, newValue in
@@ -139,10 +179,231 @@ struct ModifyPanel: View {
                 Image(systemName: "info.circle")
                     .font(.system(size: AppDesign.FontSize.caption))
                     .foregroundStyle(.secondary)
-                Text("Higher = fewer polygons. At 99.9%, only 0.1% of faces remain.")
+                Text("Higher = fewer polygons. Uses exponential scaling for better control at lower values.")
                     .font(.system(size: AppDesign.FontSize.xs))
                     .foregroundStyle(.secondary)
             }
+
+            // Face count stats (show when modified)
+            if viewModel.modifiedFaceCount > 0 {
+                faceCountStats
+            }
+        }
+    }
+
+    // MARK: - Face Count Stats
+
+    @ViewBuilder
+    private var faceCountStats: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p6) {
+            HStack(spacing: AppDesign.Spacing.p12) {
+                statItem(label: "Original", value: formatNumber(viewModel.originalFaceCount))
+                Image(systemName: "arrow.right")
+                    .font(.system(size: AppDesign.FontSize.caption))
+                    .foregroundStyle(.tertiary)
+                statItem(label: "Modified", value: formatNumber(viewModel.modifiedFaceCount))
+            }
+
+            if viewModel.originalFaceCount > 0 {
+                let reductionPercent = Double(viewModel.originalFaceCount - viewModel.modifiedFaceCount) / Double(viewModel.originalFaceCount) * 100
+                Text("Reduced by \(String(format: "%.1f", reductionPercent))%")
+                    .font(.system(size: AppDesign.FontSize.xs))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(AppDesign.Spacing.p8)
+        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private func statItem(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(.system(size: AppDesign.FontSize.body, weight: .medium, design: .monospaced))
+            Text(label)
+                .font(.system(size: AppDesign.FontSize.xs))
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private func formatNumber(_ num: Int) -> String {
+        if num >= 1_000_000 {
+            return String(format: "%.1fM", Double(num) / 1_000_000)
+        } else if num >= 1_000 {
+            return String(format: "%.1fK", Double(num) / 1_000)
+        }
+        return "\(num)"
+    }
+
+    // MARK: - Export Section
+
+    @ViewBuilder
+    private var exportSection: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
+            AppDesign.SectionLabel("Export")
+
+            FlowLayout(spacing: AppDesign.Spacing.p6) {
+                ForEach(ExportFormat.allCases) { format in
+                    formatButton(format)
+                }
+            }
+
+            AppDesign.GlassButton("Export \(viewModel.selectedExportFormat.rawValue)", icon: "square.and.arrow.up") {
+                exportMesh()
+            }
+            .disabled(viewModel.isProcessingMesh || viewModel.isModifyingMesh)
+        }
+    }
+
+    @ViewBuilder
+    private func formatButton(_ format: ExportFormat) -> some View {
+        let isSelected = viewModel.selectedExportFormat == format
+
+        Button {
+            viewModel.selectedExportFormat = format
+        } label: {
+            Text(format.rawValue)
+                .font(.system(size: AppDesign.FontSize.caption, weight: isSelected ? .semibold : .regular))
+                .padding(.horizontal, AppDesign.Spacing.p10)
+                .padding(.vertical, AppDesign.Spacing.p6)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isSelected ? AppDesign.accent.opacity(0.2) : Color.primary.opacity(0.05))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(isSelected ? AppDesign.accent : Color.primary.opacity(0.1), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isSelected ? AppDesign.accent : .primary)
+    }
+
+    private func exportMesh() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.item]
+
+        // Use project name if available, otherwise fallback to "model"
+        let defaultName: String
+        if let projectId = viewModel.projectId,
+           let project = try? ProjectManager.shared.loadProject(id: projectId) {
+            defaultName = project.name
+        } else {
+            defaultName = "model"
+        }
+        panel.nameFieldStringValue = "\(defaultName).\(viewModel.selectedExportFormat.fileExtension)"
+        panel.canCreateDirectories = true
+
+        if panel.runModal() == .OK, let url = panel.url {
+            Task {
+                let success = await viewModel.exportMesh(to: url)
+                if success {
+                    NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Editable Slider Row
+
+/// A slider with an editable text field for precise value input
+struct EditableSliderRow: View {
+    let label: String
+    @Binding var value: CGFloat
+    let range: ClosedRange<CGFloat>
+    var step: CGFloat = 1
+    var format: String = "%.1f"
+    var valueSuffix: String = ""
+    var minimumValue: CGFloat? = nil  // Optional minimum value enforcement (for voxelization)
+
+    @State private var textValue: String = ""
+    @FocusState private var isTextFieldFocused: Bool
+
+    private var formattedValue: String {
+        String(format: format, Double(value)) + valueSuffix
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p4) {
+            HStack {
+                Text(label)
+                    .font(.system(size: AppDesign.FontSize.subheadline))
+                    .foregroundStyle(.secondary)
+                Spacer()
+
+                // Editable text field
+                TextField("", text: $textValue)
+                    .font(.system(size: AppDesign.FontSize.subheadline, weight: .medium, design: .monospaced))
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 60)
+                    .textFieldStyle(.plain)
+                    .focused($isTextFieldFocused)
+                    .onAppear {
+                        textValue = formattedValue
+                    }
+                    .onChange(of: value) { (oldValue: CGFloat, newValue: CGFloat) in
+                        // If user is dragging slider while text field is focused, blur it
+                        if isTextFieldFocused && oldValue != newValue {
+                            isTextFieldFocused = false
+                        }
+                        // Update text display when not focused
+                        if !isTextFieldFocused {
+                            textValue = formattedValue
+                        }
+                    }
+                    .onSubmit {
+                        commitTextValue()
+                        isTextFieldFocused = false
+                    }
+                    .onChange(of: isTextFieldFocused) { _, focused in
+                        if !focused {
+                            commitTextValue()
+                        } else {
+                            // When focused, remove suffix for easier editing
+                            textValue = String(format: format, Double(value))
+                        }
+                    }
+            }
+
+            Slider(value: $value, in: range, step: step)
+                .controlSize(.small)
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { _ in
+                            // Blur text field when user starts dragging slider
+                            if isTextFieldFocused {
+                                isTextFieldFocused = false
+                            }
+                        }
+                )
+        }
+    }
+
+    private func commitTextValue() {
+        // Parse the text input
+        let cleanedText = textValue.replacingOccurrences(of: valueSuffix, with: "").trimmingCharacters(in: .whitespaces)
+
+        if let parsedValue = Double(cleanedText) {
+            var newValue = CGFloat(parsedValue)
+
+            // Apply minimum value constraint if set (for voxelization 0.015 minimum)
+            if let minValue = minimumValue, newValue > 0 && newValue < minValue {
+                newValue = minValue
+            }
+
+            // Clamp to range
+            newValue = min(max(newValue, range.lowerBound), range.upperBound)
+
+            value = newValue
+            textValue = formattedValue
+        } else {
+            // Invalid input - revert to current value
+            textValue = formattedValue
         }
     }
 }

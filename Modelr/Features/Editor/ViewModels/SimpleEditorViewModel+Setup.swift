@@ -333,13 +333,17 @@ extension SimpleEditorViewModel {
 
     /// Handle back button action with appropriate warnings based on current state
     func handleBackAction() {
+        print("[Navigation] handleBackAction called - currentStep: \(currentStep)")
+
         // Block back during handoff phase (post-generation processing)
         if isInHandoff {
+            print("[Navigation] Blocked - in handoff phase")
             return
         }
 
         // During setup, always warn if not on first substep
         if currentStep == .setup && currentSetupSubStep != .chooseModel {
+            print("[Navigation] Showing start over warning")
             showStartOverWarning = true
             return
         }
@@ -347,43 +351,56 @@ extension SimpleEditorViewModel {
         // Check if current step has significant state that would be lost
         switch currentStep {
         case .setup, .input:
+            print("[Navigation] Going back from \(currentStep)")
             goBack()
         case .segment:
             // Warn if there are valid masks that would be lost
             if totalValidMasks > 0 {
+                print("[Navigation] Showing discard image warning - totalValidMasks: \(totalValidMasks)")
                 showDiscardImageWarning = true
             } else {
+                print("[Navigation] Going back from segment")
                 goBack()
             }
         case .touchup:
             // Warn only if user actually made edits to the mask
             if hasMaskEdits {
+                print("[Navigation] Showing back warning - hasMaskEdits: true")
                 showBackWarning = true
             } else {
+                print("[Navigation] Going back from touchup")
                 goBack()
             }
         case .generateSettings:
             // Settings don't have significant state, just go back
+            print("[Navigation] Going back from generateSettings")
             goBack()
         case .generate:
             // Warn if 3D model was generated
             if generated3DModelURL != nil || isGenerating {
+                print("[Navigation] Showing discard model warning - modelURL: \(generated3DModelURL?.lastPathComponent ?? "nil"), isGenerating: \(isGenerating)")
                 showDiscardModelWarning = true
             } else {
+                print("[Navigation] Going back from generate")
                 goBack()
             }
         case .postProcess:
             // Warn if there are pending changes
             if hasPendingDeletions || processedModelURL != nil {
+                print("[Navigation] Showing discard model warning - hasPendingDeletions: \(hasPendingDeletions), processedModelURL: \(processedModelURL?.lastPathComponent ?? "nil")")
                 showDiscardModelWarning = true
             } else {
+                print("[Navigation] Going back from postProcess")
                 goBack()
             }
         case .modify:
             // Warn if there are modifications applied
+            print("[Navigation] Modify back - modifiedModelURL: \(modifiedModelURL?.lastPathComponent ?? "nil")")
             if modifiedModelURL != nil {
+                print("[Navigation] Showing discard model warning")
                 showDiscardModelWarning = true
             } else {
+                print("[Navigation] Going back from modify")
                 goBack()
             }
         }

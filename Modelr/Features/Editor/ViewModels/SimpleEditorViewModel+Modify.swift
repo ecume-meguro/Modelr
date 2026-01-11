@@ -39,6 +39,11 @@ extension SimpleEditorViewModel {
                 componentFiles.removeAll()
                 preloadedComponentNodes.removeAll()
 
+                // Track face counts
+                if let faces = result["faces"] as? Int {
+                    modifiedFaceCount = faces
+                }
+
                 print("[Modify] Voxelization complete: \(path)")
             } else if let error = result?["error"] as? String {
                 print("[Modify] Voxelization failed: \(error)")
@@ -59,11 +64,24 @@ extension SimpleEditorViewModel {
 
         await MainActor.run { isModifyingMesh = true }
 
+        // Apply custom curve: first 50% of slider → 0-95% reduction, last 50% → 95-99.9% reduction
+        // This gives fine control at low values and makes the extreme reductions occupy the last half
+        // Examples: 25% → 47.5%, 50% → 95%, 75% → 97.45%, 99.9% → 99.9%
+        let sliderValue = Double(lowPolyReduction)
+        let exponentialReduction: Double
+        if sliderValue <= 50.0 {
+            // First half: 0-50% slider → 0-95% reduction
+            exponentialReduction = sliderValue * 1.9
+        } else {
+            // Second half: 50-99.9% slider → 95-99.9% reduction
+            exponentialReduction = 95.0 + (sliderValue - 50.0) * 0.098
+        }
+
         let result = await runMeshModifier(
             command: "simplify",
             inputPath: meshURL.path,
             outputPath: outputPath,
-            reduction: Double(lowPolyReduction)
+            reduction: exponentialReduction
         )
 
         await MainActor.run {
@@ -76,6 +94,14 @@ extension SimpleEditorViewModel {
                 // CRITICAL: Clear component data to force ModelViewerContainer fallback
                 componentFiles.removeAll()
                 preloadedComponentNodes.removeAll()
+
+                // Track face counts
+                if let originalFaces = result["original_faces"] as? Int {
+                    originalFaceCount = originalFaces
+                }
+                if let finalFaces = result["final_faces"] as? Int {
+                    modifiedFaceCount = finalFaces
+                }
 
                 print("[Modify] Low poly complete: \(path)")
             } else if let error = result?["error"] as? String {

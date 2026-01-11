@@ -113,7 +113,7 @@ struct PostProcessPanel: View {
             HStack {
                 Image(systemName: "cube.fill")
                     .foregroundStyle(sectionClayColor)
-                Text("Main Mesh")
+                Text("Keep Objects")
                     .font(.system(size: AppDesign.FontSize.caption, weight: .semibold))
                     .foregroundStyle(.primary.opacity(0.9))
                     .textCase(.uppercase)
@@ -125,7 +125,7 @@ struct PostProcessPanel: View {
             }
 
             if viewModel.keepIndices.isEmpty {
-                emptyListPlaceholder(text: "Click artifacts to keep")
+                emptyListPlaceholder(text: "Click objects below to reclassify as legitimate")
             } else {
                 ForEach(keepComponents, id: \.index) { component in
                     componentRow(component, isKeep: true)
@@ -147,7 +147,7 @@ struct PostProcessPanel: View {
             HStack {
                 Image(systemName: "cube.transparent")
                     .foregroundStyle(sectionArtifactColor.opacity(0.7))
-                Text("Artifacts")
+                Text("Potential Artifacts")
                     .font(.system(size: AppDesign.FontSize.caption, weight: .semibold))
                     .foregroundStyle(sectionArtifactColor.opacity(0.9))
                     .textCase(.uppercase)
@@ -159,7 +159,7 @@ struct PostProcessPanel: View {
             }
 
             if viewModel.deleteIndices.isEmpty {
-                emptyListPlaceholder(text: "Click mesh parts to mark as artifacts")
+                emptyListPlaceholder(text: "Click objects to mark as artifacts")
             } else {
                 ForEach(deleteComponents, id: \.index) { component in
                     componentRow(component, isKeep: false)
@@ -442,7 +442,7 @@ struct PostProcessPanel: View {
                     .font(.system(size: AppDesign.FontSize.subheadline, weight: .semibold))
             }
 
-            Text("We found \(viewModel.meshComponents.count) objects in your model. Items in red are marked for deletion—click an item to change its status. Use the sidebar to isolate and view objects.")
+            Text("We identified \(viewModel.meshComponents.count) separate objects in your model. These can be legitimate parts or generation artifacts. We've auto-identified potential artifacts (shown in red) based on size—please review and adjust as needed. Click any item to reclassify it, or use the sidebar to isolate and inspect objects.")
                 .font(.system(size: AppDesign.FontSize.caption))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -600,7 +600,16 @@ struct PostProcessPanel: View {
     private func exportMesh() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.item]
-        panel.nameFieldStringValue = "model.\(viewModel.selectedExportFormat.fileExtension)"
+
+        // Use project name if available, otherwise fallback to "model"
+        let defaultName: String
+        if let projectId = viewModel.projectId,
+           let project = try? ProjectManager.shared.loadProject(id: projectId) {
+            defaultName = project.name
+        } else {
+            defaultName = "model"
+        }
+        panel.nameFieldStringValue = "\(defaultName).\(viewModel.selectedExportFormat.fileExtension)"
         panel.canCreateDirectories = true
 
         if panel.runModal() == .OK, let url = panel.url {

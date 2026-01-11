@@ -202,6 +202,12 @@ struct ProjectEditorView: View {
         .onChange(of: viewModel.selectedPreset) { _, _ in
             scheduleSave()
         }
+        .onChange(of: viewModel.hasMaskEdits) { _, hasMaskEdits in
+            // Save mask edits with debounce to prevent data loss
+            if hasMaskEdits {
+                scheduleSave()
+            }
+        }
         .onDisappear {
             // Ensure save on disappear
             saveTask?.cancel()
@@ -376,21 +382,45 @@ struct ProjectEditorView: View {
                     viewModel.modifyType = modifyType
                     viewModel.voxelResolution = CGFloat(settings.voxelResolution ?? 0)
                     viewModel.lowPolyReduction = CGFloat(settings.lowPolyReduction ?? 0)
+                    viewModel.originalFaceCount = settings.originalFaceCount ?? 0
+                    viewModel.modifiedFaceCount = settings.modifiedFaceCount ?? 0
                 }
 
                 print("[ProjectEditor] Restored modified model: \(modifiedPath)")
             }
         }
 
-        // Restore workflow step (after all data is loaded)
-        // Also mark appropriate steps as visited so navigation works correctly
-        if targetStep.rawValue > SimpleEditorViewModel.Step.segment.rawValue {
-            // Mark all steps up to target as visited
-            for step in SimpleEditorViewModel.Step.allCases {
-                if step.rawValue <= targetStep.rawValue {
-                    viewModel.visitedSteps.insert(step)
+        // Restore post-process state (keep/delete indices for artifact removal)
+        if let keepIndices = metadata?.keepComponentIndices {
+            viewModel.keepIndices = Set(keepIndices)
+        }
+        if let deleteIndices = metadata?.deleteComponentIndices {
+            viewModel.deleteIndices = Set(deleteIndices)
+        }
+
+        // Restore navigation state (visited steps from saved data, not heuristic)
+        if let savedStepValues = metadata?.visitedStepRawValues {
+            viewModel.visitedSteps = Set(savedStepValues.compactMap { SimpleEditorViewModel.Step(rawValue: $0) })
+            print("[ProjectEditor] Restored visited steps: \(viewModel.visitedSteps.map { $0.rawValue }.sorted())")
+        } else {
+            // Fallback to heuristic if no saved data (backwards compatibility)
+            if targetStep.rawValue > SimpleEditorViewModel.Step.segment.rawValue {
+                for step in SimpleEditorViewModel.Step.allCases {
+                    if step.rawValue <= targetStep.rawValue {
+                        viewModel.visitedSteps.insert(step)
+                    }
                 }
             }
+        }
+
+        // Restore generation context (step before generation)
+        if let stepBeforeValue = metadata?.stepBeforeGenerationRawValue,
+           let stepBefore = SimpleEditorViewModel.Step(rawValue: stepBeforeValue) {
+            viewModel.stepBeforeGeneration = stepBefore
+        }
+
+        // Restore workflow step (after all data is loaded)
+        if targetStep.rawValue > SimpleEditorViewModel.Step.segment.rawValue {
             withAnimation(.easeOut(duration: 0.25)) {
                 viewModel.currentStep = targetStep
             }
@@ -449,6 +479,9 @@ struct ProjectEditorView: View {
                 let modelExt = modelURL.pathExtension.isEmpty ? "obj" : modelURL.pathExtension
                 let projectModelPath = PathManager.projectModelPath(for: projectId, extension: modelExt)
 
+                // Check if this is a new generation (from temp directory)
+                let isNewGeneration = modelURL.path.contains(NSTemporaryDirectory())
+
                 // Copy the model file if it doesn't exist OR if the source is different
                 if !FileManager.default.fileExists(atPath: projectModelPath.path) ||
                    modelURL.path != projectModelPath.path {
@@ -458,6 +491,16 @@ struct ProjectEditorView: View {
                     try? FileManager.default.copyItem(at: modelURL, to: projectModelPath)
                 }
                 metadata.generatedModelPath = "model.\(modelExt)"
+
+                // CRITICAL: If new generation, clear downstream processed/modified state
+                if isNewGeneration {
+                    metadata.processedModelPath = nil
+                    metadata.modifiedModelPath = nil
+                    metadata.modifySettings = nil
+                    metadata.keepComponentIndices = nil
+                    metadata.deleteComponentIndices = nil
+                    print("[ProjectEditor] New generation detected - cleared downstream state in metadata")
+                }
             } else {
                 // Clear model reference if no model exists
                 metadata.generatedModelPath = nil
@@ -481,7 +524,9 @@ struct ProjectEditorView: View {
                     metadata.modifySettings = ModifySettings(
                         type: viewModel.modifyType.rawValue,
                         voxelResolution: viewModel.voxelResolution > 0 ? Double(viewModel.voxelResolution) : nil,
-                        lowPolyReduction: viewModel.lowPolyReduction > 0 ? Double(viewModel.lowPolyReduction) : nil
+                        lowPolyReduction: viewModel.lowPolyReduction > 0 ? Double(viewModel.lowPolyReduction) : nil,
+                        originalFaceCount: viewModel.originalFaceCount > 0 ? viewModel.originalFaceCount : nil,
+                        modifiedFaceCount: viewModel.modifiedFaceCount > 0 ? viewModel.modifiedFaceCount : nil
                     )
 
                     print("[ProjectEditor] Saved modified mesh: \(modifiedPath.lastPathComponent)")
@@ -492,6 +537,25 @@ struct ProjectEditorView: View {
                 // Clear modified mesh if none exists
                 metadata.modifiedModelPath = nil
                 metadata.modifySettings = nil
+            }
+
+            // Save post-process state (keep/delete indices for artifact removal)
+            if !viewModel.keepIndices.isEmpty || !viewModel.deleteIndices.isEmpty {
+                metadata.keepComponentIndices = Array(viewModel.keepIndices)
+                metadata.deleteComponentIndices = Array(viewModel.deleteIndices)
+            } else {
+                metadata.keepComponentIndices = nil
+                metadata.deleteComponentIndices = nil
+            }
+
+            // Save navigation state (visited steps for correct back button)
+            metadata.visitedStepRawValues = viewModel.visitedSteps.map { $0.rawValue }
+
+            // Save generation context (step before generation for cancel/stop)
+            if let stepBefore = viewModel.stepBeforeGeneration {
+                metadata.stepBeforeGenerationRawValue = stepBefore.rawValue
+            } else {
+                metadata.stepBeforeGenerationRawValue = nil
             }
 
             try ProjectManager.shared.saveMetadata(metadata)

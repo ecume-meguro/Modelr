@@ -98,8 +98,12 @@ class PreloadManager: ObservableObject {
     // MARK: - Preload State
     @Published private(set) var isMaskMergePreloading = false
     @Published private(set) var isCompositePreloading = false
-    @Published private(set) var preloadedMergedMask: NSImage?
-    @Published private(set) var preloadedComposite: NSImage?
+
+    // CRITICAL: Track project ownership to prevent cross-project data leakage
+    private var preloadedMergedMask: NSImage?
+    private var preloadedMaskProjectId: UUID?
+    private var preloadedComposite: NSImage?
+    private var preloadedCompositeProjectId: UUID?
 
     // MARK: - Task Management
     private var maskMergeTask: Task<Void, Never>?
@@ -281,15 +285,15 @@ class PreloadManager: ObservableObject {
     // MARK: - Mask Merge Preloading
 
     /// Preload merged mask when segmentations change
-    /// Called with debounce to avoid excessive computation during rapid changes
-    func preloadMergedMask(from segmentations: [SegmentationEntry]) {
+    /// CRITICAL: Now tracks projectId to prevent cross-project data leakage
+    func preloadMergedMask(from segmentations: [SegmentationEntry], projectId: UUID) {
         // Cancel previous debounce
         maskMergeDebounceWorkItem?.cancel()
 
         // Create new debounced work
         maskMergeDebounceWorkItem = DispatchWorkItem { [weak self] in
             Task { @MainActor in
-                await self?.performMaskMerge(from: segmentations)
+                await self?.performMaskMerge(from: segmentations, projectId: projectId)
             }
         }
 
@@ -300,11 +304,12 @@ class PreloadManager: ObservableObject {
         )
     }
 
-    private func performMaskMerge(from segmentations: [SegmentationEntry]) async {
+    private func performMaskMerge(from segmentations: [SegmentationEntry], projectId: UUID) async {
         // Get all valid selected masks
         let masks = segmentations.flatMap { $0.selectedMasks }
         guard !masks.isEmpty else {
             preloadedMergedMask = nil
+            preloadedMaskProjectId = nil
             return
         }
 
@@ -324,7 +329,9 @@ class PreloadManager: ObservableObject {
 
             await MainActor.run {
                 self?.preloadedMergedMask = merged
+                self?.preloadedMaskProjectId = projectId  // Track ownership
                 self?.isMaskMergePreloading = false
+                print("[PreloadManager] Cached mask for project \(projectId.uuidString.prefix(8))")
             }
         }
     }
@@ -335,18 +342,25 @@ class PreloadManager: ObservableObject {
         maskMergeTask = nil
         maskMergeDebounceWorkItem?.cancel()
         preloadedMergedMask = nil
+        preloadedMaskProjectId = nil
         isMaskMergePreloading = false
     }
 
-    /// Get the cached merged mask (for saving to project)
-    func getCachedMergedMask() -> NSImage? {
+    /// Get the cached merged mask ONLY if it belongs to the specified project
+    /// CRITICAL: Validates project ownership to prevent cross-project data leakage
+    func getCachedMergedMask(for projectId: UUID) -> NSImage? {
+        guard preloadedMaskProjectId == projectId else {
+            print("[PreloadManager] Mask cache miss - cached for \(preloadedMaskProjectId?.uuidString.prefix(8) ?? "nil"), requested for \(projectId.uuidString.prefix(8))")
+            return nil
+        }
         return preloadedMergedMask
     }
 
     // MARK: - Composite Image Preloading
 
     /// Preload composite image when mask is ready
-    func preloadComposite(source: NSImage, mask: NSImage) {
+    /// CRITICAL: Now tracks projectId to prevent cross-project data leakage
+    func preloadComposite(source: NSImage, mask: NSImage, projectId: UUID) {
         // Cancel any existing task
         compositeTask?.cancel()
 
@@ -363,7 +377,9 @@ class PreloadManager: ObservableObject {
 
             await MainActor.run {
                 self?.preloadedComposite = composite
+                self?.preloadedCompositeProjectId = projectId  // Track ownership
                 self?.isCompositePreloading = false
+                print("[PreloadManager] Cached composite for project \(projectId.uuidString.prefix(8))")
             }
         }
     }
@@ -373,7 +389,18 @@ class PreloadManager: ObservableObject {
         compositeTask?.cancel()
         compositeTask = nil
         preloadedComposite = nil
+        preloadedCompositeProjectId = nil
         isCompositePreloading = false
+    }
+
+    /// Get the preloaded composite ONLY if it belongs to the specified project
+    /// CRITICAL: Validates project ownership to prevent cross-project data leakage
+    func getPreloadedComposite(for projectId: UUID) -> NSImage? {
+        guard preloadedCompositeProjectId == projectId else {
+            print("[PreloadManager] Composite cache miss - cached for \(preloadedCompositeProjectId?.uuidString.prefix(8) ?? "nil"), requested for \(projectId.uuidString.prefix(8))")
+            return nil
+        }
+        return preloadedComposite
     }
 
     // MARK: - Model Availability Preloading
@@ -410,15 +437,18 @@ class PreloadManager: ObservableObject {
         maskMergeDebounceWorkItem = nil
 
         preloadedMergedMask = nil
+        preloadedMaskProjectId = nil
         preloadedComposite = nil
+        preloadedCompositeProjectId = nil
         isMaskMergePreloading = false
         isCompositePreloading = false
     }
 
-    /// Get preloaded mask if available, otherwise merge synchronously
-    func getMergedMask(from segmentations: [SegmentationEntry]) -> NSImage? {
-        // If we have a preloaded mask, use it
-        if let preloaded = preloadedMergedMask {
+    /// Get preloaded mask if available for this project, otherwise merge synchronously
+    /// CRITICAL: Validates project ownership before returning cached data
+    func getMergedMask(from segmentations: [SegmentationEntry], projectId: UUID) -> NSImage? {
+        // If we have a preloaded mask FOR THIS PROJECT, use it
+        if let preloaded = getCachedMergedMask(for: projectId) {
             return preloaded
         }
 
@@ -427,8 +457,4 @@ class PreloadManager: ObservableObject {
         return ImageService.shared.mergeMasks(masks)
     }
 
-    /// Get preloaded composite if available
-    func getPreloadedComposite() -> NSImage? {
-        return preloadedComposite
-    }
 }

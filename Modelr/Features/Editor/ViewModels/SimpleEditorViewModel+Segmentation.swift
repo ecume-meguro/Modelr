@@ -169,6 +169,22 @@ extension SimpleEditorViewModel {
 
     /// Centralized prediction logic for points, box, and text
     func performPrediction(for index: Int, text: String?, points: [SAMPoint], box: SAMBox? = nil) async {
+        // CRITICAL: Verify the correct project's image is loaded before segmentation
+        guard let projectId = projectId else {
+            print("[Segmentation] Error: No project ID")
+            return
+        }
+
+        // Check if SAM has the correct project's image loaded
+        if !env.isImageLoadedFor(projectId: projectId) {
+            print("[Segmentation] Wrong project's image loaded, re-initializing for project \(projectId.uuidString.prefix(8))")
+            // Re-initialize with correct project's image
+            guard await initializeImage() else {
+                print("[Segmentation] Failed to load correct image")
+                return
+            }
+        }
+
         do {
             let (maskURLs, _, scores, _) = try await env.predict(
                 points: points,
@@ -199,7 +215,8 @@ extension SimpleEditorViewModel {
 
     /// Trigger preloading of merged mask when segmentations change
     func triggerMaskPreload() {
-        preloadManager.preloadMergedMask(from: segmentations)
+        guard let projectId = projectId else { return }
+        preloadManager.preloadMergedMask(from: segmentations, projectId: projectId)
     }
 
     /// Select mask for a specific segmentation (shift to add/remove from selection)

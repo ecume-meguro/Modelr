@@ -25,6 +25,7 @@ extension SimpleEditorViewModel {
         guard let modelURL = generated3DModelURL else { return }
 
         print("[PostProcess] Starting mesh pre-load for: \(modelURL.lastPathComponent)")
+        print("[PostProcess] customModelColor at start: \(customModelColor?.description ?? "nil")")
         let startTime = Date()
 
         // Phase 1: Analyze mesh (0% - 30%)
@@ -103,10 +104,15 @@ extension SimpleEditorViewModel {
         print("[PostProcess] Pre-loading SceneKit nodes with materials...")
         await MainActor.run { isPreloadingScenes = true }
 
+        // Get custom color from main actor
+        let currentCustomColor = await MainActor.run { self.customModelColor }
+        print("[PostProcess] customModelColor before preload: \(currentCustomColor?.description ?? "nil")")
+
         let preloadedNodes = await preloadSceneKitNodes(
             from: extractedFiles,
             keepIndices: computedKeepIndices,
-            deleteIndices: computedDeleteIndices
+            deleteIndices: computedDeleteIndices,
+            customColor: currentCustomColor
         )
 
         await MainActor.run {
@@ -129,7 +135,8 @@ extension SimpleEditorViewModel {
     private func preloadSceneKitNodes(
         from files: [ComponentFile],
         keepIndices: Set<Int>,
-        deleteIndices: Set<Int>
+        deleteIndices: Set<Int>,
+        customColor: NSColor?
     ) async -> [Int: SCNNode] {
         // Check if there are artifacts (both keep and delete items)
         let hasArtifacts = !keepIndices.isEmpty && !deleteIndices.isEmpty
@@ -143,6 +150,11 @@ extension SimpleEditorViewModel {
                 let ghostColor = AppConstants.ghostColor
                 let ghostOpacity = AppConstants.ghostOpacity
                 let clayRoughness = AppConstants.clayRoughness
+
+                // Use custom color if provided, otherwise fall back to clay color
+                let activeColor = customColor ?? clayColor
+
+                print("[PostProcess] Preloading nodes with color: \(customColor != nil ? "Custom (\(customColor!))" : "Clay (default)")")
 
                 for file in files {
                     let url = URL(fileURLWithPath: file.path)
@@ -164,9 +176,10 @@ extension SimpleEditorViewModel {
                     for child in loadedScene.rootNode.childNodes {
                         let cloned = child.clone()
                         // Apply material based on state
+                        // Use activeColor (custom or clay) for non-ghost, ghostColor for ghost
                         self.applyMaterialRecursively(
                             to: cloned,
-                            color: isGhost ? ghostColor : clayColor,
+                            color: isGhost ? ghostColor : activeColor,
                             isGhost: isGhost,
                             ghostOpacity: ghostOpacity,
                             roughness: clayRoughness

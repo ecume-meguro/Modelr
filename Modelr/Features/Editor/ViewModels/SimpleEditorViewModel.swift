@@ -232,6 +232,8 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     @Published var lowPolyReduction: CGFloat = 0  // 0 = no change, 1-99 = % reduction
     @Published var modifiedModelURL: URL?
     @Published var isModifyingMesh: Bool = false
+    @Published var originalFaceCount: Int = 0  // Original mesh face count
+    @Published var modifiedFaceCount: Int = 0  // Modified mesh face count
 
     enum ModifyType: String, CaseIterable {
         case none = "None"
@@ -249,9 +251,51 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         case wireframe = "Wireframe"
     }
     @Published var meshDisplayMode: MeshDisplayMode = .solid
+
+    /// Material type for 3D model rendering
+    enum MaterialType: String, CaseIterable, Identifiable {
+        case matte = "Matte"
+        case glossy = "Glossy"
+        case metallic = "Metallic"
+
+        var id: String { rawValue }
+
+        var icon: String {
+            switch self {
+            case .matte: return "circle.fill"
+            case .glossy: return "sparkles"
+            case .metallic: return "diamond.fill"
+            }
+        }
+
+        var roughness: CGFloat {
+            switch self {
+            case .matte: return 0.8
+            case .glossy: return 0.1
+            case .metallic: return 0.2
+            }
+        }
+
+        var metalness: CGFloat {
+            switch self {
+            case .matte: return 0.0
+            case .glossy: return 0.0
+            case .metallic: return 1.0
+            }
+        }
+
+        var transparency: CGFloat {
+            return 1.0  // All materials are opaque
+        }
+    }
+    @Published var materialType: MaterialType = .matte
+
     /// Custom model color (user paint selection) - nil means use default coloring
     @Published var customModelColor: NSColor? = nil {
         didSet {
+            // CRITICAL: Invalidate preloaded nodes - they have baked-in color
+            preloadedComponentNodes.removeAll()
+
             // Save to metadata when user manually changes color
             if let color = customModelColor, let projectId = projectId {
                 let hexColor = ColorExtractionService.shared.toHexString(color)
@@ -271,7 +315,9 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     // MARK: - Workflow State Cache (for non-destructive navigation)
 
     /// Cached generation state for restoring when navigating back
+    /// CRITICAL: Now includes projectId to prevent cross-project restoration
     struct GenerationCache {
+        let projectId: UUID  // Track which project this cache belongs to
         let modelURL: URL
         let compositeImage: NSImage?
         let meshComponents: [MeshComponent]
@@ -282,7 +328,9 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     }
 
     /// Cached segmentation state for restoring when navigating back
+    /// CRITICAL: Now includes projectId to prevent cross-project restoration
     struct SegmentationCache {
+        let projectId: UUID  // Track which project this cache belongs to
         let segmentations: [SegmentationEntry]
         let activeIndex: Int
         let inputImage: NSImage?
@@ -361,6 +409,15 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         return min(progress, 1.0)
     }
 
+    // MARK: - Singleton State Management
+
+    /// Clear all global singleton state to prevent cross-project contamination
+    /// Call this when explicitly switching projects or on critical transitions
+    static func clearGlobalSingletonState() {
+        PreloadManager.shared.cancelAll()
+        print("[SimpleEditorViewModel] Cleared all global singleton state")
+    }
+
     // MARK: - Initialization
     override init(env: PythonEnvironment, projectId: UUID? = nil) {
         super.init(env: env, projectId: projectId)
@@ -369,7 +426,11 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         // PreloadManager is a singleton that retains masks/composites across projects
         preloadManager.clearPreloadedMask()
         preloadManager.clearPreloadedComposite()
-        print("[Init] Cleared PreloadManager cache for new project: \(projectId?.uuidString ?? "nil")")
+
+        // Clear setup console output from previous projects
+        setupConsoleOutput.removeAll()
+
+        print("[Init] Cleared singleton state for new project: \(projectId?.uuidString ?? "nil")")
 
         // Log memory management strategy
         let coordinator = ModelLoadingCoordinator.shared
@@ -491,6 +552,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
                 // Extract dominant color from image and set as default model color
                 if let dominantColor = ColorExtractionService.shared.extractDominantColor(from: image) {
                     self.customModelColor = dominantColor
+                    print("[Color] Extracted dominant color from image: \(dominantColor)")
 
                     // Save to metadata for persistence
                     let hexColor = ColorExtractionService.shared.toHexString(dominantColor)
@@ -499,6 +561,8 @@ class SimpleEditorViewModel: BaseEditorViewModel {
                             await self.saveColorToMetadata(projectId: projectId, hexColor: hexColor)
                         }
                     }
+                } else {
+                    print("[Color] Failed to extract dominant color from image")
                 }
 
                 // Transition to segment step (loading overlay will show in ProjectEditorView)
@@ -602,6 +666,24 @@ class SimpleEditorViewModel: BaseEditorViewModel {
                 self.lastError = nil
 
                 self.imageHasAlpha = ImageService.shared.checkImageHasAlpha(image)
+
+                // Extract dominant color from image and set as default model color
+                if let dominantColor = ColorExtractionService.shared.extractDominantColor(from: image) {
+                    self.customModelColor = dominantColor
+                    print("[Color] Extracted dominant color from restored image: \(dominantColor)")
+
+                    // Save to metadata for persistence
+                    let hexColor = ColorExtractionService.shared.toHexString(dominantColor)
+                    if let projectId = self.projectId {
+                        Task {
+                            await self.saveColorToMetadata(projectId: projectId, hexColor: hexColor)
+                        }
+                    }
+                } else {
+                    print("[Color] Failed to extract dominant color from restored image")
+                    // Try to load from metadata if extraction fails
+                    self.loadDominantColorFromMetadata()
+                }
 
                 // Transition to segment step
                 withAnimation(.easeOut(duration: 0.25)) {
@@ -807,7 +889,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         guard !dataToSave.isEmpty else { return }
 
         // Get merged mask from preload manager
-        let mergedMask = preloadManager.getCachedMergedMask()
+        let mergedMask = preloadManager.getCachedMergedMask(for: projectId)
 
         Task {
             do {
@@ -892,16 +974,21 @@ class SimpleEditorViewModel: BaseEditorViewModel {
 
     /// Initialize the image with SAM backend (also triggers VLM in background)
     /// - Returns: true if initialization succeeded, false otherwise
-    private func initializeImage() async -> Bool {
+    func initializeImage() async -> Bool {
         guard let path = inputImagePath else {
             print("[Init] No input image path")
             return false
         }
+        guard let projectId = projectId else {
+            print("[Init] No project ID")
+            return false
+        }
         do {
-            let size = try await env.setImage(path: path)
+            // CRITICAL: Pass projectId to track SAM image ownership
+            let size = try await env.setImage(path: path, projectId: projectId)
             imagePixelSize = size
             isImageInitializedWithSAM = true
-            print("[Init] Image initialized with SAM, size: \(size)")
+            print("[Init] Image initialized with SAM for project \(projectId.uuidString.prefix(8)), size: \(size)")
 
             // Trigger VLM auto-detection in background (don't await - let it run async)
             Task {
@@ -923,11 +1010,16 @@ class SimpleEditorViewModel: BaseEditorViewModel {
             print("[Init] No input image path")
             return false
         }
+        guard let projectId = projectId else {
+            print("[Init] No project ID")
+            return false
+        }
         do {
-            let size = try await env.setImage(path: path)
+            // CRITICAL: Pass projectId to track SAM image ownership
+            let size = try await env.setImage(path: path, projectId: projectId)
             imagePixelSize = size
             isImageInitializedWithSAM = true
-            print("[Init] Image initialized with SAM (no VLM), size: \(size)")
+            print("[Init] Image initialized with SAM (no VLM) for project \(projectId.uuidString.prefix(8)), size: \(size)")
             return true
         } catch {
             print("[Init] Failed to set image: \(error)")
@@ -941,7 +1033,10 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         // Cancel any previous detection
         autoDetectionTask?.cancel()
 
-        autoDetectionTask = Task { [weak self] in
+        // CRITICAL: Capture projectId to prevent race conditions on project switch
+        guard let capturedProjectId = projectId else { return }
+
+        autoDetectionTask = Task { [weak self, capturedProjectId] in
             guard let self = self else { return }
 
             await MainActor.run {
@@ -978,6 +1073,13 @@ class SimpleEditorViewModel: BaseEditorViewModel {
                 try Task.checkCancellation()
 
                 await MainActor.run {
+                    // CRITICAL: Validate project hasn't changed during async VLM call
+                    guard self.projectId == capturedProjectId else {
+                        print("[VLM] Project changed during detection - discarding result")
+                        self.isAutoDetecting = false
+                        return
+                    }
+
                     self.autoDetectedLabel = description
                     self.isAutoDetecting = false
 

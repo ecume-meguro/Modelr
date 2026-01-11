@@ -113,6 +113,16 @@ struct ProjectMetadata: Codable {
     // Dominant color extracted from source image or set by user (stored as hex string, e.g., "#FF5733")
     var dominantColor: String?
 
+    // Post-process state (for artifact removal persistence)
+    var keepComponentIndices: [Int]?
+    var deleteComponentIndices: [Int]?
+
+    // Navigation state (for correct back button behavior)
+    var visitedStepRawValues: [Int]?
+
+    // Generation context (for cancel/stop handling)
+    var stepBeforeGenerationRawValue: Int?
+
     init(projectId: UUID) {
         self.projectId = projectId
     }
@@ -159,4 +169,6 @@ struct ModifySettings: Codable {
     var type: String  // "voxelize", "lowPoly", or "none"
     var voxelResolution: Double?
     var lowPolyReduction: Double?
+    var originalFaceCount: Int?
+    var modifiedFaceCount: Int?
 }

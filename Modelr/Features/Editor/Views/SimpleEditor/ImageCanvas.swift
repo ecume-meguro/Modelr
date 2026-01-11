@@ -99,9 +99,16 @@ struct ImageCanvas: View {
                             .padding(AppDesign.Spacing.p24)
                         } else if let modelURL = viewModel.currentMeshURL {
                             // Final fallback: show raw model (includes modified mesh)
-                            ModelViewerContainer(modelURL: modelURL, viewMode: viewModel.viewMode, customColor: viewModel.customModelColor)
-                                .id("mesh-\(modelURL.lastPathComponent)-\(viewModel.viewMode)-\(viewModel.modifiedModelURL?.lastPathComponent ?? "none")")
-                                .padding(AppDesign.Spacing.p24)
+                            ModelViewerContainer(
+                                modelURL: modelURL,
+                                viewMode: viewModel.viewMode,
+                                displayMode: $viewModel.meshDisplayMode,
+                                materialType: $viewModel.materialType,
+                                customColor: $viewModel.customModelColor,
+                                sourceImage: viewModel.inputImage
+                            )
+                            .id("mesh-\(modelURL.lastPathComponent)-\(viewModel.viewMode)-\(viewModel.modifiedModelURL?.lastPathComponent ?? "none")")
+                            .padding(AppDesign.Spacing.p24)
                         }
                     }
                     .id("postprocess-\(viewModel.componentFiles.isEmpty)-\(viewModel.modifiedModelURL?.lastPathComponent ?? "none")-\(viewModel.isModifyingMesh)")
@@ -314,7 +321,9 @@ struct ImageCanvas: View {
     private var breadcrumbOverlay: some View {
         VStack {
             HStack {
-                if let path = viewModel.inputImagePath {
+                // Hide filename in postProcess and modify steps (3D viewer mode)
+                if let path = viewModel.inputImagePath,
+                   viewModel.currentStep != .postProcess && viewModel.currentStep != .modify {
                     let fileName = URL(fileURLWithPath: path).lastPathComponent
                     HStack(spacing: AppDesign.Spacing.p8) {
                         Image(systemName: "doc.fill")

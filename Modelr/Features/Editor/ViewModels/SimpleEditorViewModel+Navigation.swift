@@ -30,9 +30,14 @@ extension SimpleEditorViewModel {
     /// Navigate back one step, cleaning up state appropriately
     /// - Parameter force: If true, skip confirmation dialogs
     func goBack(force: Bool = false) {
+        print("[Navigation] goBack() called - current: \(currentStep), visitedSteps: \(visitedSteps.map { $0.rawValue }.sorted())")
+
         guard let targetStep = previousVisitedStep(from: currentStep) else {
+            print("[Navigation] goBack() - no previous step found, aborting")
             return  // Can't go back from setup
         }
+
+        print("[Navigation] goBack() - target: \(targetStep)")
 
         // Cancel any pending tasks that would update the current step's state
         cancelPendingTasks(for: currentStep)
@@ -47,6 +52,8 @@ extension SimpleEditorViewModel {
         withStandardSpring {
             currentStep = targetStep
         }
+
+        print("[Navigation] goBack() complete - now at: \(currentStep)")
     }
 
     /// Cancel pending tasks for a specific step
@@ -95,14 +102,16 @@ extension SimpleEditorViewModel {
             break
         case .segment:
             // Cache segmentation state before clearing
-            if !segmentations.isEmpty {
+            if !segmentations.isEmpty, let projectId = projectId {
                 cachedSegmentation = SegmentationCache(
+                    projectId: projectId,  // Track ownership
                     segmentations: segmentations,
                     activeIndex: activeSegmentationIndex,
                     inputImage: inputImage,
                     inputImagePath: inputImagePath,
                     imagePixelSize: imagePixelSize
                 )
+                print("[Cache] Cached segmentation for project \(projectId.uuidString.prefix(8))")
             }
             // Going back to input - clear segmentation state
             segmentations.removeAll()
@@ -142,8 +151,9 @@ extension SimpleEditorViewModel {
             resetDownloadMonitoringState()
         case .postProcess:
             // Cache generation/post-process state before clearing
-            if let modelURL = generated3DModelURL {
+            if let modelURL = generated3DModelURL, let projectId = projectId {
                 cachedGeneration = GenerationCache(
+                    projectId: projectId,  // Track ownership
                     modelURL: modelURL,
                     compositeImage: compositeImage,
                     meshComponents: meshComponents,
@@ -152,6 +162,7 @@ extension SimpleEditorViewModel {
                     keepIndices: keepIndices,
                     deleteIndices: deleteIndices
                 )
+                print("[Cache] Cached generation for project \(projectId.uuidString.prefix(8))")
             }
             // Clear post-process state
             meshComponents.removeAll()
@@ -223,6 +234,92 @@ extension SimpleEditorViewModel {
         if isGenerating {
             stopGeneration()
         }
+    }
+
+    /// Clear all downstream state from a specific step (for regeneration)
+    /// This prevents stale data from later steps affecting new generation
+    func clearDownstreamState(from step: Step) {
+        switch step {
+        case .setup, .input:
+            // Clear everything
+            clearAllSegmentations()
+            editableMaskImage = nil
+            compositeImage = nil
+            generated3DModelURL = nil
+            processedModelURL = nil
+            modifiedModelURL = nil
+            meshComponents.removeAll()
+            componentFiles.removeAll()
+            keepIndices.removeAll()
+            deleteIndices.removeAll()
+            modifyType = .none
+            voxelResolution = 0
+            lowPolyReduction = 0
+            originalFaceCount = 0
+            modifiedFaceCount = 0
+
+        case .segment:
+            // Clear touchup, generate, postProcess, modify
+            editableMaskImage = nil
+            compositeImage = nil
+            generated3DModelURL = nil
+            processedModelURL = nil
+            modifiedModelURL = nil
+            meshComponents.removeAll()
+            componentFiles.removeAll()
+            keepIndices.removeAll()
+            deleteIndices.removeAll()
+            modifyType = .none
+            voxelResolution = 0
+            lowPolyReduction = 0
+            originalFaceCount = 0
+            modifiedFaceCount = 0
+
+        case .touchup:
+            // Clear generate, postProcess, modify
+            compositeImage = nil
+            generated3DModelURL = nil
+            processedModelURL = nil
+            modifiedModelURL = nil
+            meshComponents.removeAll()
+            componentFiles.removeAll()
+            keepIndices.removeAll()
+            deleteIndices.removeAll()
+            modifyType = .none
+            voxelResolution = 0
+            lowPolyReduction = 0
+            originalFaceCount = 0
+            modifiedFaceCount = 0
+
+        case .generateSettings, .generate:
+            // Clear postProcess, modify
+            processedModelURL = nil
+            modifiedModelURL = nil
+            meshComponents.removeAll()
+            componentFiles.removeAll()
+            keepIndices.removeAll()
+            deleteIndices.removeAll()
+            modifyType = .none
+            voxelResolution = 0
+            lowPolyReduction = 0
+            originalFaceCount = 0
+            modifiedFaceCount = 0
+
+        case .postProcess:
+            // Clear modify only
+            modifiedModelURL = nil
+            modifyType = .none
+            voxelResolution = 0
+            lowPolyReduction = 0
+            originalFaceCount = 0
+            modifiedFaceCount = 0
+
+        case .modify:
+            // Nothing downstream
+            break
+        }
+
+        print("[Navigation] Cleared downstream state from step: \(step)")
     }
 
     /// Reset all state to initial values

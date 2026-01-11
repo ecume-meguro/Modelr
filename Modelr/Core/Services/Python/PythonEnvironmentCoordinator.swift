@@ -28,6 +28,9 @@ class PythonEnvironment: ObservableObject {
     private var currentImagePath: String?
     private var imagePixelSize: CGSize = .zero
 
+    /// Track which project owns the currently encoded SAM image (CRITICAL for preventing cross-project segmentation)
+    private(set) var currentImageProjectId: UUID?
+
     /// Used for dependency injection during unit tests
     var resourcePathOverride: String? {
         didSet {
@@ -156,24 +159,36 @@ deinit {
         bridge = nil
         currentImagePath = nil
         imagePixelSize = .zero
+        currentImageProjectId = nil  // Clear project ownership
         samModelReady = false
+        print("[PythonEnvironment] Worker stopped, all state cleared")
     }
     
     // MARK: - Image & Prediction API
-    
-    func setImage(path: String) async throws -> CGSize {
+
+    /// Set image for SAM segmentation, tracking which project it belongs to
+    /// CRITICAL: This prevents cross-project segmentation bugs
+    func setImage(path: String, projectId: UUID) async throws -> CGSize {
         if !processManager.isWorkerRunning {
             try await startPersistentWorker()
         }
-        
+
         guard let bridge = bridge else {
             throw PythonError.workerNotRunning
         }
-        
+
         let size = try await bridge.setImage(path: path)
         currentImagePath = path
         imagePixelSize = size
+        currentImageProjectId = projectId  // Track ownership
+
+        print("[PythonEnvironment] SAM image set for project \(projectId.uuidString.prefix(8))")
         return size
+    }
+
+    /// Check if the correct image is loaded for a project
+    func isImageLoadedFor(projectId: UUID) -> Bool {
+        return currentImageProjectId == projectId && processManager.isWorkerRunning
     }
     
     func predict(
@@ -232,10 +247,12 @@ deinit {
     func resetPredictor() async throws {
         guard processManager.isWorkerRunning else { return }
         guard let bridge = bridge else { return }
-        
+
         try await bridge.resetPredictor()
         currentImagePath = nil
         imagePixelSize = .zero
+        currentImageProjectId = nil  // Clear project ownership
+        print("[PythonEnvironment] SAM predictor reset, project ownership cleared")
     }
     
     // MARK: - 3D Model Generation

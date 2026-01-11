@@ -11,15 +11,24 @@ extension SimpleEditorViewModel {
             .sink { [weak self] status in
                 guard let self = self else { return }
 
+                // CRITICAL: Filter by projectId to prevent cross-talk between projects
+                if let statusProjectId = status.projectId, statusProjectId != self.projectId {
+                    // This status update is for a different project, ignore it
+                    return
+                }
+
                 switch status {
                 case .idle:
                     break
-                case .preparing:
+                case .preparing(let projectId):
+                    guard projectId == self.projectId else { return }
                     self.generationStatus = "Preparing..."
-                case .inProgress(let stage, let percent):
+                case .inProgress(let projectId, let stage, let percent):
+                    guard projectId == self.projectId else { return }
                     self.generationStatus = stage
                     self.updateGenerationStages(status: stage, percent: percent)
-                case .completed(let url):
+                case .completed(let projectId, let url):
+                    guard projectId == self.projectId else { return }
                     // IMPORTANT: Set handoff stage FIRST, before changing isGenerating/URL
                     // This ensures isInHandoff is true when SwiftUI re-renders, preventing
                     // a flash of "Generation Complete" before handoff progress shows
@@ -73,7 +82,8 @@ extension SimpleEditorViewModel {
 
                         print("[Gen] Preload complete")
                     }
-                case .failed(let error):
+                case .failed(let projectId, let error):
+                    guard projectId == self.projectId else { return }
                     self.isGenerating = false
                     print("[Gen] Error: \(error)")
                 }
@@ -83,6 +93,11 @@ extension SimpleEditorViewModel {
 
     /// Transition to generate settings step (for customizing settings before generation)
     func transitionToGenerateSettings() {
+        // CRITICAL: Restore custom color if not set (back then forward navigation)
+        if customModelColor == nil {
+            loadDominantColorFromMetadata()
+        }
+
         // Check models downloaded (fast filesystem check)
         checkModelsDownloaded()
 
@@ -117,8 +132,8 @@ extension SimpleEditorViewModel {
         let masks = segmentations.flatMap { $0.selectedMasks }
         let source = inputImage
 
-        // Try to use preloaded composite first
-        let preloadedComposite = preloadManager.getPreloadedComposite()
+        // Try to use preloaded composite first (only if it belongs to this project)
+        let preloadedComposite = projectId.flatMap { preloadManager.getPreloadedComposite(for: $0) }
 
         if let composite = preloadedComposite {
             // Use preloaded composite immediately
@@ -167,6 +182,12 @@ extension SimpleEditorViewModel {
     }
 
     private func transitionToGenerateInternal(autoStart: Bool, preset: GenerationPreset?) {
+        // CRITICAL: Clear stale generation cache to prevent restoring old data
+        cachedGeneration = nil
+
+        // CRITICAL: Clear all downstream state from current step (prevents stale data from previous generations)
+        clearDownstreamState(from: currentStep)
+
         // Check models downloaded (fast filesystem check)
         checkModelsDownloaded()
 
@@ -193,8 +214,8 @@ extension SimpleEditorViewModel {
         let masks = segmentations.flatMap { $0.selectedMasks }
         let source = inputImage
 
-        // Try to use preloaded composite first
-        let preloadedComposite = preloadManager.getPreloadedComposite()
+        // Try to use preloaded composite first (only if it belongs to this project)
+        let preloadedComposite = projectId.flatMap { preloadManager.getPreloadedComposite(for: $0) }
 
         if let composite = preloadedComposite {
             // Use preloaded composite immediately
@@ -323,7 +344,13 @@ extension SimpleEditorViewModel {
                 // Check for cancellation before starting generation
                 try Task.checkCancellation()
 
+                // Pass projectId to ensure status updates are properly scoped
+                guard let projectId = self.projectId else {
+                    throw AppError.generation("No project ID available")
+                }
+
                 await ServiceContainer.shared.generationService.generate(
+                    projectId: projectId,
                     imagePath: imagePath,
                     maskPath: maskPath,
                     steps: Int(self.customSteps),

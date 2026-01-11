@@ -8,14 +8,24 @@ extension SimpleEditorViewModel {
         // Validate we have masks before transitioning
         guard totalValidMasks > 0 else { return }
 
+        // CRITICAL: Restore custom color if not set (back then forward navigation)
+        if customModelColor == nil {
+            loadDominantColorFromMetadata()
+        }
+
         // Clear history and reset edit tracking
         maskHistory.removeAll()
         hasMaskEdits = false
 
         // Try to use preloaded mask first (faster UX)
-        let preloadedMask = preloadManager.getPreloadedComposite() != nil
-            ? nil  // If composite is preloaded, we don't need the mask separately
-            : preloadManager.preloadedMergedMask
+        let preloadedMask: NSImage? = {
+            guard let projectId = projectId else { return nil }
+            if preloadManager.getPreloadedComposite(for: projectId) != nil {
+                return nil  // If composite is preloaded, we don't need the mask separately
+            } else {
+                return preloadManager.getCachedMergedMask(for: projectId)
+            }
+        }()
 
         // Animate step change FIRST for immediate UI response
         withFastSpring {
@@ -53,8 +63,10 @@ extension SimpleEditorViewModel {
 
     /// Trigger preloading of composite image when mask is ready
     func triggerCompositePreload() {
-        guard let source = inputImage, let mask = editableMaskImage else { return }
-        preloadManager.preloadComposite(source: source, mask: mask)
+        guard let source = inputImage,
+              let mask = editableMaskImage,
+              let projectId = projectId else { return }
+        preloadManager.preloadComposite(source: source, mask: mask, projectId: projectId)
     }
 
     /// Merge all selected masks from all segmentations using OR operation
