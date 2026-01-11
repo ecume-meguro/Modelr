@@ -1,0 +1,51 @@
+[project]
+name = "modelr-inference"
+version = "0.1.0"
+description = "Unified inference environment for Modelr (SAM + VLM + Tools)"
+requires-python = ">=3.13,<4.0.0"
+dependencies = [
+    # SAM dependencies
+    "opencv-python>=4.8.0",
+    "mlx-sam3",
+
+    # VLM dependencies (>=0.3.4 avoids scipy 1.13.1 build issue)
+    "mlx-vlm>=0.3.4",
+    # PyTorch required by transformers AutoProcessor
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+
+    # Text-to-Image dependencies (Stable Diffusion 1.5)
+    "diffusers>=0.25.0",
+    "accelerate>=0.25.0",
+
+    # Tools dependencies
+    "trimesh>=4.0.0",
+    "networkx>=3.0",
+
+    # Shared
+    "numpy>=2.0.0",
+    "pillow>=10.0.0",
+
+    # Core module
+    "modelr-core",
+]
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Disable auto-discovery to avoid picking up unrelated folders
+packages = []
+py-modules = []
+
+[tool.uv]
+# Exclude heavy analytics/data dependencies that are unnecessary
+override-dependencies = [
+    "pyarrow; sys_platform == 'never'",
+    "pandas; sys_platform == 'never'",
+]
+
+[tool.uv.sources]
+mlx-sam3 = { path = "../../python/mlx-sam3" }
+modelr-core = { path = "../../python/modelr_core" }

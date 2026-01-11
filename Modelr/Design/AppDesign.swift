@@ -275,6 +275,8 @@ enum AppDesign {
         let icon: String?
         let action: () -> Void
 
+        @State private var isHovered = false
+
         init(_ title: String, icon: String? = nil, action: @escaping () -> Void) {
             self.title = title
             self.icon = icon
@@ -291,9 +293,19 @@ enum AppDesign {
                     Text(title)
                         .font(.system(size: FontSize.subheadline, weight: .medium))
                 }
-                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .foregroundStyle(isHovered ? .primary : .secondary)
+                .padding(.horizontal, Spacing.p8)
+                .padding(.vertical, Spacing.p6)
+                .background(isHovered ? Color.primary.opacity(0.05) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .onHover { hovering in
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    isHovered = hovering
+                }
+            }
             .accessibilityLabel(title)
         }
     }
@@ -483,6 +495,8 @@ enum AppDesign {
         let icon: String?
         let action: () -> Void
 
+        @State private var isHovered = false
+
         init(_ title: String, icon: String? = nil, action: @escaping () -> Void) {
             self.title = title
             self.icon = icon
@@ -499,9 +513,19 @@ enum AppDesign {
                     Text(title)
                         .font(.system(size: FontSize.subheadline, weight: .medium))
                 }
-                .foregroundStyle(destructive)
+                .foregroundStyle(isHovered ? destructive.opacity(0.8) : destructive)
+                .padding(.horizontal, Spacing.p8)
+                .padding(.vertical, Spacing.p6)
+                .background(isHovered ? destructive.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .onHover { hovering in
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    isHovered = hovering
+                }
+            }
+            .accessibilityLabel(title)
         }
     }
 

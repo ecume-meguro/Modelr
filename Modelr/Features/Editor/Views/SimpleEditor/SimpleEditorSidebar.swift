@@ -5,6 +5,8 @@ struct SimpleEditorSidebar: View {
     @ObservedObject var viewModel: SimpleEditorViewModel
     var onClose: (() -> Void)? = nil  // Optional callback to return to project browser
 
+    @State private var showCancelGenerationAlert = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             titleArea
@@ -53,8 +55,24 @@ struct SimpleEditorSidebar: View {
             if viewModel.env.isProcessing {
                 statusFooter
             }
+
+            // Logo footer
+            logoFooter
         }
         .background(.ultraThinMaterial)
+    }
+
+    // MARK: - Logo Footer
+
+    @ViewBuilder
+    private var logoFooter: some View {
+        HStack {
+            AppDesign.HeaderText(text: "Modelr", size: AppDesign.FontSize.subheadline)
+                .opacity(0.4)
+            Spacer()
+        }
+        .padding(.horizontal, AppDesign.Spacing.p16)
+        .padding(.bottom, AppDesign.Spacing.p12)
     }
 
     // MARK: - Setup Step Row
@@ -100,14 +118,29 @@ struct SimpleEditorSidebar: View {
                         .padding(.leading, 11)
 
                     VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
-                        ForEach(SimpleEditorViewModel.SetupSubStep.allCases, id: \.self) { subStep in
+                        ForEach(Array(SimpleEditorViewModel.SetupSubStep.allCases.enumerated()), id: \.element) { index, subStep in
                             setupSubStepRow(subStep)
+                                .transition(.asymmetric(
+                                    insertion: .opacity
+                                        .combined(with: .offset(y: -8))
+                                        .animation(.spring(response: 0.3, dampingFraction: 0.8).delay(Double(index) * 0.05)),
+                                    removal: .opacity
+                                        .animation(.easeOut(duration: 0.15))
+                                ))
                         }
                     }
                     .padding(.top, AppDesign.Spacing.p8)
                     .padding(.bottom, AppDesign.Spacing.p4)
                 }
                 .fixedSize(horizontal: false, vertical: true)
+                .transition(.asymmetric(
+                    insertion: .opacity
+                        .combined(with: .move(edge: .top))
+                        .animation(.spring(response: 0.35, dampingFraction: 0.85)),
+                    removal: .opacity
+                        .combined(with: .scale(scale: 0.95, anchor: .top))
+                        .animation(.easeOut(duration: 0.2))
+                ))
             } else if !viewModel.isSetupComplete {
                 // Collapsed connector when not active but not complete
                 Rectangle()
@@ -133,26 +166,32 @@ struct SimpleEditorSidebar: View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p4) {
             // Subitem header
             HStack(spacing: AppDesign.Spacing.p8) {
-                // Small indicator circle
+                // Small indicator circle with animations
                 ZStack {
                     Circle()
                         .fill(isCompleted ? AppDesign.success : (isActive ? AppDesign.accent.opacity(0.8) : Color.secondary.opacity(0.2)))
                         .frame(width: 16, height: 16)
+                        .scaleEffect(isActive ? 1.1 : 1.0)
 
                     if isCompleted {
                         Image(systemName: "checkmark")
                             .font(.system(size: 8, weight: .bold))
                             .foregroundStyle(.white)
+                            .transition(.scale.combined(with: .opacity))
                     } else if isActive {
                         ProgressView()
                             .controlSize(.mini)
                             .scaleEffect(0.6)
                     }
                 }
+                .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isCompleted)
+                .animation(.spring(response: 0.25, dampingFraction: 0.8), value: isActive)
 
                 Text(subStep.rawValue)
                     .font(.system(size: AppDesign.FontSize.caption, weight: isActive ? .medium : .regular))
                     .foregroundStyle(isCompleted ? AppDesign.success : (isActive ? .primary : .secondary))
+                    .animation(.easeInOut(duration: 0.2), value: isCompleted)
+                    .animation(.easeInOut(duration: 0.2), value: isActive)
             }
 
             // Console output and progress (only for active substep)
@@ -165,20 +204,27 @@ struct SimpleEditorSidebar: View {
                                 .progressViewStyle(.linear)
                                 .tint(AppDesign.accent)
                                 .padding(.bottom, 2)
+                                .animation(.easeInOut(duration: 0.3), value: viewModel.downloadedBytes)
 
                             // Line 1: Downloaded / Total • Speed
                             Text(viewModel.formattedDownloadProgress)
                                 .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
                                 .foregroundStyle(.secondary)
+                                .contentTransition(.numericText())
 
                             // Line 2: Time remaining
                             if !viewModel.formattedTimeRemaining.isEmpty {
                                 Text(viewModel.formattedTimeRemaining)
                                     .font(.system(size: AppDesign.FontSize.xs, design: .monospaced))
                                     .foregroundStyle(.tertiary)
+                                    .contentTransition(.numericText())
                             }
                         }
                         .padding(.leading, 24)
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .offset(y: -4)).animation(.spring(response: 0.3, dampingFraction: 0.8)),
+                            removal: .opacity.animation(.easeOut(duration: 0.15))
+                        ))
                     }
 
                     // Console output
@@ -194,8 +240,15 @@ struct SimpleEditorSidebar: View {
                         }
                         .padding(.leading, 24)
                         .padding(.top, AppDesign.Spacing.p2)
+                        .transition(.opacity.animation(.easeInOut(duration: 0.2)))
                     }
                 }
+                .transition(.asymmetric(
+                    insertion: .opacity
+                        .combined(with: .offset(y: -6))
+                        .animation(.spring(response: 0.3, dampingFraction: 0.85)),
+                    removal: .opacity.animation(.easeOut(duration: 0.12))
+                ))
             }
         }
     }
@@ -327,8 +380,12 @@ struct SimpleEditorSidebar: View {
                     }
                     .fixedSize(horizontal: false, vertical: true)
                     .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .scale(scale: 0.98, anchor: .top)).animation(.spring(response: 0.25, dampingFraction: 0.85)),
-                        removal: .opacity.animation(.easeOut(duration: 0.12))
+                        insertion: .opacity
+                            .combined(with: .offset(y: -12))
+                            .animation(.spring(response: 0.32, dampingFraction: 0.82)),
+                        removal: .opacity
+                            .combined(with: .offset(y: -6))
+                            .animation(.easeOut(duration: 0.15))
                     ))
                 } else if !isLast {
                     // Collapsed connector
@@ -426,7 +483,12 @@ struct SimpleEditorSidebar: View {
         HStack {
             if let onClose = onClose {
                 Button {
-                    onClose()
+                    // Check if generation is in progress
+                    if viewModel.isGenerating || viewModel.isInHandoff {
+                        showCancelGenerationAlert = true
+                    } else {
+                        onClose()
+                    }
                 } label: {
                     HStack(spacing: AppDesign.Spacing.p4) {
                         Image(systemName: "chevron.left")
@@ -440,16 +502,19 @@ struct SimpleEditorSidebar: View {
             }
 
             Spacer()
-
-            AppDesign.HeaderText(text: "Modelr", size: AppDesign.FontSize.title2)
-
-            if onClose != nil {
-                Spacer()
-            }
         }
         .padding(.horizontal, AppDesign.Spacing.p16)
         .padding(.top, AppDesign.Spacing.p12)
         .padding(.bottom, AppDesign.Spacing.p12)
+        .alert("Cancel Generation?", isPresented: $showCancelGenerationAlert) {
+            Button("Continue Generating", role: .cancel) { }
+            Button("Cancel & Exit", role: .destructive) {
+                viewModel.stopGeneration()
+                onClose?()
+            }
+        } message: {
+            Text("3D model generation is in progress. Canceling will lose the current generation.")
+        }
     }
 
     // MARK: - Step Content

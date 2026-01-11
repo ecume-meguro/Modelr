@@ -25,6 +25,7 @@ class ServiceContainer {
 
 /// Manages async preloading of resources for improved UX
 /// Preloads data in the background before the user needs it
+/// Uses RAM-based strategy to determine which models to preload
 @MainActor
 class PreloadManager: ObservableObject {
     static let shared = PreloadManager()
@@ -38,6 +39,7 @@ class PreloadManager: ObservableObject {
         case idle
         case preloadingVLM
         case preloadingSAM
+        case preloadingT2I
         case preloadingThumbnails
         case ready
         case failed(String)
@@ -47,6 +49,7 @@ class PreloadManager: ObservableObject {
             case .idle: return "Idle"
             case .preloadingVLM: return "Loading VLM..."
             case .preloadingSAM: return "Loading SAM..."
+            case .preloadingT2I: return "Loading T2I..."
             case .preloadingThumbnails: return "Loading thumbnails..."
             case .ready: return "Ready"
             case .failed(let error): return "Failed: \(error)"
@@ -54,9 +57,36 @@ class PreloadManager: ObservableObject {
         }
     }
 
+    /// RAM-based preload strategy
+    enum PreloadStrategy: CustomStringConvertible {
+        case minimal      // < 8GB: Only load models on-demand
+        case balanced     // 8-16GB: Preload SAM + VLM, lazy load others
+        case aggressive   // > 16GB: Preload all models including T2I
+
+        var description: String {
+            switch self {
+            case .minimal: return "Minimal (on-demand)"
+            case .balanced: return "Balanced (SAM + VLM)"
+            case .aggressive: return "Aggressive (all models)"
+            }
+        }
+    }
+
+    /// Current preload strategy based on available RAM
+    var preloadStrategy: PreloadStrategy {
+        let totalRAM = ProcessInfo.processInfo.physicalMemory
+        let gbRAM = totalRAM / (1024 * 1024 * 1024)
+
+        switch gbRAM {
+        case ..<8: return .minimal
+        case 8..<16: return .balanced
+        default: return .aggressive
+        }
+    }
+
     var isPreloading: Bool {
         switch mlPreloadStatus {
-        case .preloadingVLM, .preloadingSAM, .preloadingThumbnails:
+        case .preloadingVLM, .preloadingSAM, .preloadingT2I, .preloadingThumbnails:
             return true
         default:
             return false
@@ -106,29 +136,88 @@ class PreloadManager: ObservableObject {
 
     private func performMLPreload() async {
         let startTime = CFAbsoluteTimeGetCurrent()
-        print("[PreloadManager] Starting background ML preload...")
+        let strategy = preloadStrategy
+        print("[PreloadManager] Starting background ML preload with strategy: \(strategy.description)")
+        print("[PreloadManager] System RAM: \(ProcessInfo.processInfo.physicalMemory / (1024 * 1024 * 1024))GB")
 
-        // Phase 1: Start VLM server (highest priority - used for auto-naming)
-        mlPreloadStatus = .preloadingVLM
-        await preloadVLM()
+        switch strategy {
+        case .minimal:
+            // < 8GB: Only preload thumbnails, load models on-demand
+            mlPreloadStatus = .preloadingThumbnails
+            await preloadThumbnails()
 
-        // Phase 2: Start SAM server (needed for segmentation)
-        mlPreloadStatus = .preloadingSAM
-        await preloadSAM()
+        case .balanced:
+            // 8-16GB: Preload VLM + SAM, lazy load Hunyuan/T2I
+            mlPreloadStatus = .preloadingVLM
+            await preloadVLM()
 
-        // Phase 3: Start Hunyuan in background (fire and forget - doesn't block)
-        // This runs with low priority and won't interfere with SAM/VLM
-        startHunyuanInBackground()
+            mlPreloadStatus = .preloadingSAM
+            await preloadSAM()
 
-        // Phase 4: Preload thumbnails (lower priority)
-        mlPreloadStatus = .preloadingThumbnails
-        await preloadThumbnails()
+            // Start Hunyuan in background (fire and forget - doesn't block)
+            startHunyuanInBackground()
+
+            mlPreloadStatus = .preloadingThumbnails
+            await preloadThumbnails()
+
+        case .aggressive:
+            // > 16GB: Preload everything including T2I
+            mlPreloadStatus = .preloadingVLM
+            await preloadVLM()
+
+            mlPreloadStatus = .preloadingSAM
+            await preloadSAM()
+
+            // Preload T2I if model is downloaded
+            if PathManager.isT2IModelDownloaded {
+                mlPreloadStatus = .preloadingT2I
+                await preloadT2I()
+            }
+
+            // Start Hunyuan in background (fire and forget)
+            startHunyuanInBackground()
+
+            mlPreloadStatus = .preloadingThumbnails
+            await preloadThumbnails()
+        }
 
         let elapsed = CFAbsoluteTimeGetCurrent() - startTime
         print("[PreloadManager] ML preload complete in \(String(format: "%.2f", elapsed))s")
 
         mlPreloadStatus = .ready
         isMLReady = true
+    }
+
+    /// Preload T2I model in background
+    private func preloadT2I() async {
+        // T2I uses the inference venv, so just ensure the wrapper is ready
+        // Actual model loading happens when T2IProcessManager.start() is called
+        print("[PreloadManager] T2I preload skipped - model loads on first use")
+    }
+
+    /// Preload models for a specific project mode
+    func preloadForMode(_ mode: ProjectMode) async {
+        print("[PreloadManager] Preloading for mode: \(mode.displayName)")
+
+        switch mode {
+        case .imageToModel:
+            // Ensure SAM + VLM are ready for image-to-model workflow
+            if !ServiceContainer.shared.pythonEnvironment.samModelReady {
+                mlPreloadStatus = .preloadingSAM
+                await preloadSAM()
+            }
+            if !ModelLoadingCoordinator.shared.isVLMReady {
+                mlPreloadStatus = .preloadingVLM
+                await preloadVLM()
+            }
+
+        case .textToModel:
+            // T2I + Hunyuan for text-to-model workflow
+            // T2I loads on first generation; Hunyuan preloads in background
+            startHunyuanInBackground()
+        }
+
+        mlPreloadStatus = .ready
     }
 
     /// Start Hunyuan loading in background (fire and forget)
@@ -266,6 +355,11 @@ class PreloadManager: ObservableObject {
         maskMergeDebounceWorkItem?.cancel()
         preloadedMergedMask = nil
         isMaskMergePreloading = false
+    }
+
+    /// Get the cached merged mask (for saving to project)
+    func getCachedMergedMask() -> NSImage? {
+        return preloadedMergedMask
     }
 
     // MARK: - Composite Image Preloading

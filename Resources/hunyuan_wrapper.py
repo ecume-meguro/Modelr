@@ -735,8 +735,8 @@ def main():
 
         generator = HunyuanGenerator(args.model)
 
-        def progress_print(status, value):
-            print(f"PROGRESS:{int(value*100)}% - {status}", flush=True)
+        def progress_print(status, value, detail=None):
+            print(f"PROGRESS:{int(value*100)}% - {status}" + (f" ({detail})" if detail else ""), flush=True)
 
         generator.generate(
             image=image,

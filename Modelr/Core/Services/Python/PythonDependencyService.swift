@@ -6,11 +6,14 @@ class PythonDependencyService {
     private let fileManager = FileManager.default
 
     var cachedUvPath: String?
-    var samVenvReady = false
-    var toolsVenvReady = false
+    var inferenceVenvReady = false
     var hunyuanVenvReady = false
-    var vlmVenvReady = false
     var resourcePathOverride: String?
+
+    // Legacy flags (deprecated - use inferenceVenvReady)
+    var samVenvReady: Bool { inferenceVenvReady }
+    var toolsVenvReady: Bool { inferenceVenvReady }
+    var vlmVenvReady: Bool { inferenceVenvReady }
 
     init() {
         cachedUvPath = findUVExecutable()
@@ -51,30 +54,23 @@ class PythonDependencyService {
             return false
         }
 
-        // 1. Segmentation (Environment then Model)
-        report(.syncingSAM, "Syncing SAM environment...", nil, false)
-        await setupSAMEnvironment(uvPath: uvPath, onProgress: onProgress)
-        guard samVenvReady else {
-            report(.failed, "SAM environment sync failed", nil, false)
+        // 1. Unified Inference Environment (SAM + VLM + Tools)
+        report(.syncingSAM, "Syncing inference environment...", nil, false)
+        await setupInferenceEnvironment(uvPath: uvPath, onProgress: onProgress)
+        guard inferenceVenvReady else {
+            report(.failed, "Inference environment sync failed", nil, false)
             return false
         }
 
+        // 2. Download SAM model
         report(.downloadingSAM, "Downloading segmentation model...", nil, false)
         await warmupSAMModel(uvPath: uvPath, onProgress: onProgress)
 
-        // 1.5. VLM (Vision Language Model for auto-detection)
-        report(.syncingSAM, "Syncing VLM environment...", nil, false)
-        await setupVLMEnvironment(uvPath: uvPath, onProgress: onProgress)
-        // VLM is optional - don't fail setup if it fails
-        if !vlmVenvReady {
-            print("[Setup] VLM environment failed - auto-detection will be unavailable")
-        } else {
-            // Warmup VLM model (download weights)
-            report(.downloadingSAM, "Downloading VLM model...", nil, false)
-            await warmupVLMModel(uvPath: uvPath, onProgress: onProgress)
-        }
+        // 3. Download VLM model
+        report(.downloadingSAM, "Downloading VLM model...", nil, false)
+        await warmupVLMModel(uvPath: uvPath, onProgress: onProgress)
 
-        // 2. 3D Generation (Environment then Model)
+        // 4. 3D Generation (separate environment - requires Python 3.10)
         report(.syncingHunyuan, "Syncing 3D generation environment...", nil, false)
         await setupHunyuanEnvironment(uvPath: uvPath, onProgress: onProgress)
         guard hunyuanVenvReady else {
@@ -85,44 +81,38 @@ class PythonDependencyService {
         report(.downloadingHunyuan, "Downloading 3D generation model (\(modelChoice.displayName))...", nil, false)
         await downloadHunyuanModel(uvPath: uvPath, variant: modelChoice.modelVariant, onProgress: onProgress)
 
-        // 3. Post-Process (Mesh Tools)
-        report(.syncingTools, "Syncing mesh tools...", nil, false)
-        await setupToolsEnvironment(uvPath: uvPath, onProgress: onProgress)
-        guard toolsVenvReady else {
-            report(.failed, "Tools environment sync failed", nil, false)
-            return false
-        }
-
         report(.completed, "Ready", nil, false)
         return true
     }
 
     // MARK: - Stage Implementations
 
-    private func setupSAMEnvironment(uvPath: String, onProgress: @escaping (SetupProgressUpdate) -> Void) async {
-        let samProjectDir = PathManager.samProjectDirectory
-        let samVenvDir = PathManager.samEnvironmentDirectory.appendingPathComponent(AppConstants.venvDirectoryName, isDirectory: true)
+    /// Sets up the unified inference environment (SAM + VLM + Tools)
+    private func setupInferenceEnvironment(uvPath: String, onProgress: @escaping (SetupProgressUpdate) -> Void) async {
+        let inferenceProjectDir = PathManager.inferenceProjectDirectory
+        let inferenceVenvDir = PathManager.inferenceVenvDirectory
         do {
-            try PathManager.ensureDirectoryExists(at: samProjectDir)
-            try PathManager.ensureDirectoryExists(at: PathManager.samEnvironmentDirectory)
+            try PathManager.ensureDirectoryExists(at: inferenceProjectDir)
+            try PathManager.ensureDirectoryExists(at: PathManager.inferenceEnvironmentDirectory)
         } catch {
-            onProgress(SetupProgressUpdate(stage: .failed, status: "SAM preparation failed", logLine: error.localizedDescription))
+            onProgress(SetupProgressUpdate(stage: .failed, status: "Inference environment preparation failed", logLine: error.localizedDescription))
             return
         }
 
-        samVenvReady = await syncEnvironment(
+        inferenceVenvReady = await syncEnvironment(
             uvPath: uvPath,
             pythonVersion: "3.13",
-            venvPath: samVenvDir,
-            workingDir: samProjectDir,
+            venvPath: inferenceVenvDir,
+            workingDir: inferenceProjectDir,
             stage: .syncingSAM,
             onProgress: onProgress
         )
     }
 
     private func warmupSAMModel(uvPath: String, onProgress: @escaping (SetupProgressUpdate) -> Void) async {
+        // SAM wrapper still lives in sam project dir, but uses inference venv
         let samProjectDir = PathManager.samProjectDirectory
-        let samVenvDir = PathManager.samEnvironmentDirectory.appendingPathComponent(AppConstants.venvDirectoryName, isDirectory: true)
+        let inferenceVenvDir = PathManager.inferenceVenvDirectory
         let modelsHubDir = PathManager.modelsHubDirectory
         try? PathManager.ensureDirectoryExists(at: modelsHubDir)
 
@@ -130,35 +120,15 @@ class PythonDependencyService {
         process.executableURL = URL(fileURLWithPath: uvPath)
         process.arguments = ["run", "--project", samProjectDir.path, AppConstants.samWrapperFileName, "--test"]
         process.currentDirectoryURL = samProjectDir
-        process.environment = createPythonEnvironment(venvPath: samVenvDir, modelsHubDir: modelsHubDir)
+        process.environment = createPythonEnvironment(venvPath: inferenceVenvDir, modelsHubDir: modelsHubDir)
 
         await runProcessAsync(process, stage: .downloadingSAM, onProgress: onProgress)
     }
 
-    private func setupToolsEnvironment(uvPath: String, onProgress: @escaping (SetupProgressUpdate) -> Void) async {
-        let toolsProjectDir = PathManager.toolsProjectDirectory
-        let toolsVenvDir = PathManager.toolsEnvironmentDirectory.appendingPathComponent(AppConstants.venvDirectoryName, isDirectory: true)
-        do {
-            try PathManager.ensureDirectoryExists(at: toolsProjectDir)
-            try PathManager.ensureDirectoryExists(at: PathManager.toolsEnvironmentDirectory)
-        } catch {
-            onProgress(SetupProgressUpdate(stage: .failed, status: "Tools preparation failed", logLine: error.localizedDescription))
-            return
-        }
-
-        toolsVenvReady = await syncEnvironment(
-            uvPath: uvPath,
-            pythonVersion: "3.13",
-            venvPath: toolsVenvDir,
-            workingDir: toolsProjectDir,
-            stage: .syncingTools,
-            onProgress: onProgress
-        )
-    }
-
     private func warmupVLMModel(uvPath: String, onProgress: @escaping (SetupProgressUpdate) -> Void) async {
+        // VLM wrapper still lives in vlm project dir, but uses inference venv
         let vlmProjectDir = PathManager.vlmProjectDirectory
-        let vlmVenvDir = PathManager.vlmVenvDirectory
+        let inferenceVenvDir = PathManager.inferenceVenvDirectory
         let modelsHubDir = PathManager.modelsHubDirectory
         try? PathManager.ensureDirectoryExists(at: modelsHubDir)
 
@@ -166,30 +136,9 @@ class PythonDependencyService {
         process.executableURL = URL(fileURLWithPath: uvPath)
         process.arguments = ["run", "--project", vlmProjectDir.path, AppConstants.vlmWrapperFileName, "--warmup"]
         process.currentDirectoryURL = vlmProjectDir
-        process.environment = createPythonEnvironment(venvPath: vlmVenvDir, modelsHubDir: modelsHubDir)
+        process.environment = createPythonEnvironment(venvPath: inferenceVenvDir, modelsHubDir: modelsHubDir)
 
         await runProcessAsync(process, stage: .downloadingSAM, onProgress: onProgress)
-    }
-
-    private func setupVLMEnvironment(uvPath: String, onProgress: @escaping (SetupProgressUpdate) -> Void) async {
-        let vlmProjectDir = PathManager.vlmProjectDirectory
-        let vlmVenvDir = PathManager.vlmVenvDirectory
-        do {
-            try PathManager.ensureDirectoryExists(at: vlmProjectDir)
-            try PathManager.ensureDirectoryExists(at: PathManager.vlmEnvironmentDirectory)
-        } catch {
-            onProgress(SetupProgressUpdate(stage: .failed, status: "VLM preparation failed", logLine: error.localizedDescription))
-            return
-        }
-
-        vlmVenvReady = await syncEnvironment(
-            uvPath: uvPath,
-            pythonVersion: "3.13",
-            venvPath: vlmVenvDir,
-            workingDir: vlmProjectDir,
-            stage: .syncingSAM,  // Reuse SAM stage for UI simplicity
-            onProgress: onProgress
-        )
     }
 
     private func setupHunyuanEnvironment(uvPath: String, onProgress: @escaping (SetupProgressUpdate) -> Void) async {
@@ -363,19 +312,12 @@ class PythonDependencyService {
             return false
         }
 
-        // Sync SAM environment
-        report(.syncingSAM, "Updating segmentation environment...", nil, false)
-        await setupSAMEnvironment(uvPath: uvPath, onProgress: onProgress)
-        guard samVenvReady else {
-            report(.failed, "SAM environment sync failed", nil, false)
+        // Sync unified inference environment (SAM + VLM + Tools)
+        report(.syncingSAM, "Updating inference environment...", nil, false)
+        await setupInferenceEnvironment(uvPath: uvPath, onProgress: onProgress)
+        guard inferenceVenvReady else {
+            report(.failed, "Inference environment sync failed", nil, false)
             return false
-        }
-
-        // Sync VLM environment (optional)
-        report(.syncingSAM, "Updating VLM environment...", nil, false)
-        await setupVLMEnvironment(uvPath: uvPath, onProgress: onProgress)
-        if !vlmVenvReady {
-            print("[EnvRefresh] VLM environment failed - auto-detection will be unavailable")
         }
 
         // Sync Hunyuan environment
@@ -383,14 +325,6 @@ class PythonDependencyService {
         await setupHunyuanEnvironment(uvPath: uvPath, onProgress: onProgress)
         guard hunyuanVenvReady else {
             report(.failed, "Hunyuan environment sync failed", nil, false)
-            return false
-        }
-
-        // Sync Tools environment
-        report(.syncingTools, "Updating mesh tools...", nil, false)
-        await setupToolsEnvironment(uvPath: uvPath, onProgress: onProgress)
-        guard toolsVenvReady else {
-            report(.failed, "Tools environment sync failed", nil, false)
             return false
         }
 
@@ -413,20 +347,17 @@ class PythonDependencyService {
             PathManager.projectConfigPath,
             PathManager.sharedDirectory.appendingPathComponent("modelr_core"),
             PathManager.sharedDirectory.appendingPathComponent("mlx-sam3"),
-            PathManager.samProjectDirectory.appendingPathComponent("pyproject.toml"),
+            // Unified inference environment
+            PathManager.inferenceProjectDirectory.appendingPathComponent("pyproject.toml"),
+            // Individual wrapper scripts
             PathManager.samProjectDirectory.appendingPathComponent(AppConstants.samWrapperFileName),
-            PathManager.toolsProjectDirectory.appendingPathComponent("pyproject.toml"),
+            PathManager.vlmProjectDirectory.appendingPathComponent(AppConstants.vlmWrapperFileName),
             PathManager.toolsProjectDirectory.appendingPathComponent("mesh_processor.py"),
+            PathManager.t2iWrapperPath,
+            // Hunyuan (separate environment)
             PathManager.hunyuanProjectDirectory.appendingPathComponent("pyproject.toml"),
             PathManager.hunyuanProjectDirectory.appendingPathComponent(AppConstants.hunyuanWrapperFileName)
         ]
-
-        // VLM is optional - check but don't require
-        let vlmReady = fileManager.fileExists(atPath: PathManager.vlmProjectDirectory.appendingPathComponent("pyproject.toml").path) &&
-                       fileManager.fileExists(atPath: PathManager.vlmProjectDirectory.appendingPathComponent(AppConstants.vlmWrapperFileName).path)
-        if !vlmReady {
-            print("[Resources] VLM resources not found - auto-detection will be unavailable")
-        }
 
         return requiredPaths.allSatisfy { fileManager.fileExists(atPath: $0.path) }
     }
@@ -464,31 +395,45 @@ class PythonDependencyService {
             let sharedMlxDst = PathManager.sharedDirectory.appendingPathComponent("mlx-sam3", isDirectory: true)
             try copyDirectoryFiltered(from: sharedMlxSrc, to: sharedMlxDst)
 
-            // Lib/scripts (stage scripts + pyproject into their final project directories)
+            // Unified inference environment (SAM + VLM + Tools + T2I)
+            try PathManager.ensureDirectoryExists(at: PathManager.inferenceProjectDirectory)
+            let inferencePyprojectDst = PathManager.inferenceProjectDirectory.appendingPathComponent("pyproject.toml")
+            try copyFile(from: source.appendingPathComponent("pyproject_inference.toml"), to: inferencePyprojectDst)
+            normalizeUvLocalSourcePaths(inPyprojectAt: inferencePyprojectDst)
+
+            // T2I wrapper script (uses inference venv)
+            try copyFile(from: source.appendingPathComponent("t2i_wrapper.py"), to: PathManager.inferenceProjectDirectory.appendingPathComponent("t2i_wrapper.py"))
+
+            // SAM wrapper script (uses inference venv)
             try PathManager.ensureDirectoryExists(at: PathManager.samProjectDirectory)
+            try copyFile(from: source.appendingPathComponent(AppConstants.samWrapperFileName), to: PathManager.samProjectDirectory.appendingPathComponent(AppConstants.samWrapperFileName))
+            // Keep legacy pyproject for backward compatibility
             let samPyprojectDst = PathManager.samProjectDirectory.appendingPathComponent("pyproject.toml")
             try copyFile(from: source.appendingPathComponent("pyproject_sam.toml"), to: samPyprojectDst)
-            try copyFile(from: source.appendingPathComponent(AppConstants.samWrapperFileName), to: PathManager.samProjectDirectory.appendingPathComponent(AppConstants.samWrapperFileName))
             normalizeUvLocalSourcePaths(inPyprojectAt: samPyprojectDst)
 
+            // Tools wrapper script (uses inference venv)
             try PathManager.ensureDirectoryExists(at: PathManager.toolsProjectDirectory)
+            try copyFile(from: source.appendingPathComponent("mesh_processor.py"), to: PathManager.toolsProjectDirectory.appendingPathComponent("mesh_processor.py"))
+            // Keep legacy pyproject for backward compatibility
             let toolsPyprojectDst = PathManager.toolsProjectDirectory.appendingPathComponent("pyproject.toml")
             try copyFile(from: source.appendingPathComponent("pyproject_tools.toml"), to: toolsPyprojectDst)
-            try copyFile(from: source.appendingPathComponent("mesh_processor.py"), to: PathManager.toolsProjectDirectory.appendingPathComponent("mesh_processor.py"))
             normalizeUvLocalSourcePaths(inPyprojectAt: toolsPyprojectDst)
 
+            // VLM wrapper script (uses inference venv)
+            try PathManager.ensureDirectoryExists(at: PathManager.vlmProjectDirectory)
+            try copyFile(from: source.appendingPathComponent(AppConstants.vlmWrapperFileName), to: PathManager.vlmProjectDirectory.appendingPathComponent(AppConstants.vlmWrapperFileName))
+            // Keep legacy pyproject for backward compatibility
+            let vlmPyprojectDst = PathManager.vlmProjectDirectory.appendingPathComponent("pyproject.toml")
+            try copyFile(from: source.appendingPathComponent(AppConstants.vlmPyprojectFileName), to: vlmPyprojectDst)
+            normalizeUvLocalSourcePaths(inPyprojectAt: vlmPyprojectDst)
+
+            // Hunyuan (separate environment - requires Python 3.10)
             try PathManager.ensureDirectoryExists(at: PathManager.hunyuanProjectDirectory)
             let hunyuanPyprojectDst = PathManager.hunyuanProjectDirectory.appendingPathComponent("pyproject.toml")
             try copyFile(from: source.appendingPathComponent(AppConstants.hunyuanPyprojectFileName), to: hunyuanPyprojectDst)
             try copyFile(from: source.appendingPathComponent(AppConstants.hunyuanWrapperFileName), to: PathManager.hunyuanProjectDirectory.appendingPathComponent(AppConstants.hunyuanWrapperFileName))
             normalizeUvLocalSourcePaths(inPyprojectAt: hunyuanPyprojectDst)
-
-            // VLM (Vision Language Model)
-            try PathManager.ensureDirectoryExists(at: PathManager.vlmProjectDirectory)
-            let vlmPyprojectDst = PathManager.vlmProjectDirectory.appendingPathComponent("pyproject.toml")
-            try copyFile(from: source.appendingPathComponent(AppConstants.vlmPyprojectFileName), to: vlmPyprojectDst)
-            try copyFile(from: source.appendingPathComponent(AppConstants.vlmWrapperFileName), to: PathManager.vlmProjectDirectory.appendingPathComponent(AppConstants.vlmWrapperFileName))
-            normalizeUvLocalSourcePaths(inPyprojectAt: vlmPyprojectDst)
         } catch {
             print("[Resources] Failed to copy resources: \(error)")
         }

@@ -70,9 +70,16 @@ class ModelLoadingCoordinator: ObservableObject {
 
     private var startupTask: Task<Void, Never>?
     private var vlmStartupTask: Task<Void, Never>?
+    private var vlmIdleTask: Task<Void, Never>?
+
+    /// Last time VLM was used (for idle timeout)
+    private var lastVLMUseTime: Date?
 
     /// Maximum time to wait for a server to start (in seconds)
     private static let startupTimeoutSeconds: TimeInterval = 120
+
+    /// Time after which idle VLM server is stopped (in seconds)
+    private static let vlmIdleTimeoutSeconds: TimeInterval = 300  // 5 minutes
 
     /// Wait for a condition with timeout to prevent infinite loops
     /// - Parameters:
@@ -140,19 +147,13 @@ class ModelLoadingCoordinator: ObservableObject {
         return nil
     }
 
-    /// Called when SAM model is ready - starts VLM server only
-    /// NOTE: Hunyuan is started separately via startHunyuanInBackground() to avoid blocking SAM/VLM
+    /// Called when SAM model is ready
+    /// NOTE: VLM is now started lazily on-demand via ensureVLMReady() when auto-detect is triggered
+    /// NOTE: Hunyuan is started separately via startHunyuanInBackground() to avoid blocking SAM
     func onSAMModelReady(env: PythonEnvironment) {
-        // Start VLM server (lightweight MLX model, always start alongside SAM)
-        if !isVLMReady && !isStartingVLM {
-            print("[ModelLoadingCoordinator] SAM ready, starting VLM server...")
-            isStartingVLM = true
-            vlmStartupTask = Task {
-                await startVLMServer(env: env)
-            }
-        }
-        // NOTE: Hunyuan is NOT started here to ensure SAM/VLM have full priority
-        // Use startHunyuanInBackground() after VLM is ready
+        // VLM is now loaded lazily on-demand to reduce memory pressure
+        // Use ensureVLMReady() when auto-detect is needed
+        print("[ModelLoadingCoordinator] SAM ready. VLM will start on first auto-detect request.")
     }
 
     /// Start Hunyuan server in background with low priority
@@ -291,7 +292,46 @@ class ModelLoadingCoordinator: ObservableObject {
             throw PythonError.workerNotRunning
         }
 
+        // Track usage for idle timeout
+        lastVLMUseTime = Date()
+        startVLMIdleTimer()
+
         return try await manager.describeImage(imagePath: imagePath)
+    }
+
+    /// Generate a short descriptive project name for an image
+    func generateProjectName(imagePath: String) async throws -> String {
+        guard let manager = vlmProcessManager, manager.isRunning else {
+            throw PythonError.workerNotRunning
+        }
+
+        // Track usage for idle timeout
+        lastVLMUseTime = Date()
+        startVLMIdleTimer()
+
+        return try await manager.generateProjectName(imagePath: imagePath)
+    }
+
+    /// Start the VLM idle timer that will stop the server after inactivity
+    private func startVLMIdleTimer() {
+        // Cancel any existing timer
+        vlmIdleTask?.cancel()
+
+        vlmIdleTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 60_000_000_000)  // Check every 60 seconds
+
+                guard let self = self else { return }
+                guard self.isVLMReady, let lastUse = self.lastVLMUseTime else { continue }
+
+                let idleTime = Date().timeIntervalSince(lastUse)
+                if idleTime >= ModelLoadingCoordinator.vlmIdleTimeoutSeconds {
+                    print("[ModelLoadingCoordinator] VLM idle for \(Int(idleTime))s, stopping server to free memory")
+                    self.stopVLMServer()
+                    return
+                }
+            }
+        }
     }
 
     // MARK: - Hunyuan Server Management
@@ -399,6 +439,7 @@ class ModelLoadingCoordinator: ObservableObject {
             var lastReportedStep = 0
             var lastTotalSteps = 0
             var inVolumeDecoding = false
+            var recordActivity: (() -> Void)?  // Called to reset idle timeout
         }
         let tracker = ProgressTracker()
 
@@ -412,6 +453,7 @@ class ModelLoadingCoordinator: ObservableObject {
 
             // Parse explicit diffusion progress: "[DIFFUSION_PROGRESS] X/Y Z%"
             if line.contains("[DIFFUSION_PROGRESS]") {
+                tracker.recordActivity?()  // Reset idle timeout
                 // Format: "[DIFFUSION_PROGRESS] 5/25 41%"
                 let parts = line.replacingOccurrences(of: "[DIFFUSION_PROGRESS]", with: "").trimmingCharacters(in: .whitespaces).split(separator: " ")
                 if parts.count >= 2 {
@@ -435,6 +477,7 @@ class ModelLoadingCoordinator: ObservableObject {
 
             // Parse explicit stage change: "[STAGE] volume_decoding"
             if line.contains("[STAGE] volume_decoding") {
+                tracker.recordActivity?()  // Reset idle timeout
                 if !tracker.inVolumeDecoding {
                     tracker.inVolumeDecoding = true
                     print("[Progress] Switching to volume decoding stage")
@@ -448,6 +491,7 @@ class ModelLoadingCoordinator: ObservableObject {
             // Fallback: Parse tqdm progress: "X%|" pattern
             // tqdm format: " 45%|████▌     | 11/25 [00:05<00:06,  2.19it/s]"
             if let match = line.range(of: #"(\d+)%\|"#, options: .regularExpression) {
+                tracker.recordActivity?()  // Reset idle timeout on any tqdm progress
                 let percentStr = line[match].dropLast(2) // Remove "%|"
                 if let percent = Int(percentStr) {
                     // Also try to extract step counts
@@ -512,16 +556,23 @@ class ModelLoadingCoordinator: ObservableObject {
             manager.onStderrLine = previousStderrHandler
         }
 
-        let response = try await manager.sendRequest(request) { progress in
-            // JSON progress from Python callback (if it works)
-            if let stage = progress.stage, let value = progress.progress {
-                let detail = progress.detail ?? ""
-                print("[JSON Progress] stage=\(stage) detail=\(detail) value=\(value)")
-                DispatchQueue.main.async {
-                    onProgress?(stage, detail, value)
+        let response = try await manager.sendRequest(
+            request,
+            onProgress: { progress in
+                // JSON progress from Python callback (if it works)
+                if let stage = progress.stage, let value = progress.progress {
+                    let detail = progress.detail ?? ""
+                    print("[JSON Progress] stage=\(stage) detail=\(detail) value=\(value)")
+                    DispatchQueue.main.async {
+                        onProgress?(stage, detail, value)
+                    }
                 }
+            },
+            onActivity: { activityRecorder in
+                // Store the activity recorder so stderr handler can use it
+                tracker.recordActivity = activityRecorder
             }
-        }
+        )
 
         guard response.success, let outputURL = response.outputPath else {
             throw PythonError.predictionFailed(response.error ?? "Generation failed")
@@ -572,6 +623,9 @@ class ModelLoadingCoordinator: ObservableObject {
 
     /// Stop the VLM server
     func stopVLMServer() {
+        vlmIdleTask?.cancel()
+        vlmIdleTask = nil
+        lastVLMUseTime = nil
         vlmProcessManager?.stopServer()
         vlmProcessManager = nil
         isVLMReady = false

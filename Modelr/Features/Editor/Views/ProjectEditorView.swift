@@ -47,6 +47,24 @@ struct ProjectEditorView: View {
                 hasAppeared = true
             }
         }
+        // Auto-naming: listen for VLM detection at root level (so it fires during loading)
+        .onChange(of: viewModel.autoDetectedLabel) { _, newLabel in
+            // Step 1: Immediately set project name to VLM/SAM prompt
+            if let label = newLabel, !label.isEmpty, var proj = project {
+                let formattedName = label.split(separator: " ")
+                    .map { $0.prefix(1).uppercased() + $0.dropFirst().lowercased() }
+                    .joined(separator: " ")
+                proj.name = formattedName
+                proj.touch()
+                try? ProjectManager.shared.saveProject(proj)
+                project = proj
+
+                // Step 2: Async ask VLM for a better descriptive name
+                Task {
+                    await requestBetterProjectName()
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -100,23 +118,50 @@ struct ProjectEditorView: View {
         .background(Color(NSColor.windowBackgroundColor))
     }
 
+    /// Whether this project uses text-to-model mode
+    private var isTextToModelMode: Bool {
+        project?.mode == .textToModel
+    }
+
+    @ViewBuilder
+    private var sidebarContent: some View {
+        Group {
+            if isTextToModelMode {
+                TextToModelSidebar(viewModel: viewModel, onClose: handleClose)
+            } else {
+                SimpleEditorSidebar(viewModel: viewModel, onClose: handleClose)
+            }
+        }
+        .navigationSplitViewColumnWidth(min: 280, ideal: 360, max: 420)
+    }
+
+    @ViewBuilder
+    private var canvasContent: some View {
+        Group {
+            if isTextToModelMode && viewModel.t2mGeneratedImage == nil {
+                TextToModelCanvas(viewModel: viewModel)
+            } else {
+                ImageCanvas(viewModel: viewModel)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(NSColor.windowBackgroundColor))
+    }
+
+    private func handleClose() {
+        saveTask?.cancel()
+        Task {
+            await saveProjectState(immediate: true)
+            onClose()
+        }
+    }
+
     @ViewBuilder
     private var editorContent: some View {
         NavigationSplitView {
-            SimpleEditorSidebar(viewModel: viewModel, onClose: {
-                // Cancel any pending save before closing
-                saveTask?.cancel()
-                // Final save
-                Task {
-                    await saveProjectState(immediate: true)
-                    onClose()
-                }
-            })
-            .navigationSplitViewColumnWidth(min: 280, ideal: 360, max: 420)
+            sidebarContent
         } detail: {
-            ImageCanvas(viewModel: viewModel)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(NSColor.windowBackgroundColor))
+            canvasContent
         }
         .navigationSplitViewStyle(.balanced)
         .navigationTitle(project?.name ?? "Project")
@@ -158,15 +203,6 @@ struct ProjectEditorView: View {
             // Debounced auto-save on step change
             scheduleSave()
         }
-        .onChange(of: viewModel.autoDetectedLabel) { _, newLabel in
-            // Update project name when VLM detects label
-            if let label = newLabel, var proj = project, proj.name == "New Project" {
-                proj.name = label
-                proj.touch()
-                try? ProjectManager.shared.saveProject(proj)
-                project = proj
-            }
-        }
         .onChange(of: viewModel.selectedPreset) { _, _ in
             scheduleSave()
         }
@@ -176,6 +212,42 @@ struct ProjectEditorView: View {
             Task {
                 await saveProjectState(immediate: true)
             }
+        }
+    }
+
+    /// Ask VLM for a better descriptive project name (runs in background)
+    private func requestBetterProjectName() async {
+        guard let imagePath = viewModel.inputImagePath else { return }
+
+        let coordinator = ModelLoadingCoordinator.shared
+
+        // Only proceed if VLM is ready
+        guard coordinator.isVLMReady else { return }
+
+        do {
+            // Ask VLM for a short descriptive name
+            let betterName = try await coordinator.generateProjectName(imagePath: imagePath)
+
+            // Update project name if we got a valid response
+            if !betterName.isEmpty, var proj = project {
+                // Capitalize nicely
+                let formattedName = betterName.split(separator: " ")
+                    .map { $0.prefix(1).uppercased() + $0.dropFirst().lowercased() }
+                    .joined(separator: " ")
+
+                // Only update if different from current
+                if proj.name != formattedName {
+                    proj.name = formattedName
+                    proj.touch()
+                    try? ProjectManager.shared.saveProject(proj)
+                    await MainActor.run {
+                        project = proj
+                    }
+                    print("[ProjectEditor] Updated project name to: \(formattedName)")
+                }
+            }
+        } catch {
+            print("[ProjectEditor] Failed to get better project name: \(error)")
         }
     }
 
@@ -239,9 +311,23 @@ struct ProjectEditorView: View {
         }
 
         // Load source image into view model
-        // Pass saved prompt to skip VLM if we already have one
         let sourceImagePath = PathManager.projectSourceImagePath(for: projectId)
-        if FileManager.default.fileExists(atPath: sourceImagePath.path) {
+        guard FileManager.default.fileExists(atPath: sourceImagePath.path) else {
+            isLoading = false
+            return
+        }
+
+        // Check for saved segmentation data first (skip VLM/SAM if available)
+        if let savedSegData = ProjectManager.shared.loadSegmentationData(for: projectId) {
+            // Use the fast path - restore from saved masks directly
+            print("[ProjectEditor] Found saved segmentation data, using fast restore")
+            viewModel.loadImageWithSavedSegmentations(
+                from: sourceImagePath,
+                savedSegmentations: savedSegData.segmentations,
+                autoDetectedLabel: savedSegData.autoDetectedLabel
+            )
+        } else {
+            // No saved segmentation - use normal path (runs VLM/SAM)
             viewModel.loadImageWithSavedState(
                 from: sourceImagePath,
                 savedPrompt: savedPrompt,
@@ -254,22 +340,12 @@ struct ProjectEditorView: View {
             try? await Task.sleep(nanoseconds: 50_000_000) // 50ms polling
         }
 
-        // Restore saved mask if it exists - MUST also populate the segmentation entry
+        // Restore editable mask if user had touchup edits
         let maskPath = PathManager.projectMaskPath(for: projectId)
         if FileManager.default.fileExists(atPath: maskPath.path),
            let maskImage = NSImage(contentsOf: maskPath) {
             viewModel.editableMaskImage = maskImage
             viewModel.hasMaskEdits = metadata?.hasMaskEdits ?? false
-
-            // CRITICAL: Also populate the segmentation entry with the saved mask
-            // This ensures hasValidMask returns true and UI shows the mask correctly
-            if viewModel.activeSegmentationIndex < viewModel.segmentations.count {
-                viewModel.segmentations[viewModel.activeSegmentationIndex].allMasks = [
-                    (image: maskImage, score: 1.0, url: maskPath)
-                ]
-                viewModel.segmentations[viewModel.activeSegmentationIndex].selectedMaskIndices = [0]
-                viewModel.segmentations[viewModel.activeSegmentationIndex].isSearchPerformed = true
-            }
         }
 
         // Restore 3D model if it exists (check both .obj and .glb extensions)
@@ -337,6 +413,9 @@ struct ProjectEditorView: View {
             // Save mask whenever we have one (not just on immediate save)
             if viewModel.currentStep.rawValue >= SimpleEditorViewModel.Step.segment.rawValue {
                 await saveMaskImage()
+
+                // Save full segmentation data (masks + prompts) for fast restore next time
+                viewModel.saveSegmentationDataToProject()
             }
 
             // Save 3D model reference if generated

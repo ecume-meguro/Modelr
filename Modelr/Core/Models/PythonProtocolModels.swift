@@ -185,7 +185,7 @@ struct HunyuanResponse: Codable {
 
 struct VLMRequest: Codable {
     let messageId: String
-    let command: String  // "set_image", "describe", "ping", "exit"
+    let command: String  // "set_image", "describe", "name", "ping", "exit"
     let imagePath: String?
     let prompt: String?
     let maxTokens: Int?
@@ -213,4 +213,59 @@ struct VLMResponse: Codable {
     let status: String?           // e.g. "pong", "exiting"
     let width: Int?               // Image width from set_image
     let height: Int?              // Image height from set_image
+}
+
+// MARK: - Text-to-Image Python Communication Protocol
+
+struct T2IRequest: Codable {
+    let messageId: String
+    let command: String  // "generate", "ping", "cancel", "exit"
+    let prompt: String?
+    let negativePrompt: String?
+    let width: Int?
+    let height: Int?
+    let steps: Int?
+    let guidanceScale: Float?
+    let seed: Int?
+    let outputPath: String?
+
+    init(
+        command: String,
+        prompt: String? = nil,
+        negativePrompt: String? = nil,
+        width: Int? = nil,
+        height: Int? = nil,
+        steps: Int? = nil,
+        guidanceScale: Float? = nil,
+        seed: Int? = nil,
+        outputPath: String? = nil
+    ) {
+        self.messageId = UUID().uuidString
+        self.command = command
+        self.prompt = prompt
+        self.negativePrompt = negativePrompt
+        self.width = width
+        self.height = height
+        self.steps = steps
+        self.guidanceScale = guidanceScale
+        self.seed = seed
+        self.outputPath = outputPath
+    }
+}
+
+struct T2IResponse: Codable {
+    let success: Bool
+    let type: String?         // "progress", "complete", "error", "cancelled"
+    let messageId: String?
+    let imagePath: String?    // Path to generated image
+    let error: String?
+    let progress: Float?      // 0.0 - 1.0
+    let stage: String?        // "encoding", "diffusion", "saving"
+    let detail: String?       // Progress detail message
+    let seed: Int?            // Seed used for generation
+    let ready: Bool?          // true when server is initialized
+    let device: String?       // e.g. "mps", "cuda", "cpu"
+    let server: String?       // e.g. "t2i"
+    let model: String?        // e.g. "stable-diffusion-v1-5"
+    let status: String?       // e.g. "pong", "exiting"
 }

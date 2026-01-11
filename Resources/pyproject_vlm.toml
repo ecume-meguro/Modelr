@@ -22,5 +22,12 @@ build-backend = "setuptools.build_meta"
 packages = []
 py-modules = []
 
+[tool.uv]
+# Exclude heavy analytics/data dependencies that are unnecessary
+override-dependencies = [
+    "pyarrow; sys_platform == 'never'",
+    "pandas; sys_platform == 'never'",
+]
+
 [tool.uv.sources]
 modelr-core = { path = "../../python/modelr_core" }

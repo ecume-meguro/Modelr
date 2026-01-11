@@ -139,6 +139,18 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     @Published var autoDetectedLabel: String?
     var autoDetectionTask: Task<Void, Never>?
 
+    // MARK: - Text-to-Model State (T2I)
+    @Published var t2mCurrentStep: TextToModelStep = .prompt
+    @Published var t2mPrompt: String = ""
+    @Published var t2mNegativePrompt: String = ""
+    @Published var t2mSeed: Int? = nil
+    @Published var t2mGeneratedImage: NSImage? = nil
+    @Published var t2mGeneratedImagePath: String? = nil
+    @Published var isGeneratingT2I: Bool = false
+    @Published var t2mProgress: Float = 0
+    @Published var t2mProgressDetail: String = ""
+    var t2iTask: Task<Void, Never>?
+
     // MARK: - Image Initialization State
     /// Whether the current image has been successfully initialized with SAM backend
     @Published var isImageInitializedWithSAM: Bool = false
@@ -339,6 +351,12 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     override init(env: PythonEnvironment, projectId: UUID? = nil) {
         super.init(env: env, projectId: projectId)
 
+        // CRITICAL: Clear any cached data from previous project
+        // PreloadManager is a singleton that retains masks/composites across projects
+        preloadManager.clearPreloadedMask()
+        preloadManager.clearPreloadedComposite()
+        print("[Init] Cleared PreloadManager cache for new project: \(projectId?.uuidString ?? "nil")")
+
         // Log memory management strategy
         let coordinator = ModelLoadingCoordinator.shared
         print("[Memory] System RAM: \(coordinator.formattedSystemRAM)")
@@ -423,6 +441,11 @@ class SimpleEditorViewModel: BaseEditorViewModel {
                 self.compositeImage = nil
                 self.generated3DModelURL = nil
                 self.generationStages = [:]
+
+                // Invalidate cached thumbnails when loading new image
+                if let projectId = self.projectId {
+                    ThumbnailCache.shared.invalidate(projectId: projectId)
+                }
                 self.generationStatus = ""
                 self.zoomScale = 1.0
                 self.panOffset = .zero
@@ -607,6 +630,143 @@ class SimpleEditorViewModel: BaseEditorViewModel {
                 self.initializationStatus = ""
                 self.lastError = AppError.imageProcessing(error.localizedDescription)
                 self.showErrorAlert = true
+            }
+        }
+    }
+
+    /// Load image with fully saved segmentation data (skip SAM/VLM entirely)
+    /// Use this when opening a project that has complete saved mask data
+    func loadImageWithSavedSegmentations(
+        from url: URL,
+        savedSegmentations: [(id: UUID, name: String, textPrompt: String, selectedIndices: Set<Int>, masks: [(image: NSImage, score: Double, url: URL)])],
+        autoDetectedLabel: String?
+    ) {
+        // Cancel any previous load task
+        imageLoadTask?.cancel()
+
+        isImageInitializedWithSAM = false
+        isInitializingProject = true
+        initializationStatus = "Loading project..."
+
+        imageLoadTask = Task { [weak self] in
+            guard let self = self else { return }
+
+            do {
+                try Task.checkCancellation()
+
+                let image = try await self.loadInputImage(from: url)
+
+                try Task.checkCancellation()
+
+                // Reset state
+                self.editableMaskImage = nil
+                self.maskHistory.removeAll()
+                self.brushPreviewPosition = nil
+                self.compositeImage = nil
+                self.generationStages = [:]
+                self.generationStatus = ""
+                self.zoomScale = 1.0
+                self.panOffset = .zero
+                self.panBase = .zero
+                self.useExistingAlpha = false
+                self.lastError = nil
+
+                self.imageHasAlpha = ImageService.shared.checkImageHasAlpha(image)
+
+                // Restore auto-detected label
+                self.autoDetectedLabel = autoDetectedLabel
+
+                // Restore segmentation entries from saved data
+                self.segmentations.removeAll()
+                for saved in savedSegmentations {
+                    var entry = SegmentationEntry(name: saved.name)
+                    entry.textPrompt = saved.textPrompt
+                    entry.allMasks = saved.masks
+                    entry.selectedMaskIndices = saved.selectedIndices
+                    entry.isSearchPerformed = true
+                    entry.isExpanded = false
+                    self.segmentations.append(entry)
+                }
+
+                // Expand first segmentation
+                if !self.segmentations.isEmpty {
+                    self.segmentations[0].isExpanded = true
+                    self.activeSegmentationIndex = 0
+                }
+
+                print("[Load] Restored \(savedSegmentations.count) segmentations from saved data")
+
+                // Transition to segment step
+                withAnimation(.easeOut(duration: 0.25)) {
+                    self.currentStep = .segment
+                }
+
+                // Initialize SAM in background (for potential new segmentations)
+                // But don't wait for it - user can see their saved masks immediately
+                try Task.checkCancellation()
+                self.initializationStatus = "Preparing segmentation engine..."
+
+                Task.detached { [weak self] in
+                    _ = await self?.initializeImageWithoutVLM()
+                }
+
+                // Small delay then complete
+                try await Task.sleep(nanoseconds: 200_000_000) // 200ms
+
+                withAnimation(.easeOut(duration: 0.3)) {
+                    self.isInitializingProject = false
+                    self.initializationStatus = ""
+                }
+
+                // Trigger preloading of merged mask
+                self.triggerMaskPreload()
+
+            } catch is CancellationError {
+                print("[Load] Project load cancelled")
+                self.isInitializingProject = false
+                self.initializationStatus = ""
+            } catch {
+                print("[Load] Failed to load project: \(error)")
+                self.isInitializingProject = false
+                self.initializationStatus = ""
+                self.lastError = AppError.imageProcessing(error.localizedDescription)
+                self.showErrorAlert = true
+            }
+        }
+    }
+
+    /// Save current segmentation data to project folder
+    func saveSegmentationDataToProject() {
+        guard let projectId = projectId else { return }
+        guard !segmentations.isEmpty else { return }
+
+        // Convert SegmentationEntry to the format expected by ProjectManager
+        let dataToSave: [(id: UUID, name: String, textPrompt: String, selectedIndices: [Int], masks: [(image: NSImage, url: URL)])] = segmentations.compactMap { entry in
+            guard !entry.allMasks.isEmpty else { return nil }
+            return (
+                id: entry.id,
+                name: entry.name,
+                textPrompt: entry.textPrompt,
+                selectedIndices: Array(entry.selectedMaskIndices),
+                masks: entry.allMasks.map { (image: $0.image, url: $0.url) }
+            )
+        }
+
+        guard !dataToSave.isEmpty else { return }
+
+        // Get merged mask from preload manager
+        let mergedMask = preloadManager.getCachedMergedMask()
+
+        Task {
+            do {
+                try await ProjectManager.shared.saveSegmentationData(
+                    for: projectId,
+                    segmentations: dataToSave,
+                    autoDetectedLabel: autoDetectedLabel,
+                    mergedMask: mergedMask
+                )
+            } catch {
+                print("[Save] Failed to save segmentation data: \(error)")
             }
         }
     }

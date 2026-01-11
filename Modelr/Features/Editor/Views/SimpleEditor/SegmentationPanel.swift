@@ -69,7 +69,7 @@ struct SegmentationPanel: View {
     @ViewBuilder
     private var addAnotherButton: some View {
         Button {
-            withAnimation(.easeOut(duration: 0.2)) {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                 viewModel.addSegmentation()
             }
         } label: {
@@ -78,8 +78,13 @@ struct SegmentationPanel: View {
                     .font(.system(size: AppDesign.FontSize.body))
                 Text("Add Another Object")
                     .font(.system(size: AppDesign.FontSize.subheadline, weight: .medium))
+                Spacer()
             }
             .foregroundStyle(AppDesign.accent)
+            .padding(.vertical, AppDesign.Spacing.p8)
+            .padding(.horizontal, AppDesign.Spacing.p10)
+            .background(AppDesign.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .padding(.top, AppDesign.Spacing.p4)
@@ -117,8 +122,11 @@ struct SegmentationEntryView: View {
                 entryContent
                     .padding(.top, AppDesign.Spacing.p8)
                     .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .scale(scale: 0.98, anchor: .top)).combined(with: .move(edge: .top)),
-                        removal: .opacity.combined(with: .scale(scale: 0.98, anchor: .top))
+                        insertion: .opacity
+                            .combined(with: .offset(y: -10))
+                            .animation(.spring(response: 0.3, dampingFraction: 0.85)),
+                        removal: .opacity
+                            .animation(.easeOut(duration: 0.15))
                     ))
             }
         }
@@ -187,56 +195,57 @@ struct SegmentationEntryView: View {
     @ViewBuilder
     private var entryHeader: some View {
         HStack(spacing: AppDesign.Spacing.p8) {
-            // Expand/collapse button
+            // Main clickable area - expands/collapses
             Button {
-                withAnimation(.easeOut(duration: 0.2)) {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                     viewModel.expandSegmentation(at: index)
                 }
             } label: {
-                Image(systemName: entry.isExpanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: AppDesign.FontSize.caption, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 12)
+                HStack(spacing: AppDesign.Spacing.p8) {
+                    // Expand/collapse chevron with rotation animation
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: AppDesign.FontSize.caption, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 12)
+                        .rotationEffect(.degrees(entry.isExpanded ? 90 : 0))
+                        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: entry.isExpanded)
+
+                    // Entry name
+                    Text(entry.textPrompt.isEmpty ? "Object \(index + 1)" : entry.textPrompt)
+                        .font(.system(size: AppDesign.FontSize.subheadline, weight: isActive ? .bold : .semibold))
+                        .foregroundStyle(.primary)
+
+                    Spacer()
+
+                    // Status indicator
+                    if entry.isProcessing {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.7)
+                    } else if entry.hasValidMask {
+                        // Thumbnail of selected mask
+                        if let mask = entry.selectedMask {
+                            Image(nsImage: mask)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(width: 24, height: 24)
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                                .transition(.scale.combined(with: .opacity))
+                        }
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: AppDesign.FontSize.caption))
+                            .foregroundStyle(segmentationColor)
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
-            // Clickable entry name - switches to this object
-            Button {
-                withAnimation(.easeOut(duration: 0.2)) {
-                    viewModel.expandSegmentation(at: index)
-                }
-            } label: {
-                Text(entry.textPrompt.isEmpty ? "Object \(index + 1)" : entry.textPrompt)
-                    .font(.system(size: AppDesign.FontSize.subheadline, weight: isActive ? .bold : .semibold))
-                    .foregroundStyle(.primary)
-            }
-            .buttonStyle(.plain)
-
-            Spacer()
-
-            // Status indicator
-            if entry.isProcessing {
-                ProgressView()
-                    .controlSize(.small)
-                    .scaleEffect(0.7)
-            } else if entry.hasValidMask {
-                // Thumbnail of selected mask with neon color border
-                if let mask = entry.selectedMask {
-                    Image(nsImage: mask)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: 24, height: 24)
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                }
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: AppDesign.FontSize.caption))
-                    .foregroundStyle(segmentationColor)
-            }
-
-            // Remove button (only if more than one segmentation)
+            // Remove button (only if more than one segmentation) - separate so it doesn't trigger expand
             if viewModel.segmentations.count > 1 {
                 Button {
-                    withAnimation(.easeOut(duration: 0.2)) {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                         viewModel.removeSegmentation(at: index)
                     }
                 } label: {

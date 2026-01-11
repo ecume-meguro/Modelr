@@ -197,10 +197,108 @@ class VLMServer(BaseModelServer):
 
         return text
 
+    def handle_name(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate a short descriptive project name for an image."""
+        image_path = request.get("imagePath", self.current_image_path)
+
+        if not image_path or not os.path.exists(image_path):
+            return {"success": False, "error": "No image set or image not found"}
+
+        # Prompt designed to get a short, descriptive name suitable for a project
+        name_prompt = (
+            "Give a short descriptive name for this image (2-4 words). "
+            "Focus on the main subject. Be specific but concise. "
+            "Examples: 'Blue Sports Car', 'Golden Retriever Puppy', 'Vintage Coffee Mug'. "
+            "Just output the name, nothing else."
+        )
+
+        try:
+            start_time = time.time()
+
+            # Resize image for faster inference
+            resized_image = self._resize_image_for_inference(image_path)
+
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image"},
+                        {"type": "text", "text": name_prompt}
+                    ]
+                }
+            ]
+
+            formatted_prompt = self.vlm_processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+
+            from mlx_vlm import generate
+
+            result = generate(
+                self.model,
+                self.vlm_processor,
+                formatted_prompt,
+                image=resized_image,
+                max_tokens=15,  # Allow slightly more tokens for descriptive name
+                temperature=0.3,  # Small creativity for better names
+            )
+
+            output = result.text if hasattr(result, 'text') else str(result)
+
+            # Clean up the name
+            name = self._clean_project_name(output)
+
+            inference_time = int((time.time() - start_time) * 1000)
+
+            log_info(f"VLM name: '{output}' -> '{name}' ({inference_time}ms)", self.logger)
+
+            return {
+                "success": True,
+                "description": name,
+                "rawOutput": output,
+                "inferenceTimeMs": inference_time,
+            }
+        except Exception as e:
+            log_error(f"Name generation error: {e}", self.logger)
+            return {"success": False, "error": str(e)}
+
+    def _clean_project_name(self, raw_output: str) -> str:
+        """Clean VLM output to get a suitable project name."""
+        text = raw_output.strip()
+
+        # Remove quotes if present
+        if text.startswith('"') and text.endswith('"'):
+            text = text[1:-1]
+        if text.startswith("'") and text.endswith("'"):
+            text = text[1:-1]
+
+        # Remove common prefixes the model might add
+        prefixes_to_remove = [
+            "the name is ", "name: ", "project name: ", "title: ",
+            "a ", "an ", "the "
+        ]
+        text_lower = text.lower()
+        for prefix in prefixes_to_remove:
+            if text_lower.startswith(prefix):
+                text = text[len(prefix):]
+                text_lower = text.lower()
+
+        # Take first 4 words max
+        words = text.split()
+        if len(words) > 4:
+            text = " ".join(words[:4])
+
+        # Title case and clean
+        text = text.strip().title()
+
+        return text
+
     def handle_custom_command(self, command: str, request: Dict[str, Any]) -> Dict[str, Any]:
         """Handle VLM-specific commands."""
         if command == "describe":
             return self.handle_describe(request)
+        elif command == "name":
+            return self.handle_name(request)
         return {"success": False, "error": f"Unknown command: {command}"}
 
 

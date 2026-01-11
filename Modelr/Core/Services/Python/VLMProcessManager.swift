@@ -31,20 +31,21 @@ class VLMProcessManager {
             return
         }
 
-        let vlmDir = PathManager.vlmProjectDirectory
-        let vlmVenv = PathManager.vlmVenvDirectory
+        // Use unified inference project for all inference scripts (SAM, VLM, T2I)
+        let inferenceProjectDir = PathManager.inferenceProjectDirectory
+        let inferenceVenv = PathManager.inferenceVenvDirectory
         let vlmScript = PathManager.vlmWrapperPath.path
 
         process = Process()
         process?.executableURL = URL(fileURLWithPath: uvPath)
         process?.arguments = [
-            "run", "--project", vlmDir.path, vlmScript,
+            "run", "--project", inferenceProjectDir.path, vlmScript,
             "--server"
         ]
-        process?.currentDirectoryURL = vlmDir
+        process?.currentDirectoryURL = inferenceProjectDir
 
         var env = ProcessInfo.processInfo.environment
-        env["UV_PROJECT_ENVIRONMENT"] = vlmVenv.path
+        env["UV_PROJECT_ENVIRONMENT"] = inferenceVenv.path
         env["UV_PYTHON_INSTALL_DIR"] = PathManager.pythonRuntimesDirectory.path
         env["UV_CACHE_DIR"] = PathManager.uvCacheDirectory.path
         env["UV_PYTHON_PREFERENCE"] = "only-managed"
@@ -344,6 +345,18 @@ class VLMProcessManager {
         }
 
         return description
+    }
+
+    /// Generate a short descriptive project name for an image
+    func generateProjectName(imagePath: String) async throws -> String {
+        let request = VLMRequest(command: "name", imagePath: imagePath)
+        let response = try await sendRequest(request)
+
+        guard response.success, let name = response.description else {
+            throw PythonError.predictionFailed(response.error ?? "Failed to generate project name")
+        }
+
+        return name
     }
 
     /// Send a ping to check if the server is responsive

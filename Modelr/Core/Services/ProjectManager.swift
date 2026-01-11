@@ -144,6 +144,38 @@ class ProjectManager: ObservableObject {
         return try await createProject(from: imageURL, name: imageName)
     }
 
+    /// Create a new text-to-model project (no source image yet)
+    func createTextToModelProject(name: String = "New Text Project") async throws -> Project {
+        let projectId = UUID()
+        let projectDir = PathManager.projectDirectory(for: projectId)
+
+        // Create project directory
+        try PathManager.ensureDirectoryExists(at: projectDir)
+
+        // Create project with text-to-model mode
+        let project = Project(
+            id: projectId,
+            name: name,
+            thumbnailPath: nil,
+            sourceImagePath: nil,  // Will be set after T2I generates an image
+            workflowStep: 1,
+            mode: .textToModel
+        )
+
+        // Save project manifest
+        try saveProject(project)
+
+        // Create initial metadata
+        let metadata = ProjectMetadata(projectId: projectId)
+        try saveMetadata(metadata)
+
+        // Add to list and sort
+        projects.append(project)
+        projects.sort { $0.modifiedAt > $1.modifiedAt }
+
+        return project
+    }
+
     // MARK: - Project Saving
 
     /// Save project manifest to disk
@@ -200,7 +232,8 @@ class ProjectManager: ObservableObject {
             name: "\(original.name) Copy",
             thumbnailPath: original.thumbnailPath,
             sourceImagePath: original.sourceImagePath,
-            workflowStep: original.workflowStep
+            workflowStep: original.workflowStep,
+            mode: original.mode
         )
 
         // Save the new project manifest
@@ -250,6 +283,139 @@ class ProjectManager: ObservableObject {
     /// Check if any projects exist
     var hasProjects: Bool {
         !projects.isEmpty
+    }
+
+    // MARK: - Segmentation Data Persistence
+
+    /// Save segmentation data and masks to project folder
+    func saveSegmentationData(
+        for projectId: UUID,
+        segmentations: [(id: UUID, name: String, textPrompt: String, selectedIndices: [Int], masks: [(image: NSImage, url: URL)])],
+        autoDetectedLabel: String?,
+        mergedMask: NSImage?
+    ) throws {
+        let projectDir = PathManager.projectDirectory(for: projectId)
+        let masksDir = projectDir.appendingPathComponent("masks", isDirectory: true)
+
+        // Ensure masks directory exists
+        try PathManager.ensureDirectoryExists(at: masksDir)
+
+        // Convert and save each segmentation
+        var segmentationDataArray: [SegmentationData] = []
+
+        for seg in segmentations {
+            var maskPaths: [String] = []
+
+            // Save each mask image
+            for (maskIndex, maskData) in seg.masks.enumerated() {
+                let maskFilename = "seg_\(seg.id.uuidString)_mask_\(maskIndex).png"
+                let maskPath = masksDir.appendingPathComponent(maskFilename)
+
+                // Save mask image
+                if let tiffData = maskData.image.tiffRepresentation,
+                   let bitmap = NSBitmapImageRep(data: tiffData),
+                   let pngData = bitmap.representation(using: .png, properties: [:]) {
+                    try pngData.write(to: maskPath)
+                    maskPaths.append("masks/\(maskFilename)")
+                }
+            }
+
+            let segData = SegmentationData(
+                id: seg.id,
+                name: seg.name,
+                textPrompt: seg.textPrompt,
+                selectedMaskIndices: seg.selectedIndices,
+                maskPaths: maskPaths
+            )
+            segmentationDataArray.append(segData)
+        }
+
+        // Save merged mask if provided
+        var mergedMaskPath: String? = nil
+        if let mergedMask = mergedMask {
+            let mergedFilename = "merged_mask.png"
+            let mergedPath = masksDir.appendingPathComponent(mergedFilename)
+            if let tiffData = mergedMask.tiffRepresentation,
+               let bitmap = NSBitmapImageRep(data: tiffData),
+               let pngData = bitmap.representation(using: .png, properties: [:]) {
+                try pngData.write(to: mergedPath)
+                mergedMaskPath = "masks/\(mergedFilename)"
+            }
+        }
+
+        // Update metadata
+        var metadata = loadMetadata(for: projectId) ?? ProjectMetadata(projectId: projectId)
+        metadata.segmentations = segmentationDataArray
+        metadata.autoDetectedLabel = autoDetectedLabel
+        metadata.mergedMaskPath = mergedMaskPath
+        try saveMetadata(metadata)
+
+        print("[ProjectManager] Saved \(segmentationDataArray.count) segmentations for project \(projectId)")
+    }
+
+    /// Load saved segmentation masks from project folder
+    /// Returns nil if no saved segmentation data exists
+    func loadSegmentationData(for projectId: UUID) -> (
+        segmentations: [(id: UUID, name: String, textPrompt: String, selectedIndices: Set<Int>, masks: [(image: NSImage, score: Double, url: URL)])],
+        autoDetectedLabel: String?,
+        mergedMask: NSImage?
+    )? {
+        guard let metadata = loadMetadata(for: projectId),
+              let savedSegmentations = metadata.segmentations,
+              !savedSegmentations.isEmpty else {
+            return nil
+        }
+
+        let projectDir = PathManager.projectDirectory(for: projectId)
+        var restoredSegmentations: [(id: UUID, name: String, textPrompt: String, selectedIndices: Set<Int>, masks: [(image: NSImage, score: Double, url: URL)])] = []
+
+        for segData in savedSegmentations {
+            guard let maskPaths = segData.maskPaths, !maskPaths.isEmpty else { continue }
+
+            var masks: [(image: NSImage, score: Double, url: URL)] = []
+
+            for (index, relativePath) in maskPaths.enumerated() {
+                let fullPath = projectDir.appendingPathComponent(relativePath)
+                if let image = NSImage(contentsOf: fullPath) {
+                    // Assign decreasing scores based on order (first mask is best)
+                    let score = 1.0 - (Double(index) * 0.1)
+                    masks.append((image: image, score: score, url: fullPath))
+                }
+            }
+
+            if !masks.isEmpty {
+                restoredSegmentations.append((
+                    id: segData.id,
+                    name: segData.name,
+                    textPrompt: segData.textPrompt,
+                    selectedIndices: Set(segData.selectedMaskIndices),
+                    masks: masks
+                ))
+            }
+        }
+
+        // Load merged mask
+        var mergedMask: NSImage? = nil
+        if let mergedPath = metadata.mergedMaskPath {
+            let fullPath = projectDir.appendingPathComponent(mergedPath)
+            mergedMask = NSImage(contentsOf: fullPath)
+        }
+
+        guard !restoredSegmentations.isEmpty else { return nil }
+
+        print("[ProjectManager] Loaded \(restoredSegmentations.count) segmentations for project \(projectId)")
+
+        return (
+            segmentations: restoredSegmentations,
+            autoDetectedLabel: metadata.autoDetectedLabel,
+            mergedMask: mergedMask
+        )
+    }
+
+    /// Check if a project has saved segmentation data
+    func hasSegmentationData(for projectId: UUID) -> Bool {
+        guard let metadata = loadMetadata(for: projectId) else { return false }
+        return metadata.hasSegmentationData
     }
 
     // MARK: - Example Images

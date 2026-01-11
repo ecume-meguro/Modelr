@@ -83,8 +83,10 @@ struct PathManager {
         try SecureFileManager.shared.ensureDirectoryExists(at: libScriptsDirectory)
 
         try SecureFileManager.shared.ensureDirectoryExists(at: environmentsDirectory)
-        try SecureFileManager.shared.ensureDirectoryExists(at: samEnvironmentDirectory)
+        try SecureFileManager.shared.ensureDirectoryExists(at: inferenceEnvironmentDirectory)
         try SecureFileManager.shared.ensureDirectoryExists(at: hunyuanEnvironmentDirectory)
+        // Legacy directories (kept for migration)
+        try SecureFileManager.shared.ensureDirectoryExists(at: samEnvironmentDirectory)
         try SecureFileManager.shared.ensureDirectoryExists(at: toolsEnvironmentDirectory)
         try SecureFileManager.shared.ensureDirectoryExists(at: vlmEnvironmentDirectory)
 
@@ -450,8 +452,19 @@ struct PathManager {
     }
 
     /// Per-environment directory for VLM (venv only)
+    /// @deprecated Use inferenceEnvironmentDirectory instead
     static var vlmEnvironmentDirectory: URL {
         environmentsDirectory.appendingPathComponent("vlm", isDirectory: true)
+    }
+
+    /// Unified inference environment directory (SAM + VLM + Tools)
+    static var inferenceEnvironmentDirectory: URL {
+        environmentsDirectory.appendingPathComponent("inference", isDirectory: true)
+    }
+
+    /// Get path for unified inference virtual environment
+    static var inferenceVenvDirectory: URL {
+        inferenceEnvironmentDirectory.appendingPathComponent(AppConstants.venvDirectoryName, isDirectory: true)
     }
 
     /// Legacy venvDirectory (no longer used)
@@ -475,8 +488,19 @@ struct PathManager {
     }
 
     /// Project directory for VLM (scripts + pyproject)
+    /// @deprecated Use inferenceProjectDirectory instead
     static var vlmProjectDirectory: URL {
         libScriptsDirectory.appendingPathComponent("vlm", isDirectory: true)
+    }
+
+    /// Unified inference project directory (SAM + VLM + Tools scripts + pyproject)
+    static var inferenceProjectDirectory: URL {
+        libScriptsDirectory.appendingPathComponent("inference", isDirectory: true)
+    }
+
+    /// Get path for inference pyproject file
+    static var inferencePyprojectPath: URL {
+        inferenceProjectDirectory.appendingPathComponent("pyproject.toml")
     }
 
     /// Back-compat: treat hunyuanDirectory as the *project* dir (where uv runs)
@@ -512,6 +536,11 @@ struct PathManager {
     /// Get path for VLM wrapper script
     static var vlmWrapperPath: URL {
         vlmProjectDirectory.appendingPathComponent(AppConstants.vlmWrapperFileName)
+    }
+
+    /// Get path for T2I wrapper script
+    static var t2iWrapperPath: URL {
+        inferenceProjectDirectory.appendingPathComponent("t2i_wrapper.py")
     }
 
     /// Get path for SAM pyproject file
@@ -781,6 +810,17 @@ struct PathManager {
     /// Check if Hunyuan 2.1 (standard/larger) model is downloaded
     static var isHunyuan21Downloaded: Bool {
         isHunyuanModelDownloaded(variant: "std")
+    }
+
+    /// Check if Stable Diffusion 1.5 model is downloaded (for T2I)
+    static var isT2IModelDownloaded: Bool {
+        // SD 1.5 model ID: stable-diffusion-v1-5/stable-diffusion-v1-5
+        let modelDirName = "models--stable-diffusion-v1-5--stable-diffusion-v1-5"
+        let directHub = modelsHubDirectory
+        let hfHomeStyleHub = modelsHubDirectory.appendingPathComponent("hub", isDirectory: true)
+
+        return checkModelExists(dirName: modelDirName, in: directHub)
+            || checkModelExists(dirName: modelDirName, in: hfHomeStyleHub)
     }
 
     private static func checkModelExists(dirName: String, in parentDir: URL) -> Bool {

@@ -26,9 +26,10 @@ class PythonProcessManager {
             return
         }
 
-        let samProjectDir = PathManager.samProjectDirectory
+        // Use unified inference project for all inference scripts (SAM, VLM, T2I)
+        let inferenceProjectDir = PathManager.inferenceProjectDirectory
         let scriptPath = PathManager.samWrapperPath.path
-        let samVenv = PathManager.samEnvironmentDirectory.appendingPathComponent(AppConstants.venvDirectoryName, isDirectory: true)
+        let inferenceVenv = PathManager.inferenceVenvDirectory
         let outputDir = PathManager.outputsImagesDirectory
 
         let process = Process()
@@ -38,15 +39,15 @@ class PythonProcessManager {
 
         process.executableURL = URL(fileURLWithPath: uvPath)
         process.arguments = [
-            "run", "--project", samProjectDir.path, scriptPath,
+            "run", "--project", inferenceProjectDir.path, scriptPath,
             "--server",
             "--model", selectedModel,
             "--output-dir", outputDir.path
         ]
-        process.currentDirectoryURL = samProjectDir
+        process.currentDirectoryURL = inferenceProjectDir
 
         var env = ProcessInfo.processInfo.environment
-        env["UV_PROJECT_ENVIRONMENT"] = samVenv.path
+        env["UV_PROJECT_ENVIRONMENT"] = inferenceVenv.path
         env["UV_PYTHON_INSTALL_DIR"] = PathManager.pythonRuntimesDirectory.path
         env["UV_CACHE_DIR"] = PathManager.uvCacheDirectory.path
         env["UV_PYTHON_PREFERENCE"] = "only-managed"

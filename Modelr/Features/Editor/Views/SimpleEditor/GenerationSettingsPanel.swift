@@ -159,7 +159,7 @@ struct GenerationSettingsPanel: View {
     @ViewBuilder
     private var advancedSection: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-            // Collapsible header
+            // Collapsible header - entire row is clickable
             Button {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                     showAdvanced.toggle()
@@ -172,22 +172,32 @@ struct GenerationSettingsPanel: View {
 
                     Spacer()
 
-                    Image(systemName: showAdvanced ? "chevron.up" : "chevron.down")
+                    Image(systemName: "chevron.right")
                         .font(.system(size: AppDesign.FontSize.xs, weight: .semibold))
                         .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(showAdvanced ? 90 : 0))
+                        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: showAdvanced)
                 }
-                .padding(.vertical, AppDesign.Spacing.p4)
+                .padding(.vertical, AppDesign.Spacing.p6)
+                .padding(.horizontal, AppDesign.Spacing.p8)
+                .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())  // Makes entire row tappable
             }
             .buttonStyle(.plain)
 
             // Collapsible content
             if showAdvanced {
                 VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
-                    Divider()
-
                     hunyuanSettings
                 }
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .padding(.top, AppDesign.Spacing.p4)
+                .transition(.asymmetric(
+                    insertion: .opacity
+                        .combined(with: .offset(y: -8))
+                        .animation(.spring(response: 0.3, dampingFraction: 0.85)),
+                    removal: .opacity
+                        .animation(.easeOut(duration: 0.15))
+                ))
             }
         }
     }

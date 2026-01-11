@@ -1,131 +1,188 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-// MARK: - Sort Options
+// MARK: - Filter & Sort Options
 
-enum ProjectSortOption: String, CaseIterable {
-    case modifiedDate = "Recently Modified"
-    case createdDate = "Date Created"
-    case name = "Name"
+enum ProjectFilter: String, CaseIterable {
+    case all = "All"
+    case inProgress = "In Progress"
+    case completed = "Completed"
 
     var icon: String {
         switch self {
-        case .modifiedDate: return "clock"
-        case .createdDate: return "calendar"
-        case .name: return "textformat"
+        case .all: return "square.grid.2x2"
+        case .inProgress: return "clock.arrow.circlepath"
+        case .completed: return "checkmark.circle"
         }
     }
 }
 
-// MARK: - Project Browser View
+enum ProjectSort: String, CaseIterable {
+    case recent = "Recent"
+    case name = "Name"
+    case progress = "Progress"
+
+    var icon: String {
+        switch self {
+        case .recent: return "clock"
+        case .name: return "textformat"
+        case .progress: return "chart.bar"
+        }
+    }
+}
 
 /// Main project browser view - shown on app startup
 struct ProjectBrowserView: View {
     @StateObject private var projectManager = ProjectManager.shared
     @StateObject private var preloadManager = PreloadManager.shared
-
-    // UI State
     @State private var showingFileImporter = false
     @State private var isDraggingFile = false
     @State private var hasAppeared = false
 
-    // Search & Sort
+    /// Search & Filter state
     @State private var searchText = ""
-    @State private var sortOption: ProjectSortOption = .modifiedDate
-    @State private var sortAscending = false
+    @State private var selectedFilter: ProjectFilter = .all
+    @State private var selectedSort: ProjectSort = .recent
 
-    // Selection
-    @State private var selectedProjectId: UUID?
-
-    // Delete confirmation
-    @State private var showDeleteConfirmation = false
-    @State private var projectToDelete: Project?
-
-    // Rename
+    /// Rename sheet state
     @State private var showRenameSheet = false
     @State private var projectToRename: Project?
     @State private var renameText = ""
 
-    // Examples cache
+    /// Selection state
+    @State private var selectedProjectIds: Set<UUID> = []
+    @State private var isSelectionMode = false
+    @State private var showDeleteConfirmation = false
+
+    /// Cached example images to avoid recomputing
     @State private var cachedExamples: [(name: String, url: URL)] = []
 
-    // Callback
+    /// New project mode selection
+    @State private var showingModeSelection = false
+
     let onOpenProject: (UUID) -> Void
 
-    // MARK: - Computed Properties
+    /// Check if all filtered projects are selected
+    private var allSelected: Bool {
+        !filteredProjects.isEmpty && filteredProjects.allSatisfy { selectedProjectIds.contains($0.id) }
+    }
+
+    /// Number of selected projects
+    private var selectionCount: Int {
+        selectedProjectIds.count
+    }
+
+    private let columns = [
+        GridItem(.adaptive(minimum: 200, maximum: 260), spacing: 24)
+    ]
+
+    // MARK: - Filtered & Sorted Projects
 
     private var filteredProjects: [Project] {
         var projects = projectManager.projects
 
-        // Filter by search text
+        // Apply search filter
         if !searchText.isEmpty {
-            let query = searchText.lowercased()
-            projects = projects.filter { $0.name.lowercased().contains(query) }
+            projects = projects.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
         }
 
-        // Sort
-        projects.sort { a, b in
-            let result: Bool
-            switch sortOption {
-            case .modifiedDate:
-                result = a.modifiedAt > b.modifiedAt
-            case .createdDate:
-                result = a.createdAt > b.createdAt
-            case .name:
-                result = a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
-            }
-            return sortAscending ? !result : result
+        // Apply status filter
+        switch selectedFilter {
+        case .all:
+            break
+        case .inProgress:
+            projects = projects.filter { $0.workflowStep < 4 }
+        case .completed:
+            projects = projects.filter { $0.workflowStep >= 4 }
+        }
+
+        // Apply sort
+        switch selectedSort {
+        case .recent:
+            projects.sort { $0.modifiedAt > $1.modifiedAt }
+        case .name:
+            projects.sort { $0.name.localizedCompare($1.name) == .orderedAscending }
+        case .progress:
+            projects.sort { $0.workflowStep > $1.workflowStep }
         }
 
         return projects
     }
 
-    private var hasProjects: Bool {
-        !projectManager.projects.isEmpty
+    // MARK: - Stats
+
+    private var completedCount: Int {
+        projectManager.projects.filter { $0.workflowStep >= 4 }.count
     }
 
-    // MARK: - Body
+    private var inProgressCount: Int {
+        projectManager.projects.filter { $0.workflowStep < 4 }.count
+    }
 
     var body: some View {
         ZStack {
+            // Background
             Color(NSColor.windowBackgroundColor)
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
+                // Pinned Header
                 headerSection
-                    .padding(.horizontal, AppDesign.Spacing.p48)
-                    .padding(.top, AppDesign.Spacing.p32)
-                    .padding(.bottom, AppDesign.Spacing.p24)
+                    .padding(.horizontal, 32)
+                    .padding(.top, 24)
+                    .padding(.bottom, 16)
                     .background(Color(NSColor.windowBackgroundColor))
-                
+
                 Divider()
+                    .opacity(0.5)
 
+                // Scrollable Content
                 ScrollView {
-                    VStack(alignment: .leading, spacing: AppDesign.Spacing.p48) {
-                        if preloadManager.isPreloading {
-                            preloadStatusIndicator
-                                .padding(.top, AppDesign.Spacing.p16)
-                        }
-
-                        if hasProjects {
+                    LazyVStack(alignment: .leading, spacing: 24) {
+                        // Projects Section
+                        if !projectManager.projects.isEmpty {
                             projectsSection
                         }
 
+                        // Example Images Section
                         if !cachedExamples.isEmpty {
                             examplesSection
                         }
 
-                        if !hasProjects && cachedExamples.isEmpty && !projectManager.isLoading {
+                        // Empty state
+                        if projectManager.projects.isEmpty && cachedExamples.isEmpty && !projectManager.isLoading {
                             emptyStateView
+                                .frame(maxWidth: .infinity, minHeight: 300)
                         }
-
-                        Spacer(minLength: AppDesign.Spacing.p48)
                     }
-                    .padding(.horizontal, AppDesign.Spacing.p48)
-                    .padding(.top, AppDesign.Spacing.p32)
-                    .padding(.bottom, AppDesign.Spacing.p32)
+                    .padding(.horizontal, 32)
+                    .padding(.top, 20)
+                    .padding(.bottom, 32)
                 }
             }
+
+            // Status Bar Overlay (Top)
+            if preloadManager.isPreloading {
+                VStack {
+                    preloadStatusIndicator
+                        .padding(.top, 16)
+                    Spacer()
+                }
+            }
+
+            // Floating Selection Action Bar (Bottom)
+            VStack {
+                Spacer()
+                if isSelectionMode {
+                    floatingSelectionBar
+                        .padding(.bottom, 24)
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .bottom).combined(with: .opacity),
+                            removal: .move(edge: .bottom).combined(with: .opacity)
+                        ))
+                }
+            }
+            .animation(.spring(response: 0.35, dampingFraction: 0.8), value: isSelectionMode)
 
             // Loading overlay (first load only)
             if projectManager.isLoading && !hasAppeared {
@@ -136,6 +193,35 @@ struct ProjectBrowserView: View {
             if isDraggingFile {
                 dropOverlay
             }
+        }
+        .focusable()
+        .onKeyPress(.escape) {
+            if isSelectionMode {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isSelectionMode = false
+                    selectedProjectIds.removeAll()
+                }
+                return .handled
+            }
+            return .ignored
+        }
+        .onKeyPress(.delete) {
+            if isSelectionMode && selectionCount > 0 {
+                showDeleteConfirmation = true
+                return .handled
+            }
+            return .ignored
+        }
+        .onKeyPress(characters: CharacterSet(charactersIn: "a")) { press in
+            if press.modifiers.contains(.command) && isSelectionMode {
+                if allSelected {
+                    selectedProjectIds.removeAll()
+                } else {
+                    selectedProjectIds = Set(filteredProjects.map { $0.id })
+                }
+                return .handled
+            }
+            return .ignored
         }
         .frame(minWidth: 800, minHeight: 600)
         .onDrop(of: [.image, .fileURL], isTargeted: $isDraggingFile) { providers in
@@ -151,38 +237,37 @@ struct ProjectBrowserView: View {
         .sheet(isPresented: $showRenameSheet) {
             renameSheet
         }
-        .confirmationDialog(
-            "Delete Project",
-            isPresented: $showDeleteConfirmation,
-            presenting: projectToDelete
-        ) { project in
+        .sheet(isPresented: $showingModeSelection) {
+            NewProjectModeSheet(
+                onSelectImageToModel: {
+                    showingModeSelection = false
+                    showingFileImporter = true
+                },
+                onSelectTextToModel: {
+                    showingModeSelection = false
+                    createTextToModelProject()
+                }
+            )
+        }
+        .alert("Delete \(selectionCount) Project\(selectionCount == 1 ? "" : "s")?", isPresented: $showDeleteConfirmation) {
+            Button("Cancel", role: .cancel) { }
             Button("Delete", role: .destructive) {
-                deleteProject(project)
+                deleteSelectedProjects()
             }
-            Button("Cancel", role: .cancel) {}
-        } message: { project in
-            Text("Are you sure you want to delete \"\(project.name)\"? This cannot be undone.")
+        } message: {
+            Text("This action cannot be undone.")
         }
         .task {
+            // Load projects
             await projectManager.loadProjects()
+
+            // Cache examples
             cachedExamples = projectManager.getExampleImages()
+
+            // Start preloading
             preloadManager.startPreloading()
+
             hasAppeared = true
-        }
-        .onKeyPress(.delete) {
-            if let id = selectedProjectId,
-               let project = projectManager.projects.first(where: { $0.id == id }) {
-                confirmDelete(project)
-                return .handled
-            }
-            return .ignored
-        }
-        .onKeyPress(.return) {
-            if let id = selectedProjectId {
-                onOpenProject(id)
-                return .handled
-            }
-            return .ignored
         }
     }
 
@@ -190,465 +275,271 @@ struct ProjectBrowserView: View {
 
     @ViewBuilder
     private var headerSection: some View {
-        VStack(alignment: .leading, spacing: AppDesign.Spacing.p24) {
+        VStack(alignment: .leading, spacing: 12) {
             // Title row
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: AppDesign.Spacing.p4) {
-                    Text("Modelr")
-                        .font(.system(size: 36, weight: .black, design: .default))
-                        .tracking(-1.5)
-                        .foregroundStyle(
-                            LinearGradient(
-                                colors: [.primary, .primary.opacity(0.8)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                    Text("High-Fidelity 3D Generation")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                AppDesign.GlassButton("New Project", icon: "plus") {
-                    showingFileImporter = true
-                }
-            }
-
-            // Search and sort row
-            HStack(spacing: AppDesign.Spacing.p16) {
-                // Search field
-                HStack(spacing: AppDesign.Spacing.p10) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.tertiary)
-                        .font(.system(size: 14, weight: .bold))
-
-                    TextField("Search your projects...", text: $searchText)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 14))
-
-                    if !searchText.isEmpty {
-                        Button {
-                            searchText = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.tertiary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, AppDesign.Spacing.p12)
-                .padding(.vertical, AppDesign.Spacing.p10)
-                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10)
-                        .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
-                }
-                .frame(maxWidth: 320)
-
-                Spacer()
-
-                // Sort controls
-                Menu {
-                    ForEach(ProjectSortOption.allCases, id: \.self) { option in
-                        Button {
-                            if sortOption == option {
-                                sortAscending.toggle()
-                            } else {
-                                sortOption = option
-                                sortAscending = false
-                            }
-                        } label: {
-                            HStack {
-                                Label(option.rawValue, systemImage: option.icon)
-                                if sortOption == option {
-                                    Image(systemName: sortAscending ? "chevron.up" : "chevron.down")
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    HStack(spacing: AppDesign.Spacing.p8) {
-                        Image(systemName: sortOption.icon)
-                        Text(sortOption.rawValue)
-                        Image(systemName: sortAscending ? "chevron.up" : "chevron.down")
-                            .font(.system(size: 10, weight: .bold))
-                    }
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, AppDesign.Spacing.p12)
-                    .padding(.vertical, AppDesign.Spacing.p8)
-                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-                }
-                .menuStyle(.borderlessButton)
-            }
-        }
-    }
-
-    // MARK: - Preload Status
-
-    @ViewBuilder
-    private var preloadStatusIndicator: some View {
-        HStack(spacing: AppDesign.Spacing.p12) {
-            ProgressView()
-                .controlSize(.small)
-            Text(preloadManager.statusDescription)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, AppDesign.Spacing.p16)
-        .padding(.vertical, AppDesign.Spacing.p8)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay {
-            Capsule()
-                .strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5)
-        }
-    }
-
-    // MARK: - Projects Section
-
-    @ViewBuilder
-    private var projectsSection: some View {
-        VStack(alignment: .leading, spacing: AppDesign.Spacing.p24) {
-            HStack(alignment: .firstTextBaseline, spacing: AppDesign.Spacing.p12) {
-                AppDesign.SubheaderText(text: "Recent Projects")
-
-                Text("\(filteredProjects.count)")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundStyle(AppDesign.accent)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .background(AppDesign.accent.opacity(0.1), in: Capsule())
-            }
-
-            if filteredProjects.isEmpty && !searchText.isEmpty {
-                // No search results
-                HStack {
-                    Spacer()
-                    VStack(spacing: AppDesign.Spacing.p16) {
-                        Image(systemName: "doc.text.magnifyingglass")
-                            .font(.system(size: 48, weight: .ultraLight))
-                            .foregroundStyle(.quaternary)
-                        Text("No projects match \"\(searchText)\"")
-                            .font(.system(size: 16, weight: .medium))
+            HStack(alignment: .center) {
+                if isSelectionMode {
+                    // Selection mode header - minimal, since floating bar has the controls
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(Color.accentColor)
+                            .frame(width: 8, height: 8)
+                        Text("Selecting Projects")
+                            .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(.secondary)
                     }
-                    .padding(.vertical, 80)
+
                     Spacer()
+
+                    // Quick exit via header too (accessibility)
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isSelectionMode = false
+                            selectedProjectIds.removeAll()
+                        }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 18))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Exit selection mode (Esc)")
+                } else {
+                    // Normal header
+                    Text("Projects")
+                        .font(.system(size: 24, weight: .semibold))
+
+                    Spacer()
+
+                    // Select button (only show if there are projects)
+                    if !projectManager.projects.isEmpty {
+                        Button {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                isSelectionMode = true
+                            }
+                        } label: {
+                            Label("Select", systemImage: "checkmark.circle")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
+                    Button {
+                        showingModeSelection = true
+                    } label: {
+                        Label("New Project", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
                 }
+            }
+
+            // Search and filter bar
+            if !projectManager.projects.isEmpty {
+                HStack(spacing: 10) {
+                    // Search field
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                        TextField("Search...", text: $searchText)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12))
+                        if !searchText.isEmpty {
+                            Button {
+                                searchText = ""
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+                    .frame(maxWidth: 200)
+
+                    // Filter tabs
+                    filterTabs
+
+                    Spacer()
+
+                    // Sort dropdown
+                    sortMenu
+                }
+            }
+        }
+    }
+
+    // MARK: - Floating Selection Bar
+
+    @ViewBuilder
+    private var floatingSelectionBar: some View {
+        HStack(spacing: 16) {
+            // Selection count
+            Text("\(selectionCount) selected")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.primary)
+
+            Divider()
+                .frame(height: 20)
+
+            // Select All / Deselect All
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    if allSelected {
+                        selectedProjectIds.removeAll()
+                    } else {
+                        selectedProjectIds = Set(filteredProjects.map { $0.id })
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: allSelected ? "checkmark.circle" : "checkmark.circle.fill")
+                        .font(.system(size: 12))
+                    Text(allSelected ? "Deselect All" : "Select All")
+                        .font(.system(size: 12, weight: .medium))
+                }
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+
+            // Delete - only show if something is selected
+            if selectionCount > 0 {
+                Divider()
+                    .frame(height: 20)
+
+                Button {
+                    showDeleteConfirmation = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 12))
+                        Text("Delete")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.red)
+            }
+
+            Divider()
+                .frame(height: 20)
+
+            // Done button
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isSelectionMode = false
+                    selectedProjectIds.removeAll()
+                }
+            } label: {
+                Text("Done")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background {
+            Capsule()
+                .fill(.ultraThickMaterial)
+                .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
+        }
+        .overlay {
+            Capsule()
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+        }
+    }
+
+    // MARK: - Filter Tabs
+
+    @ViewBuilder
+    private var filterTabs: some View {
+        HStack(spacing: 0) {
+            ForEach(ProjectFilter.allCases, id: \.self) { filter in
+                Button {
+                    selectedFilter = filter
+                } label: {
+                    Text(filter.rawValue)
+                        .font(.system(size: 11))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .foregroundStyle(selectedFilter == filter ? .primary : .tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    // MARK: - Sort Menu
+
+    @ViewBuilder
+    private var sortMenu: some View {
+        Menu {
+            ForEach(ProjectSort.allCases, id: \.self) { sort in
+                Button {
+                    selectedSort = sort
+                } label: {
+                    Label(sort.rawValue, systemImage: sort.icon)
+                }
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "arrow.up.arrow.down")
+                    .font(.system(size: 9))
+                Text(selectedSort.rawValue)
+                    .font(.system(size: 11))
+            }
+            .foregroundStyle(.tertiary)
+        }
+        .menuStyle(.borderlessButton)
+    }
+
+    // MARK: - Selection Helpers
+
+    private func toggleSelection(_ id: UUID) {
+        if selectedProjectIds.contains(id) {
+            selectedProjectIds.remove(id)
+        } else {
+            selectedProjectIds.insert(id)
+        }
+    }
+
+    @ViewBuilder
+    private func selectionCheckbox(for id: UUID) -> some View {
+        let isSelected = selectedProjectIds.contains(id)
+        ZStack {
+            // Background circle with animation
+            Circle()
+                .fill(isSelected ? Color.accentColor : Color.black.opacity(0.5))
+                .frame(width: 24, height: 24)
+                .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white)
+                    .transition(.scale.combined(with: .opacity))
             } else {
-                projectGrid
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var projectGrid: some View {
-        LazyVGrid(
-            columns: [GridItem(.adaptive(minimum: 240, maximum: 300), spacing: AppDesign.Spacing.p24)],
-            spacing: AppDesign.Spacing.p24
-        ) {
-            // New Project card
-            NewProjectCard {
-                showingFileImporter = true
-            }
-
-            // Project cards
-            ForEach(filteredProjects) { project in
-                ProjectCard(
-                    project: project,
-                    isSelected: selectedProjectId == project.id,
-                    action: {
-                        onOpenProject(project.id)
-                    },
-                    onDelete: {
-                        confirmDelete(project)
-                    },
-                    onRename: {
-                        startRename(project)
-                    },
-                    onDuplicate: {
-                        duplicateProject(project)
-                    }
-                )
-                .onTapGesture {
-                    selectedProjectId = project.id
-                }
-                .id(project.id)
-            }
-        }
-    }
-
-    // MARK: - Examples Section
-
-    @ViewBuilder
-    private var examplesSection: some View {
-        VStack(alignment: .leading, spacing: AppDesign.Spacing.p24) {
-            VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-                AppDesign.SubheaderText(text: "Ready to Try")
-                Text("Select an example asset to explore capabilities")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-            }
-
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 240, maximum: 300), spacing: AppDesign.Spacing.p24)],
-                spacing: AppDesign.Spacing.p24
-            ) {
-                ForEach(cachedExamples, id: \.name) { example in
-                    ExampleImageCard(name: example.name, url: example.url) {
-                        createProjectFromExample(example.name)
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: - Empty State
-
-    @ViewBuilder
-    private var emptyStateView: some View {
-        VStack(spacing: AppDesign.Spacing.p32) {
-            ZStack {
                 Circle()
-                    .fill(Color.primary.opacity(0.03))
-                    .frame(width: 120, height: 120)
-                Image(systemName: "photo.on.rectangle.angled")
-                    .font(.system(size: 56, weight: .ultraLight))
-                    .foregroundStyle(.quaternary)
-            }
-
-            VStack(spacing: AppDesign.Spacing.p8) {
-                Text("Your Creative Space")
-                    .font(.system(size: 24, weight: .bold))
-                Text("Transform your 2D images into high-quality 3D models.\nDrag an image here to begin your first project.")
-                    .font(.system(size: 15))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(4)
-            }
-
-            AppDesign.GlassButton("Select Image", icon: "photo.badge.plus") {
-                showingFileImporter = true
+                    .strokeBorder(Color.white.opacity(0.9), lineWidth: 2)
+                    .frame(width: 20, height: 20)
             }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 100)
+        .scaleEffect(isSelected ? 1.0 : 0.9)
+        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isSelected)
     }
 
-    // MARK: - Loading Overlay
-
-    @ViewBuilder
-    private var loadingOverlay: some View {
-        ZStack {
-            Color(NSColor.windowBackgroundColor)
-
-            VStack(spacing: AppDesign.Spacing.p24) {
-                ProgressView()
-                    .controlSize(.large)
-                Text("Initializing Library...")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
+    private func deleteSelectedProjects() {
+        for id in selectedProjectIds {
+            try? projectManager.deleteProject(id)
         }
+        selectedProjectIds.removeAll()
+        isSelectionMode = false
     }
-
-    // MARK: - Drop Overlay
-
-    @ViewBuilder
-    private var dropOverlay: some View {
-        ZStack {
-            Color.black.opacity(0.3)
-                .ignoresSafeArea()
-            
-            VStack(spacing: AppDesign.Spacing.p24) {
-                ZStack {
-                    Circle()
-                        .fill(AppDesign.accent)
-                        .frame(width: 80, height: 80)
-                        .shadow(color: AppDesign.accent.opacity(0.5), radius: 20)
-                    
-                    Image(systemName: "arrow.down")
-                        .font(.system(size: 32, weight: .bold))
-                        .foregroundStyle(.white)
-                }
-
-                VStack(spacing: AppDesign.Spacing.p8) {
-                    Text("Drop to Create Project")
-                        .font(.system(size: 24, weight: .bold))
-                        .foregroundStyle(.white)
-                    Text("Supported formats: PNG, JPG, WEBP")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.white.opacity(0.8))
-                }
-            }
-            .padding(AppDesign.Spacing.p64)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 32))
-            .overlay {
-                RoundedRectangle(cornerRadius: 32)
-                    .strokeBorder(Color.white.opacity(0.2), lineWidth: 1)
-            }
-        }
-    }
-
-    // MARK: - Rename Sheet
-
-    @ViewBuilder
-    private var renameSheet: some View {
-        VStack(spacing: AppDesign.Spacing.p24) {
-            VStack(spacing: AppDesign.Spacing.p8) {
-                Text("Rename Project")
-                    .font(.system(size: 18, weight: .bold))
-                Text("Enter a new name for your project")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-            }
-
-            AppDesign.StyledTextField(placeholder: "Project Name", text: $renameText) {
-                performRename()
-            }
-            .frame(width: 320)
-
-            HStack(spacing: AppDesign.Spacing.p12) {
-                AppDesign.GlassButtonSecondary("Cancel") {
-                    cancelRename()
-                }
-                .keyboardShortcut(.escape, modifiers: [])
-
-                AppDesign.GlassButton("Rename") {
-                    performRename()
-                }
-                .keyboardShortcut(.return, modifiers: [])
-                .disabled(renameText.isEmpty)
-            }
-        }
-        .padding(AppDesign.Spacing.p32)
-        .frame(minWidth: 400)
-    }
-
-    // MARK: - Actions
-
-    private func confirmDelete(_ project: Project) {
-        projectToDelete = project
-        showDeleteConfirmation = true
-    }
-
-    private func deleteProject(_ project: Project) {
-        withAnimation(.easeOut(duration: 0.2)) {
-            try? projectManager.deleteProject(project.id)
-        }
-        if selectedProjectId == project.id {
-            selectedProjectId = nil
-        }
-        projectToDelete = nil
-    }
-
-    private func startRename(_ project: Project) {
-        projectToRename = project
-        renameText = project.name
-        showRenameSheet = true
-    }
-
-    private func performRename() {
-        if let project = projectToRename, !renameText.isEmpty {
-            try? projectManager.renameProject(project.id, to: renameText)
-        }
-        cancelRename()
-    }
-
-    private func cancelRename() {
-        showRenameSheet = false
-        projectToRename = nil
-        renameText = ""
-    }
-
-    private func duplicateProject(_ project: Project) {
-        Task {
-            do {
-                _ = try await projectManager.duplicateProject(project.id)
-            } catch {
-                print("[ProjectBrowser] Failed to duplicate: \(error)")
-            }
-        }
-    }
-
-    private func createProjectFromExample(_ name: String) {
-        Task {
-            do {
-                let project = try await projectManager.createProjectFromExample(imageName: name)
-                onOpenProject(project.id)
-            } catch {
-                print("[ProjectBrowser] Failed to create project from example: \(error)")
-            }
-        }
-    }
-
-    // MARK: - Drop Handling
-
-    private func handleDrop(providers: [NSItemProvider]) -> Bool {
-        guard let provider = providers.first else { return false }
-
-        if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
-            provider.loadItem(forTypeIdentifier: UTType.image.identifier, options: nil) { item, error in
-                if let url = item as? URL {
-                    createProjectFromURL(url)
-                } else if let data = item as? Data, let image = NSImage(data: data) {
-                    createProjectFromImage(image)
-                }
-            }
-            return true
-        } else if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
-                if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
-                    createProjectFromURL(url)
-                }
-            }
-            return true
-        }
-        return false
-    }
-
-    private func handleFileImport(_ result: Result<[URL], Error>) {
-        switch result {
-        case .success(let urls):
-            if let url = urls.first {
-                createProjectFromURL(url)
-            }
-        case .failure(let error):
-            print("[ProjectBrowser] File import failed: \(error)")
-        }
-    }
-
-    private func createProjectFromURL(_ url: URL) {
-        Task { @MainActor in
-            do {
-                let project = try await projectManager.createProject(from: url)
-                onOpenProject(project.id)
-            } catch {
-                print("[ProjectBrowser] Failed to create project: \(error)")
-            }
-        }
-    }
-
-    private func createProjectFromImage(_ image: NSImage) {
-        Task { @MainActor in
-            do {
-                let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".png")
-                guard let tiffData = image.tiffRepresentation,
-                      let bitmap = NSBitmapImageRep(data: tiffData),
-                      let pngData = bitmap.representation(using: .png, properties: [:]) else { return }
-                try pngData.write(to: tempURL)
-
-                let project = try await projectManager.createProject(from: tempURL, name: "Dropped Image")
-                try? FileManager.default.removeItem(at: tempURL)
-                onOpenProject(project.id)
-            } catch {
-                print("[ProjectBrowser] Failed to create project from dropped image: \(error)")
-            }
-        }
-    }
-}
 
     // MARK: - Preload Status
 
@@ -658,88 +549,87 @@ struct ProjectBrowserView: View {
             ProgressView()
                 .controlSize(.small)
             Text(preloadManager.statusDescription)
-                .font(.system(size: 12))
+                .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(.ultraThinMaterial, in: Capsule())
+        .overlay {
+            Capsule()
+                .strokeBorder(Color.white.opacity(0.1), lineWidth: 0.5)
+        }
     }
 
     // MARK: - Projects Section
 
     @ViewBuilder
     private var projectsSection: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Recent Projects")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-                    .tracking(0.5)
-
-                Text("\(filteredProjects.count)")
-                    .font(.system(size: 12, weight: .medium))
+        VStack(alignment: .leading, spacing: 12) {
+            // Section header - minimal
+            if filteredProjects.isEmpty && (!searchText.isEmpty || selectedFilter != .all) {
+                Text("No matching projects")
+                    .font(.system(size: 12))
                     .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .background(Color.primary.opacity(0.06), in: Capsule())
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 40)
             }
 
-            if filteredProjects.isEmpty && !searchText.isEmpty {
-                // No search results
-                HStack {
-                    Spacer()
-                    VStack(spacing: 12) {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 36, weight: .light))
-                            .foregroundStyle(.quaternary)
-                        Text("No projects match \"\(searchText)\"")
-                            .font(.system(size: 14))
-                            .foregroundStyle(.secondary)
+            if !filteredProjects.isEmpty {
+                LazyVGrid(columns: columns, spacing: 16) {
+                    ForEach(filteredProjects) { project in
+                        let isSelected = selectedProjectIds.contains(project.id)
+                        ZStack(alignment: .topLeading) {
+                            ProjectCard(
+                                project: project,
+                                action: {
+                                    if isSelectionMode {
+                                        withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
+                                            toggleSelection(project.id)
+                                        }
+                                    } else {
+                                        onOpenProject(project.id)
+                                    }
+                                }
+                            )
+                            .overlay {
+                                if isSelectionMode {
+                                    // Selection overlay with gradient border for selected items
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .strokeBorder(
+                                                isSelected ? Color.accentColor : Color.white.opacity(0.15),
+                                                lineWidth: isSelected ? 2.5 : 1
+                                            )
+
+                                        // Subtle highlight overlay when selected
+                                        if isSelected {
+                                            RoundedRectangle(cornerRadius: 8)
+                                                .fill(Color.accentColor.opacity(0.08))
+                                        }
+                                    }
+                                    .allowsHitTesting(false)  // Don't block taps on the card
+                                }
+                            }
+                            .scaleEffect(isSelectionMode && isSelected ? 0.98 : 1.0)
+                            .animation(.spring(response: 0.2, dampingFraction: 0.8), value: isSelected)
+
+                            // Selection checkbox - positioned on top but allows tap to pass through to card
+                            if isSelectionMode {
+                                selectionCheckbox(for: project.id)
+                                    .padding(8)
+                                    .allowsHitTesting(false)  // Tap passes through to ProjectCard button
+                                    .transition(.scale.combined(with: .opacity))
+                            }
+                        }
+                        .animation(.easeInOut(duration: 0.2), value: isSelectionMode)
+                        .contextMenu {
+                            if !isSelectionMode {
+                                projectContextMenu(for: project)
+                            }
+                        }
                     }
-                    .padding(.vertical, 60)
-                    Spacer()
                 }
-            } else {
-                projectGrid
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var projectGrid: some View {
-        LazyVGrid(
-            columns: [GridItem(.adaptive(minimum: 200, maximum: 260), spacing: 20)],
-            spacing: 20
-        ) {
-            // New Project card
-            NewProjectCard {
-                showingFileImporter = true
-            }
-
-            // Project cards
-            ForEach(filteredProjects) { project in
-                ProjectCard(
-                    project: project,
-                    isSelected: selectedProjectId == project.id,
-                    action: {
-                        onOpenProject(project.id)
-                    },
-                    onDelete: {
-                        confirmDelete(project)
-                    },
-                    onRename: {
-                        startRename(project)
-                    },
-                    onDuplicate: {
-                        duplicateProject(project)
-                    }
-                )
-                .onTapGesture {
-                    selectedProjectId = project.id
-                }
-                .id(project.id)
             }
         }
     }
@@ -748,25 +638,22 @@ struct ProjectBrowserView: View {
 
     @ViewBuilder
     private var examplesSection: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Examples")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-                    .tracking(0.5)
-                Text("Click an example to create a new project")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.tertiary)
-            }
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Examples")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.tertiary)
 
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 200, maximum: 260), spacing: 20)],
-                spacing: 20
-            ) {
+            LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(cachedExamples, id: \.name) { example in
                     ExampleImageCard(name: example.name, url: example.url) {
-                        createProjectFromExample(example.name)
+                        Task {
+                            do {
+                                let project = try await projectManager.createProjectFromExample(imageName: example.name)
+                                onOpenProject(project.id)
+                            } catch {
+                                print("[ProjectBrowser] Failed to create project from example: \(error)")
+                            }
+                        }
                     }
                 }
             }
@@ -778,29 +665,30 @@ struct ProjectBrowserView: View {
     @ViewBuilder
     private var emptyStateView: some View {
         VStack(spacing: 24) {
-            Image(systemName: "photo.stack")
-                .font(.system(size: 64, weight: .ultraLight))
-                .foregroundStyle(.quaternary)
-
+            Image(systemName: "photo.on.rectangle.angled")
+                .font(.system(size: 64))
+                .foregroundStyle(.tertiary)
+            
             VStack(spacing: 8) {
                 Text("No Projects Yet")
-                    .font(.system(size: 20, weight: .semibold))
-                Text("Drop an image here or click 'New Project' to get started")
-                    .font(.system(size: 14))
+                    .font(.title2.bold())
+                Text("Create a new project or drop an image to get started.")
+                    .font(.body)
                     .foregroundStyle(.secondary)
             }
 
             Button {
                 showingFileImporter = true
             } label: {
-                Label("Select Image", systemImage: "photo")
-                    .font(.system(size: 14, weight: .medium))
+                Text("Create New Project")
+                    .padding(.horizontal, 12)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.borderedProminent)
             .controlSize(.large)
+            .padding(.top, 8)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 80)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.vertical, 64)
     }
 
     // MARK: - Loading Overlay
@@ -813,8 +701,7 @@ struct ProjectBrowserView: View {
             VStack(spacing: 16) {
                 ProgressView()
                     .controlSize(.large)
-                Text("Loading projects...")
-                    .font(.system(size: 14))
+                Text("Loading...")
                     .foregroundStyle(.secondary)
             }
         }
@@ -826,113 +713,61 @@ struct ProjectBrowserView: View {
     private var dropOverlay: some View {
         ZStack {
             Color.black.opacity(0.4)
+                .background(.ultraThinMaterial)
                 .ignoresSafeArea()
 
-            VStack(spacing: 20) {
-                Image(systemName: "arrow.down.doc.fill")
-                    .font(.system(size: 64, weight: .light))
+            VStack(spacing: 24) {
+                Image(systemName: "plus.circle.fill")
+                    .font(.system(size: 64))
                     .foregroundStyle(.white)
 
-                Text("Drop Image to Create Project")
-                    .font(.system(size: 22, weight: .semibold))
+                Text("Drop to Create Project")
+                    .font(.title.bold())
                     .foregroundStyle(.white)
-            }
-            .padding(48)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
-            .overlay {
-                RoundedRectangle(cornerRadius: 20)
-                    .strokeBorder(Color.white.opacity(0.2), lineWidth: 1)
             }
         }
     }
 
-    // MARK: - Rename Sheet
+    // MARK: - Context Menu
 
     @ViewBuilder
-    private var renameSheet: some View {
-        VStack(spacing: 16) {
-            Text("Rename Project")
-                .font(.system(size: 16, weight: .semibold))
+    private func projectContextMenu(for project: Project) -> some View {
+        Button {
+            onOpenProject(project.id)
+        } label: {
+            Label("Open", systemImage: "folder")
+        }
 
-            TextField("Project Name", text: $renameText)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 280)
-                .onSubmit {
-                    performRename()
+        Divider()
+
+        Button {
+            projectToRename = project
+            renameText = project.name
+            showRenameSheet = true
+        } label: {
+            Label("Rename", systemImage: "pencil")
+        }
+
+        Button {
+            Task {
+                do {
+                    _ = try await projectManager.duplicateProject(project.id)
+                } catch {
+                    print("[ProjectBrowser] Failed to duplicate: \(error)")
                 }
-
-            HStack(spacing: 12) {
-                Button("Cancel") {
-                    cancelRename()
-                }
-                .keyboardShortcut(.escape, modifiers: [])
-
-                Button("Rename") {
-                    performRename()
-                }
-                .keyboardShortcut(.return, modifiers: [])
-                .buttonStyle(.borderedProminent)
-                .disabled(renameText.isEmpty)
             }
+        } label: {
+            Label("Duplicate", systemImage: "doc.on.doc")
         }
-        .padding(24)
-        .frame(minWidth: 320)
-    }
 
-    // MARK: - Actions
+        Divider()
 
-    private func confirmDelete(_ project: Project) {
-        projectToDelete = project
-        showDeleteConfirmation = true
-    }
-
-    private func deleteProject(_ project: Project) {
-        withAnimation(.easeOut(duration: 0.2)) {
-            try? projectManager.deleteProject(project.id)
-        }
-        if selectedProjectId == project.id {
-            selectedProjectId = nil
-        }
-        projectToDelete = nil
-    }
-
-    private func startRename(_ project: Project) {
-        projectToRename = project
-        renameText = project.name
-        showRenameSheet = true
-    }
-
-    private func performRename() {
-        if let project = projectToRename, !renameText.isEmpty {
-            try? projectManager.renameProject(project.id, to: renameText)
-        }
-        cancelRename()
-    }
-
-    private func cancelRename() {
-        showRenameSheet = false
-        projectToRename = nil
-        renameText = ""
-    }
-
-    private func duplicateProject(_ project: Project) {
-        Task {
-            do {
-                _ = try await projectManager.duplicateProject(project.id)
-            } catch {
-                print("[ProjectBrowser] Failed to duplicate: \(error)")
+        Button(role: .destructive) {
+            withAnimation(.spring(response: 0.2, dampingFraction: 0.8)) {
+                try? projectManager.deleteProject(project.id)
             }
-        }
-    }
-
-    private func createProjectFromExample(_ name: String) {
-        Task {
-            do {
-                let project = try await projectManager.createProjectFromExample(imageName: name)
-                onOpenProject(project.id)
-            } catch {
-                print("[ProjectBrowser] Failed to create project from example: \(error)")
-            }
+        } label: {
+            Label("Delete", systemImage: "trash")
         }
     }
 
@@ -999,5 +834,228 @@ struct ProjectBrowserView: View {
                 print("[ProjectBrowser] Failed to create project from dropped image: \(error)")
             }
         }
+    }
+
+    private func createTextToModelProject() {
+        Task { @MainActor in
+            do {
+                let project = try await projectManager.createTextToModelProject()
+                onOpenProject(project.id)
+            } catch {
+                print("[ProjectBrowser] Failed to create text-to-model project: \(error)")
+            }
+        }
+    }
+
+    // MARK: - Rename Sheet
+
+    @ViewBuilder
+    private var renameSheet: some View {
+        VStack(spacing: 20) {
+            Text("Rename Project")
+                .font(.headline)
+            
+            TextField("Project Name", text: $renameText)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 250)
+                .onSubmit {
+                    if !renameText.isEmpty {
+                        if let project = projectToRename {
+                            try? projectManager.renameProject(project.id, to: renameText)
+                        }
+                        showRenameSheet = false
+                    }
+                }
+
+            HStack(spacing: 12) {
+                Button("Cancel") {
+                    showRenameSheet = false
+                    projectToRename = nil
+                    renameText = ""
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Button("Rename") {
+                    if let project = projectToRename, !renameText.isEmpty {
+                        try? projectManager.renameProject(project.id, to: renameText)
+                    }
+                    showRenameSheet = false
+                    projectToRename = nil
+                    renameText = ""
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(renameText.isEmpty)
+            }
+        }
+        .padding(24)
+    }
+}
+
+// MARK: - Example Image Card
+
+struct ExampleImageCard: View {
+    let name: String
+    let url: URL
+    let action: () -> Void
+
+    @State private var isHovered = false
+    @State private var loadedImage: NSImage?
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 8) {
+                // Thumbnail
+                thumbnailView
+                    .frame(height: 120)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                    }
+
+                // Info
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(name)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    Text("Sample")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(8)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isHovered ? Color.primary.opacity(0.03) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .task {
+            loadedImage = await ThumbnailCache.shared.exampleImage(named: name, url: url)
+        }
+    }
+
+    @ViewBuilder
+    private var thumbnailView: some View {
+        ZStack {
+            Color(NSColor.controlBackgroundColor)
+            if let image = loadedImage {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                ProgressView().controlSize(.small)
+            }
+        }
+    }
+}
+
+// MARK: - New Project Mode Sheet
+
+struct NewProjectModeSheet: View {
+    let onSelectImageToModel: () -> Void
+    let onSelectTextToModel: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var hoveredMode: ProjectMode?
+
+    var body: some View {
+        VStack(spacing: 24) {
+            // Header
+            VStack(spacing: 8) {
+                Text("Create New Project")
+                    .font(.system(size: 20, weight: .semibold))
+                Text("Choose how you want to create your 3D model")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 8)
+
+            // Mode options
+            HStack(spacing: 16) {
+                ForEach(ProjectMode.allCases, id: \.self) { mode in
+                    ModeOptionCard(
+                        mode: mode,
+                        isHovered: hoveredMode == mode,
+                        onSelect: {
+                            switch mode {
+                            case .imageToModel:
+                                onSelectImageToModel()
+                            case .textToModel:
+                                onSelectTextToModel()
+                            }
+                        }
+                    )
+                    .onHover { hovering in
+                        hoveredMode = hovering ? mode : nil
+                    }
+                }
+            }
+
+            // Cancel button
+            Button("Cancel") {
+                dismiss()
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(.top, 4)
+        }
+        .padding(32)
+        .frame(width: 480)
+    }
+}
+
+struct ModeOptionCard: View {
+    let mode: ProjectMode
+    let isHovered: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            VStack(spacing: 16) {
+                // Icon
+                ZStack {
+                    Circle()
+                        .fill(isHovered ? Color.accentColor : Color.secondary.opacity(0.15))
+                        .frame(width: 56, height: 56)
+
+                    Image(systemName: mode.icon)
+                        .font(.system(size: 24))
+                        .foregroundStyle(isHovered ? .white : .primary)
+                }
+
+                // Text
+                VStack(spacing: 4) {
+                    Text(mode.displayName)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.primary)
+
+                    Text(mode.description)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(width: 180, height: 160)
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(isHovered ? Color.accentColor.opacity(0.1) : Color.primary.opacity(0.03))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(isHovered ? Color.accentColor : Color.primary.opacity(0.1), lineWidth: isHovered ? 2 : 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .animation(.easeInOut(duration: 0.15), value: isHovered)
     }
 }
