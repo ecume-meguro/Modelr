@@ -128,17 +128,17 @@ struct ProjectBrowserView: View {
             VStack(spacing: 0) {
                 // Pinned Header
                 headerSection
-                    .padding(.horizontal, 32)
-                    .padding(.top, 24)
-                    .padding(.bottom, 16)
+                    .padding(.horizontal, AppDesign.Spacing.p32)
+                    .padding(.top, AppDesign.Spacing.p24)
+                    .padding(.bottom, AppDesign.Spacing.p16)
                     .background(Color(NSColor.windowBackgroundColor))
 
                 Divider()
-                    .opacity(0.5)
+                    .opacity(AppDesign.Opacity.high)
 
                 // Scrollable Content
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 24) {
+                    LazyVStack(alignment: .leading, spacing: AppDesign.Spacing.p24) {
                         // Projects Section
                         if !projectManager.projects.isEmpty {
                             projectsSection
@@ -155,9 +155,9 @@ struct ProjectBrowserView: View {
                                 .frame(maxWidth: .infinity, minHeight: 300)
                         }
                     }
-                    .padding(.horizontal, 32)
-                    .padding(.top, 20)
-                    .padding(.bottom, 32)
+                    .padding(.horizontal, AppDesign.Spacing.p32)
+                    .padding(.top, AppDesign.Spacing.p16)
+                    .padding(.bottom, AppDesign.Spacing.p32)
                 }
             }
 
@@ -165,7 +165,7 @@ struct ProjectBrowserView: View {
             if preloadManager.isPreloading {
                 VStack {
                     preloadStatusIndicator
-                        .padding(.top, 16)
+                        .padding(.top, AppDesign.Spacing.p16)
                     Spacer()
                 }
             }
@@ -175,7 +175,7 @@ struct ProjectBrowserView: View {
                 Spacer()
                 if isSelectionMode {
                     floatingSelectionBar
-                        .padding(.bottom, 24)
+                        .padding(.bottom, AppDesign.Spacing.p24)
                         .transition(.asymmetric(
                             insertion: .move(edge: .bottom).combined(with: .opacity),
                             removal: .move(edge: .bottom).combined(with: .opacity)
@@ -195,6 +195,7 @@ struct ProjectBrowserView: View {
             }
         }
         .focusable()
+        .focusEffectDisabled()
         .onKeyPress(.escape) {
             if isSelectionMode {
                 withAnimation(.easeInOut(duration: 0.2)) {
@@ -263,17 +264,17 @@ struct ProjectBrowserView: View {
 
     @ViewBuilder
     private var headerSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
             // Title row
-            HStack(alignment: .center) {
+            HStack(alignment: .center, spacing: AppDesign.Spacing.p12) {
                 if isSelectionMode {
                     // Selection mode header - minimal, since floating bar has the controls
-                    HStack(spacing: 8) {
+                    HStack(spacing: AppDesign.Spacing.p8) {
                         Circle()
                             .fill(Color.accentColor)
-                            .frame(width: 8, height: 8)
+                            .frame(width: AppDesign.Spacing.p8, height: AppDesign.Spacing.p8)
                         Text("Selecting Projects")
-                            .font(.system(size: 14, weight: .medium))
+                            .font(.system(size: AppDesign.FontSize.headline, weight: .medium))
                             .foregroundStyle(.secondary)
                     }
 
@@ -287,15 +288,20 @@ struct ProjectBrowserView: View {
                         }
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 18))
+                            .font(.system(size: AppDesign.FontSize.title3))
                             .foregroundStyle(.tertiary)
                     }
                     .buttonStyle(.plain)
                     .help("Exit selection mode (Esc)")
                 } else {
-                    // Normal header
-                    Text("Projects")
-                        .font(.system(size: 24, weight: .semibold))
+                    // Normal header - App branding
+                    HStack(spacing: AppDesign.Spacing.p8) {
+                        Image(systemName: "cube.fill")
+                            .font(.system(size: AppDesign.FontSize.title3))
+                            .foregroundStyle(AppDesign.accent)
+                        Text("Modelr")
+                            .font(.system(size: AppDesign.FontSize.title2, weight: .semibold, design: .rounded))
+                    }
 
                     Spacer()
 
@@ -323,29 +329,29 @@ struct ProjectBrowserView: View {
 
             // Search and filter bar
             if !projectManager.projects.isEmpty {
-                HStack(spacing: 10) {
+                HStack(spacing: AppDesign.Spacing.p10) {
                     // Search field
-                    HStack(spacing: 6) {
+                    HStack(spacing: AppDesign.Spacing.p6) {
                         Image(systemName: "magnifyingglass")
-                            .font(.system(size: 11))
+                            .font(.system(size: AppDesign.FontSize.subheadline))
                             .foregroundStyle(.tertiary)
                         TextField("Search...", text: $searchText)
                             .textFieldStyle(.plain)
-                            .font(.system(size: 12))
+                            .font(.system(size: AppDesign.FontSize.body))
                         if !searchText.isEmpty {
                             Button {
                                 searchText = ""
                             } label: {
                                 Image(systemName: "xmark.circle.fill")
-                                    .font(.system(size: 10))
+                                    .font(.system(size: AppDesign.FontSize.caption))
                                     .foregroundStyle(.tertiary)
                             }
                             .buttonStyle(.plain)
                         }
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+                    .padding(.horizontal, AppDesign.Spacing.p8)
+                    .padding(.vertical, AppDesign.Spacing.p6)
+                    .background(Color.primary.opacity(AppDesign.Opacity.light), in: RoundedRectangle(cornerRadius: AppDesign.Size.cornerRadiusSmall))
                     .frame(maxWidth: 200)
 
                     // Filter tabs
@@ -364,14 +370,14 @@ struct ProjectBrowserView: View {
 
     @ViewBuilder
     private var floatingSelectionBar: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: AppDesign.Spacing.p16) {
             // Selection count
             Text("\(selectionCount) selected")
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: AppDesign.FontSize.body, weight: .medium))
                 .foregroundStyle(.primary)
 
             Divider()
-                .frame(height: 20)
+                .frame(height: AppDesign.Spacing.p16)
 
             // Select All / Deselect All
             Button {
@@ -383,11 +389,11 @@ struct ProjectBrowserView: View {
                     }
                 }
             } label: {
-                HStack(spacing: 4) {
+                HStack(spacing: AppDesign.Spacing.p4) {
                     Image(systemName: allSelected ? "checkmark.circle" : "checkmark.circle.fill")
-                        .font(.system(size: 12))
+                        .font(.system(size: AppDesign.FontSize.body))
                     Text(allSelected ? "Deselect All" : "Select All")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: AppDesign.FontSize.body, weight: .medium))
                 }
             }
             .buttonStyle(.plain)
@@ -396,16 +402,16 @@ struct ProjectBrowserView: View {
             // Delete - only show if something is selected
             if selectionCount > 0 {
                 Divider()
-                    .frame(height: 20)
+                    .frame(height: AppDesign.Spacing.p16)
 
                 Button {
                     showDeleteConfirmation = true
                 } label: {
-                    HStack(spacing: 4) {
+                    HStack(spacing: AppDesign.Spacing.p4) {
                         Image(systemName: "trash")
-                            .font(.system(size: 12))
+                            .font(.system(size: AppDesign.FontSize.body))
                         Text("Delete")
-                            .font(.system(size: 12, weight: .medium))
+                            .font(.system(size: AppDesign.FontSize.body, weight: .medium))
                     }
                 }
                 .buttonStyle(.plain)
@@ -413,7 +419,7 @@ struct ProjectBrowserView: View {
             }
 
             Divider()
-                .frame(height: 20)
+                .frame(height: AppDesign.Spacing.p16)
 
             // Done button
             Button {
@@ -423,21 +429,21 @@ struct ProjectBrowserView: View {
                 }
             } label: {
                 Text("Done")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: AppDesign.FontSize.body, weight: .semibold))
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
+        .padding(.horizontal, AppDesign.Spacing.p16)
+        .padding(.vertical, AppDesign.Spacing.p12)
         .background {
             Capsule()
                 .fill(.ultraThickMaterial)
-                .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
+                .shadow(color: .black.opacity(AppDesign.Opacity.semi), radius: 12, y: 4)
         }
         .overlay {
             Capsule()
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+                .strokeBorder(Color.primary.opacity(AppDesign.Opacity.soft), lineWidth: 0.5)
         }
     }
 
@@ -451,15 +457,15 @@ struct ProjectBrowserView: View {
                     selectedFilter = filter
                 } label: {
                     Text(filter.rawValue)
-                        .font(.system(size: 11))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
+                        .font(.system(size: AppDesign.FontSize.subheadline))
+                        .padding(.horizontal, AppDesign.Spacing.p10)
+                        .padding(.vertical, AppDesign.Spacing.p6)
                         .foregroundStyle(selectedFilter == filter ? .primary : .tertiary)
                 }
                 .buttonStyle(.plain)
             }
         }
-        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.primary.opacity(AppDesign.Opacity.subtle), in: RoundedRectangle(cornerRadius: AppDesign.Size.cornerRadiusSmall))
     }
 
     // MARK: - Sort Menu
@@ -475,11 +481,11 @@ struct ProjectBrowserView: View {
                 }
             }
         } label: {
-            HStack(spacing: 3) {
+            HStack(spacing: AppDesign.Spacing.p4) {
                 Image(systemName: "arrow.up.arrow.down")
-                    .font(.system(size: 9))
+                    .font(.system(size: AppDesign.FontSize.xs))
                 Text(selectedSort.rawValue)
-                    .font(.system(size: 11))
+                    .font(.system(size: AppDesign.FontSize.subheadline))
             }
             .foregroundStyle(.tertiary)
         }
@@ -502,19 +508,19 @@ struct ProjectBrowserView: View {
         ZStack {
             // Background circle with animation
             Circle()
-                .fill(isSelected ? Color.accentColor : Color.black.opacity(0.5))
-                .frame(width: 24, height: 24)
-                .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+                .fill(isSelected ? Color.accentColor : Color.black.opacity(AppDesign.Opacity.high))
+                .frame(width: AppDesign.Size.stepCircle, height: AppDesign.Size.stepCircle)
+                .shadow(color: .black.opacity(AppDesign.Opacity.moderate), radius: 2, y: 1)
 
             if isSelected {
                 Image(systemName: "checkmark")
-                    .font(.system(size: 12, weight: .bold))
+                    .font(.system(size: AppDesign.FontSize.body, weight: .bold))
                     .foregroundStyle(.white)
                     .transition(.scale.combined(with: .opacity))
             } else {
                 Circle()
                     .strokeBorder(Color.white.opacity(0.9), lineWidth: 2)
-                    .frame(width: 20, height: 20)
+                    .frame(width: AppDesign.Spacing.p16, height: AppDesign.Spacing.p16)
             }
         }
         .scaleEffect(isSelected ? 1.0 : 0.9)

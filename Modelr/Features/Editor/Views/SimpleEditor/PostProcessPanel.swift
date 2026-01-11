@@ -442,7 +442,7 @@ struct PostProcessPanel: View {
                     .font(.system(size: AppDesign.FontSize.subheadline, weight: .semibold))
             }
 
-            Text("We found \(viewModel.meshComponents.count) objects in your model. Some may be unintended artifacts from the generation process. Use the isolate button to inspect individual meshes in the 3D viewer.")
+            Text("We found \(viewModel.meshComponents.count) objects in your model. Items in red are marked for deletion—click an item to change its status. Use the sidebar to isolate and view objects.")
                 .font(.system(size: AppDesign.FontSize.caption))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

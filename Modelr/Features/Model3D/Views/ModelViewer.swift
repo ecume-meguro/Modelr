@@ -10,6 +10,7 @@ import SceneKit.ModelIO
 struct ModelViewer: NSViewRepresentable {
     let modelURL: URL?
     var viewMode: SimpleEditorViewModel.ViewMode = .shaded
+    var customColor: NSColor? = nil
 
     func makeNSView(context: Context) -> SCNView {
         let scnView = SCNView()
@@ -34,23 +35,26 @@ struct ModelViewer: NSViewRepresentable {
 
         // 4. Load Model
         if let url = modelURL {
-            context.coordinator.loadModel(url: url, into: scene, view: scnView, viewMode: viewMode)
+            context.coordinator.loadModel(url: url, into: scene, view: scnView, viewMode: viewMode, customColor: customColor)
         }
 
         return scnView
     }
 
     func updateNSView(_ scnView: SCNView, context: Context) {
-        // Update view mode
-        context.coordinator.applyViewMode(viewMode, to: scnView)
+        // Update view mode and custom color
+        context.coordinator.applyViewMode(viewMode, customColor: customColor, to: scnView)
 
         if let url = modelURL, context.coordinator.currentModelURL != url {
             if let scene = scnView.scene {
                 // Remove old model
                 scene.rootNode.childNode(withName: "loadedModel", recursively: true)?.removeFromParentNode()
                 // Load new
-                context.coordinator.loadModel(url: url, into: scene, view: scnView, viewMode: viewMode)
+                context.coordinator.loadModel(url: url, into: scene, view: scnView, viewMode: viewMode, customColor: customColor)
             }
+        } else if context.coordinator.currentCustomColor != customColor {
+            // Color changed, update materials
+            context.coordinator.applyViewMode(viewMode, customColor: customColor, to: scnView)
         }
     }
 
@@ -133,10 +137,12 @@ struct ModelViewer: NSViewRepresentable {
     class Coordinator {
         var currentModelURL: URL?
         var currentViewMode: SimpleEditorViewModel.ViewMode = .shaded
+        var currentCustomColor: NSColor? = nil
 
-        func loadModel(url: URL, into scene: SCNScene, view: SCNView, viewMode: SimpleEditorViewModel.ViewMode) {
+        func loadModel(url: URL, into scene: SCNScene, view: SCNView, viewMode: SimpleEditorViewModel.ViewMode, customColor: NSColor? = nil) {
             currentModelURL = url
             currentViewMode = viewMode
+            currentCustomColor = customColor
 
             DispatchQueue.global(qos: .userInitiated).async {
                 let asset = MDLAsset(url: url)
@@ -152,7 +158,7 @@ struct ModelViewer: NSViewRepresentable {
 
                     for child in loadedScene.rootNode.childNodes {
                         let cloned = child.clone()
-                        self.fixMaterials(node: cloned, viewMode: viewMode)
+                        self.fixMaterials(node: cloned, viewMode: viewMode, customColor: customColor)
                         containerNode.addChildNode(cloned)
                     }
 
@@ -175,17 +181,22 @@ struct ModelViewer: NSViewRepresentable {
             }
         }
 
-        func applyViewMode(_ viewMode: SimpleEditorViewModel.ViewMode, to scnView: SCNView) {
-            guard viewMode != currentViewMode else { return }
+        func applyViewMode(_ viewMode: SimpleEditorViewModel.ViewMode, customColor: NSColor? = nil, to scnView: SCNView) {
+            let viewModeChanged = viewMode != currentViewMode
+            let colorChanged = customColor != currentCustomColor
+
+            guard viewModeChanged || colorChanged else { return }
+
             currentViewMode = viewMode
+            currentCustomColor = customColor
 
             guard let scene = scnView.scene,
                   let modelNode = scene.rootNode.childNode(withName: "loadedModel", recursively: true) else { return }
 
-            applyViewModeToNode(modelNode, viewMode: viewMode)
+            applyViewModeToNode(modelNode, viewMode: viewMode, customColor: customColor)
         }
 
-        private func applyViewModeToNode(_ node: SCNNode, viewMode: SimpleEditorViewModel.ViewMode) {
+        private func applyViewModeToNode(_ node: SCNNode, viewMode: SimpleEditorViewModel.ViewMode, customColor: NSColor?) {
             if let geometry = node.geometry {
                 for material in geometry.materials {
                     switch viewMode {
@@ -194,23 +205,21 @@ struct ModelViewer: NSViewRepresentable {
                         material.diffuse.contents = NSColor.white
                     case .shaded:
                         material.fillMode = .fill
-                        // Restore original or use gray
-                        if material.diffuse.contents == nil || (material.diffuse.contents as? NSColor) == NSColor.white {
-                            material.diffuse.contents = NSColor(white: 0.7, alpha: 1.0)
-                        }
+                        // Use custom color if provided, otherwise use default gray
+                        material.diffuse.contents = customColor ?? NSColor(white: 0.7, alpha: 1.0)
                     case .textured:
                         material.fillMode = .fill
-                        // Keep textures as loaded
+                        // Keep textures as loaded (don't apply custom color in textured mode)
                     }
                 }
             }
 
             for child in node.childNodes {
-                applyViewModeToNode(child, viewMode: viewMode)
+                applyViewModeToNode(child, viewMode: viewMode, customColor: customColor)
             }
         }
 
-        func fixMaterials(node: SCNNode, viewMode: SimpleEditorViewModel.ViewMode) {
+        func fixMaterials(node: SCNNode, viewMode: SimpleEditorViewModel.ViewMode, customColor: NSColor? = nil) {
             node.geometry?.materials.forEach { material in
                 material.isDoubleSided = true
 
@@ -218,18 +227,22 @@ struct ModelViewer: NSViewRepresentable {
                     material.lightingModel = .physicallyBased
                 }
 
-                // Apply initial view mode
+                // Apply initial view mode and custom color
                 switch viewMode {
                 case .wireframe:
                     material.fillMode = .lines
                     material.diffuse.contents = NSColor.white
-                case .shaded, .textured:
+                case .shaded:
                     material.fillMode = .fill
+                    material.diffuse.contents = customColor ?? NSColor(white: 0.7, alpha: 1.0)
+                case .textured:
+                    material.fillMode = .fill
+                    // Keep textures as loaded
                 }
             }
 
             for child in node.childNodes {
-                fixMaterials(node: child, viewMode: viewMode)
+                fixMaterials(node: child, viewMode: viewMode, customColor: customColor)
             }
         }
     }
@@ -239,6 +252,7 @@ struct ModelViewer: NSViewRepresentable {
 struct ModelViewerContainer: View {
     let modelURL: URL?
     var viewMode: SimpleEditorViewModel.ViewMode = .shaded
+    var customColor: NSColor? = nil
 
     var body: some View {
         ZStack {
@@ -248,7 +262,7 @@ struct ModelViewerContainer: View {
                 .shadow(color: .black.opacity(0.3), radius: 20, y: 10)
 
             if let url = modelURL {
-                ModelViewer(modelURL: url, viewMode: viewMode)
+                ModelViewer(modelURL: url, viewMode: viewMode, customColor: customColor)
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
                 // Interaction hint overlay

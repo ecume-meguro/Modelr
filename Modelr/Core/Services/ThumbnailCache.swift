@@ -132,6 +132,25 @@ final class ThumbnailCache {
         }
     }
 
+    /// Invalidate cache for a project (forces reload on next access)
+    func invalidate(for projectId: UUID) {
+        let cacheKey = projectId.uuidString as NSString
+        let modelCacheKey = "model_\(projectId.uuidString)" as NSString
+        cache.removeObject(forKey: cacheKey)
+        cache.removeObject(forKey: modelCacheKey)
+    }
+
+    /// Generate and save a 3D model preview with custom color
+    func updateModelPreview(for projectId: UUID, modelURL: URL, color: NSColor?) async {
+        let previewPath = PathManager.projectDirectory(for: projectId).appendingPathComponent("model_preview.png")
+
+        // Generate new preview with color
+        _ = await generate3DModelPreview(from: modelURL, saveTo: previewPath, color: color)
+
+        // Invalidate cache so next load picks up new preview
+        invalidate(for: projectId)
+    }
+
     /// Generate thumbnail using GPU-accelerated CoreImage
     func generateThumbnail(from sourceURL: URL, to destinationURL: URL) async -> Bool {
         return await withCheckedContinuation { continuation in
@@ -247,7 +266,7 @@ final class ThumbnailCache {
     // MARK: - 3D Model Preview Generation
 
     /// Generate a preview image from a 3D model file using SceneKit
-    private func generate3DModelPreview(from modelURL: URL, saveTo destinationURL: URL) async -> NSImage? {
+    private func generate3DModelPreview(from modelURL: URL, saveTo destinationURL: URL, color: NSColor? = nil) async -> NSImage? {
         return await withCheckedContinuation { continuation in
             processingQueue.async {
                 // Load 3D model
@@ -258,6 +277,11 @@ final class ThumbnailCache {
 
                 // Create scene from asset
                 let scene = SCNScene(mdlAsset: mdlAsset)
+
+                // Apply custom color if provided
+                if let color = color {
+                    self.applyColorToScene(scene, color: color)
+                }
 
                 // Setup scene for thumbnail rendering
                 self.setupSceneForThumbnail(scene)
@@ -277,6 +301,17 @@ final class ThumbnailCache {
                 }
 
                 continuation.resume(returning: image)
+            }
+        }
+    }
+
+    /// Apply a color to all materials in the scene
+    private func applyColorToScene(_ scene: SCNScene, color: NSColor) {
+        scene.rootNode.enumerateChildNodes { node, _ in
+            if let geometry = node.geometry {
+                for material in geometry.materials {
+                    material.diffuse.contents = color
+                }
             }
         }
     }

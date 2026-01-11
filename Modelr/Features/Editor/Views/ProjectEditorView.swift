@@ -73,7 +73,7 @@ struct ProjectEditorView: View {
             // App icon or loading graphic
             ZStack {
                 Circle()
-                    .fill(Color.accentColor.opacity(0.1))
+                    .fill(AppDesign.accent.opacity(AppDesign.Opacity.medium))
                     .frame(width: 100, height: 100)
 
                 ProgressView()
@@ -100,7 +100,7 @@ struct ProjectEditorView: View {
     private var errorView: some View {
         VStack(spacing: AppDesign.Spacing.p16) {
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 48))
+                .font(.system(size: AppDesign.Spacing.p48))
                 .foregroundStyle(.secondary)
                 .symbolEffect(.pulse)
 
@@ -135,6 +135,19 @@ struct ProjectEditorView: View {
         saveTask?.cancel()
         Task {
             await saveProjectState(immediate: true)
+
+            // Update model preview with custom color if set
+            if let modelURL = viewModel.currentMeshURL ?? viewModel.generated3DModelURL {
+                await ThumbnailCache.shared.updateModelPreview(
+                    for: projectId,
+                    modelURL: modelURL,
+                    color: viewModel.customModelColor
+                )
+            }
+
+            // Invalidate project-specific thumbnail cache to prevent data leakage
+            ThumbnailCache.shared.invalidate(projectId: projectId)
+
             onClose()
         }
     }
@@ -147,7 +160,7 @@ struct ProjectEditorView: View {
             canvasContent
         }
         .navigationSplitViewStyle(.balanced)
-        .navigationTitle(project?.name ?? "Project")
+        .navigationTitle("")
         .frame(minWidth: 700, minHeight: 500)
         .background(
             Button("") {
@@ -340,6 +353,35 @@ struct ProjectEditorView: View {
             }
         }
 
+        // Restore processed model if it exists (post-processing was applied)
+        if let processedPath = metadata?.processedModelPath {
+            let projectDir = PathManager.projectDirectory(for: projectId)
+            let processedModelPath = projectDir.appendingPathComponent(processedPath)
+            if FileManager.default.fileExists(atPath: processedModelPath.path) {
+                viewModel.processedModelURL = processedModelPath
+                print("[ProjectEditor] Restored processed model: \(processedPath)")
+            }
+        }
+
+        // Restore modified model if it exists (voxelization or low poly was applied)
+        if let modifiedPath = metadata?.modifiedModelPath {
+            let projectDir = PathManager.projectDirectory(for: projectId)
+            let modifiedModelPath = projectDir.appendingPathComponent(modifiedPath)
+            if FileManager.default.fileExists(atPath: modifiedModelPath.path) {
+                viewModel.modifiedModelURL = modifiedModelPath
+
+                // Restore settings
+                if let settings = metadata?.modifySettings,
+                   let modifyType = SimpleEditorViewModel.ModifyType(rawValue: settings.type) {
+                    viewModel.modifyType = modifyType
+                    viewModel.voxelResolution = CGFloat(settings.voxelResolution ?? 0)
+                    viewModel.lowPolyReduction = CGFloat(settings.lowPolyReduction ?? 0)
+                }
+
+                print("[ProjectEditor] Restored modified model: \(modifiedPath)")
+            }
+        }
+
         // Restore workflow step (after all data is loaded)
         // Also mark appropriate steps as visited so navigation works correctly
         if targetStep.rawValue > SimpleEditorViewModel.Step.segment.rawValue {
@@ -419,6 +461,37 @@ struct ProjectEditorView: View {
             } else {
                 // Clear model reference if no model exists
                 metadata.generatedModelPath = nil
+            }
+
+            // Save modified mesh if user applied voxelization or low poly
+            if let modifiedURL = viewModel.modifiedModelURL {
+                let projectDir = PathManager.projectDirectory(for: projectId)
+                let modifiedPath = projectDir.appendingPathComponent("modified_mesh.obj")
+
+                do {
+                    // Remove old modified mesh if it exists
+                    if FileManager.default.fileExists(atPath: modifiedPath.path) {
+                        try FileManager.default.removeItem(at: modifiedPath)
+                    }
+
+                    // Copy modified mesh to project directory
+                    try FileManager.default.copyItem(at: modifiedURL, to: modifiedPath)
+
+                    metadata.modifiedModelPath = "modified_mesh.obj"
+                    metadata.modifySettings = ModifySettings(
+                        type: viewModel.modifyType.rawValue,
+                        voxelResolution: viewModel.voxelResolution > 0 ? Double(viewModel.voxelResolution) : nil,
+                        lowPolyReduction: viewModel.lowPolyReduction > 0 ? Double(viewModel.lowPolyReduction) : nil
+                    )
+
+                    print("[ProjectEditor] Saved modified mesh: \(modifiedPath.lastPathComponent)")
+                } catch {
+                    print("[ProjectEditor] Failed to save modified mesh: \(error)")
+                }
+            } else {
+                // Clear modified mesh if none exists
+                metadata.modifiedModelPath = nil
+                metadata.modifySettings = nil
             }
 
             try ProjectManager.shared.saveMetadata(metadata)

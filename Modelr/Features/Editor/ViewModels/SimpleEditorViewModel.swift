@@ -30,6 +30,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         case generateSettings = 4
         case generate = 5
         case postProcess = 6
+        case modify = 7
 
         static func < (lhs: Step, rhs: Step) -> Bool {
             lhs.rawValue < rhs.rawValue
@@ -44,7 +45,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         /// Whether this step is optional (can be skipped)
         var isOptional: Bool {
             switch self {
-            case .touchup: return true  // Only touchup is optional now
+            case .touchup, .modify: return true  // Touchup and modify are optional
             default: return false
             }
         }
@@ -58,6 +59,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
             case .generateSettings: return false // Just settings, no state
             case .generate: return true // Has 3D model
             case .postProcess: return true // Has post-process edits
+            case .modify: return true // Has modified mesh
             }
         }
     }
@@ -195,6 +197,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     @Published var customGuidanceScaleHunyuan: CGFloat = 5.0
     @Published var customBoxV: CGFloat = 1.01
     @Published var customMcLevel: CGFloat = 0.0
+    @Published var customMeshReduction: CGFloat = 50.0  // QEM mesh reduction percentage (0-90)
     @Published var generationStages: [GenerationStage: StageProgress] = [:]
     @Published var generationSetupLogs: [String] = []
     @Published var isSmallModelDownloaded: Bool = false
@@ -223,6 +226,19 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     /// Tracks the temp directory for mesh components (for cleanup)
     var meshComponentsTempDirectory: URL?
 
+    // MARK: - Modify State (Step 7)
+    @Published var modifyType: ModifyType = .none
+    @Published var voxelResolution: CGFloat = 0  // 0 = no change, 0.5-10.0 = voxel pitch
+    @Published var lowPolyReduction: CGFloat = 0  // 0 = no change, 1-99 = % reduction
+    @Published var modifiedModelURL: URL?
+    @Published var isModifyingMesh: Bool = false
+
+    enum ModifyType: String, CaseIterable {
+        case none = "None"
+        case voxelize = "Voxelize"
+        case lowPoly = "Low Poly"
+    }
+
     /// Pre-loaded SceneKit nodes for instant post-process rendering (keyed by component index)
     @Published var preloadedComponentNodes: [Int: SCNNode] = [:]
     @Published var isPreloadingScenes: Bool = false
@@ -234,7 +250,17 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     }
     @Published var meshDisplayMode: MeshDisplayMode = .solid
     /// Custom model color (user paint selection) - nil means use default coloring
-    @Published var customModelColor: NSColor? = nil
+    @Published var customModelColor: NSColor? = nil {
+        didSet {
+            // Save to metadata when user manually changes color
+            if let color = customModelColor, let projectId = projectId {
+                let hexColor = ColorExtractionService.shared.toHexString(color)
+                Task {
+                    await saveColorToMetadata(projectId: projectId, hexColor: hexColor)
+                }
+            }
+        }
+    }
 
     // Post-process confirmations
     @Published var showApplyChangesConfirmation: Bool = false
@@ -390,6 +416,25 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         setupGenerationObservation()
     }
 
+    deinit {
+        // Cancel all pending tasks
+        imageLoadTask?.cancel()
+        segmentationTask?.cancel()
+        generationTask?.cancel()
+        cleanupTask?.cancel()
+        autoDetectionTask?.cancel()
+        meshPreloadTask?.cancel()
+
+        // Clean up temp directories on background thread
+        if let tempDir = meshComponentsTempDirectory {
+            Task.detached(priority: .utility) {
+                try? FileManager.default.removeItem(at: tempDir)
+            }
+        }
+
+        print("[SimpleEditorViewModel] deinit - cleaned up for project: \(projectId?.uuidString ?? "nil")")
+    }
+
     /// Check if models are downloaded
     func checkModelsDownloaded() {
         isSmallModelDownloaded = PathManager.isHunyuanModelDownloaded(variant: "mini")
@@ -442,6 +487,19 @@ class SimpleEditorViewModel: BaseEditorViewModel {
                 self.lastError = nil
 
                 self.imageHasAlpha = ImageService.shared.checkImageHasAlpha(image)
+
+                // Extract dominant color from image and set as default model color
+                if let dominantColor = ColorExtractionService.shared.extractDominantColor(from: image) {
+                    self.customModelColor = dominantColor
+
+                    // Save to metadata for persistence
+                    let hexColor = ColorExtractionService.shared.toHexString(dominantColor)
+                    if let projectId = self.projectId {
+                        Task {
+                            await self.saveColorToMetadata(projectId: projectId, hexColor: hexColor)
+                        }
+                    }
+                }
 
                 // Transition to segment step (loading overlay will show in ProjectEditorView)
                 withAnimation(.easeOut(duration: 0.25)) {
@@ -603,6 +661,9 @@ class SimpleEditorViewModel: BaseEditorViewModel {
                 self.initializationStatus = "Ready"
                 try await Task.sleep(nanoseconds: 300_000_000) // 300ms
 
+                // Load saved dominant color from metadata
+                self.loadDominantColorFromMetadata()
+
                 withAnimation(.easeOut(duration: 0.3)) {
                     self.isInitializingProject = false
                     self.initializationStatus = ""
@@ -700,6 +761,9 @@ class SimpleEditorViewModel: BaseEditorViewModel {
 
                 // Small delay then complete
                 try await Task.sleep(nanoseconds: 200_000_000) // 200ms
+
+                // Load saved dominant color from metadata
+                self.loadDominantColorFromMetadata()
 
                 withAnimation(.easeOut(duration: 0.3)) {
                     self.isInitializingProject = false
@@ -994,6 +1058,26 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         } else {
             let height = containerSize.height * margin
             return CGSize(width: height * imageAspect, height: height)
+        }
+    }
+
+    // MARK: - Color Persistence
+
+    /// Save the dominant color to project metadata
+    private func saveColorToMetadata(projectId: UUID, hexColor: String) async {
+        nonisolated(unsafe) let projectManager = ProjectManager.shared
+        var metadata = await projectManager.loadMetadata(for: projectId) ?? ProjectMetadata(projectId: projectId)
+        metadata.dominantColor = hexColor
+        try? await projectManager.saveMetadata(metadata)
+    }
+
+    /// Load dominant color from metadata and set customModelColor
+    func loadDominantColorFromMetadata() {
+        guard let projectId = projectId else { return }
+        if let metadata = ProjectManager.shared.loadMetadata(for: projectId),
+           let hexColor = metadata.dominantColor,
+           let color = ColorExtractionService.shared.fromHexString(hexColor) {
+            customModelColor = color
         }
     }
 }

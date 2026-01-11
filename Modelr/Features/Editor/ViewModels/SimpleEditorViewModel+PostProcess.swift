@@ -7,9 +7,9 @@ import SceneKit.ModelIO
 // MARK: - Post-Processing
 extension SimpleEditorViewModel {
 
-    /// URL of the mesh to process (either generated or processed)
+    /// URL of the mesh to process (prioritizes modified > processed > generated)
     var currentMeshURL: URL? {
-        processedModelURL ?? generated3DModelURL
+        modifiedModelURL ?? processedModelURL ?? generated3DModelURL
     }
 
     /// Update handoff progress during preloading
@@ -427,8 +427,40 @@ extension SimpleEditorViewModel {
             if let result = result,
                result["success"] as? Bool == true,
                let outputPathStr = result["output_path"] as? String {
-                processedModelURL = URL(fileURLWithPath: outputPathStr)
-                highlightedComponentIndex = nil
+                let tempURL = URL(fileURLWithPath: outputPathStr)
+
+                // Copy processed mesh to project directory (persist it, don't use temp)
+                if let projectId = projectId {
+                    let projectDir = PathManager.projectDirectory(for: projectId)
+                    let processedMeshPath = projectDir.appendingPathComponent("processed_mesh.obj")
+
+                    do {
+                        // Remove old processed mesh if it exists
+                        if FileManager.default.fileExists(atPath: processedMeshPath.path) {
+                            try FileManager.default.removeItem(at: processedMeshPath)
+                        }
+
+                        // Copy temp file to project directory
+                        try FileManager.default.copyItem(at: tempURL, to: processedMeshPath)
+
+                        // Update view model
+                        processedModelURL = processedMeshPath
+                        highlightedComponentIndex = nil
+
+                        // Save to metadata
+                        var metadata = ProjectManager.shared.loadMetadata(for: projectId) ?? ProjectMetadata(projectId: projectId)
+                        metadata.processedModelPath = "processed_mesh.obj"
+                        try ProjectManager.shared.saveMetadata(metadata)
+
+                        print("[PostProcess] Saved processed mesh to project: \(processedMeshPath.lastPathComponent)")
+                    } catch {
+                        print("[PostProcess] Failed to save processed mesh: \(error)")
+                    }
+                } else {
+                    // Fallback if no project ID (shouldn't happen)
+                    processedModelURL = tempURL
+                    highlightedComponentIndex = nil
+                }
             }
         }
 
@@ -473,7 +505,8 @@ extension SimpleEditorViewModel {
         inputPath: String,
         outputPath: String? = nil,
         indices: [Int]? = nil,
-        format: String? = nil
+        format: String? = nil,
+        reduction: Double? = nil
     ) async -> [String: Any]? {
         let projectDir = PathManager.toolsProjectDirectory
         let envDir = PathManager.toolsEnvironmentDirectory
@@ -501,6 +534,9 @@ extension SimpleEditorViewModel {
         }
         if let format = format {
             args.append(contentsOf: ["--format", format])
+        }
+        if let reduction = reduction {
+            args.append(contentsOf: ["--reduction", String(reduction)])
         }
 
         let process = Process()
@@ -575,5 +611,52 @@ extension SimpleEditorViewModel {
         }
 
         meshComponentsTempDirectory = nil
+    }
+
+    // MARK: - Mesh Optimization
+
+    /// Losslessly optimize mesh by removing redundant vertices/faces
+    /// Called automatically after generation
+    func optimizeMesh() async {
+        guard let modelURL = generated3DModelURL else {
+            print("[Optimize] No model URL to optimize")
+            return
+        }
+
+        let inputPath = modelURL.path
+        let outputPath = NSTemporaryDirectory() + "optimized_\(UUID().uuidString).obj"
+
+        print("[Optimize] Starting mesh optimization...")
+        print("[Optimize] Input: \(inputPath)")
+
+        let result = await runMeshProcessor(
+            command: "optimize",
+            inputPath: inputPath,
+            outputPath: outputPath,
+            reduction: Double(customMeshReduction)
+        )
+
+        if let result = result,
+           result["success"] as? Bool == true,
+           let outputPathStr = result["output_path"] as? String {
+
+            let originalFaces = result["original_faces"] as? Int ?? 0
+            let afterCleanupFaces = result["after_cleanup_faces"] as? Int ?? originalFaces
+            let finalFaces = result["final_faces"] as? Int ?? 0
+            let facesRemoved = result["faces_removed"] as? Int ?? 0
+            let reductionPercent = result["faces_reduction_percent"] as? Double ?? 0
+            let qemApplied = result["qem_applied"] as? Bool ?? false
+
+            print("[Optimize] Success: removed \(facesRemoved) faces (\(reductionPercent)%)")
+            print("[Optimize] \(originalFaces) -> \(afterCleanupFaces) (cleanup) -> \(finalFaces) (QEM: \(qemApplied))")
+
+            // Replace the generated model URL with the optimized one
+            await MainActor.run {
+                self.generated3DModelURL = URL(fileURLWithPath: outputPathStr)
+            }
+        } else {
+            let error = result?["error"] as? String ?? "Unknown error"
+            print("[Optimize] Failed: \(error)")
+        }
     }
 }

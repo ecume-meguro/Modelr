@@ -37,8 +37,11 @@ struct SimpleEditorSidebar: View {
                     workflowStepRow(displayNumber: 5, step: .generate, title: "Generate 3D", isLast: false, isOptional: false) {
                         generateContent
                     }
-                    workflowStepRow(displayNumber: 6, step: .postProcess, title: "Post-Process", isLast: true, isOptional: false) {
+                    workflowStepRow(displayNumber: 6, step: .postProcess, title: "Post-Process", isLast: false, isOptional: false) {
                         postProcessContent
+                    }
+                    workflowStepRow(displayNumber: 7, step: .modify, title: "Modify", isLast: true, isOptional: true) {
+                        modifyContent
                     }
                 }
                 .padding(AppDesign.Spacing.p16)
@@ -48,15 +51,11 @@ struct SimpleEditorSidebar: View {
 
             Spacer()
 
-            if viewModel.inputImage != nil {
-                startOverButton
-            }
-
             if viewModel.env.isProcessing {
                 statusFooter
             }
 
-            // Logo footer
+            // Logo footer with branding
             logoFooter
         }
         .background(.ultraThinMaterial)
@@ -67,12 +66,18 @@ struct SimpleEditorSidebar: View {
     @ViewBuilder
     private var logoFooter: some View {
         HStack {
-            AppDesign.HeaderText(text: "Modelr", size: AppDesign.FontSize.subheadline)
-                .opacity(0.4)
+            HStack(spacing: AppDesign.Spacing.p6) {
+                Image(systemName: "cube.fill")
+                    .font(.system(size: AppDesign.FontSize.caption))
+                    .foregroundStyle(.tertiary)
+                Text("Modelr")
+                    .font(.system(size: AppDesign.FontSize.caption, weight: .medium, design: .rounded))
+                    .foregroundStyle(.tertiary)
+            }
             Spacer()
         }
         .padding(.horizontal, AppDesign.Spacing.p16)
-        .padding(.bottom, AppDesign.Spacing.p12)
+        .padding(.vertical, AppDesign.Spacing.p12)
     }
 
     // MARK: - Setup Step Row
@@ -175,7 +180,7 @@ struct SimpleEditorSidebar: View {
 
                     if isCompleted {
                         Image(systemName: "checkmark")
-                            .font(.system(size: 8, weight: .bold))
+                            .font(.system(size: AppDesign.FontSize.xs, weight: .bold))
                             .foregroundStyle(.white)
                             .transition(.scale.combined(with: .opacity))
                     } else if isActive {
@@ -458,8 +463,9 @@ struct SimpleEditorSidebar: View {
         case .segment: return viewModel.currentStep.rawValue > step.rawValue
         case .touchup: return viewModel.currentStep.rawValue > step.rawValue
         case .generateSettings: return viewModel.currentStep.rawValue > step.rawValue
-        case .generate: return viewModel.currentStep == .postProcess
-        case .postProcess: return false // Final step is never "done" in this sense
+        case .generate: return viewModel.currentStep == .postProcess || viewModel.currentStep == .modify
+        case .postProcess: return viewModel.currentStep == .modify
+        case .modify: return false // Final step is never "done" in this sense
         }
     }
 
@@ -473,6 +479,7 @@ struct SimpleEditorSidebar: View {
         case .generateSettings: return .touchup
         case .generate: return .generateSettings
         case .postProcess: return .generate
+        case .modify: return .postProcess
         }
     }
 
@@ -490,22 +497,44 @@ struct SimpleEditorSidebar: View {
                         onClose()
                     }
                 } label: {
-                    HStack(spacing: AppDesign.Spacing.p4) {
+                    HStack(spacing: AppDesign.Spacing.p6) {
                         Image(systemName: "chevron.left")
                             .font(.system(size: AppDesign.FontSize.caption, weight: .semibold))
-                        Text("Projects")
+                        Text("Modelr")
                             .font(.system(size: AppDesign.FontSize.subheadline, weight: .medium))
                     }
                     .foregroundStyle(.secondary)
+                    .padding(.horizontal, AppDesign.Spacing.p8)
+                    .padding(.vertical, AppDesign.Spacing.p6)
+                    .background(Color.primary.opacity(AppDesign.Opacity.subtle), in: RoundedRectangle(cornerRadius: AppDesign.Size.cornerRadiusSmall))
                 }
                 .buttonStyle(.plain)
             }
 
             Spacer()
+
+            // Start Over button
+            if viewModel.inputImage != nil {
+                Button {
+                    viewModel.showStartOverWarning = true
+                } label: {
+                    HStack(spacing: AppDesign.Spacing.p6) {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                        Text("Start Over")
+                            .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, AppDesign.Spacing.p8)
+                    .padding(.vertical, AppDesign.Spacing.p6)
+                    .background(Color.primary.opacity(AppDesign.Opacity.subtle), in: RoundedRectangle(cornerRadius: AppDesign.Size.cornerRadiusSmall))
+                }
+                .buttonStyle(.plain)
+            }
         }
-        .padding(.horizontal, AppDesign.Spacing.p16)
+        .padding(.horizontal, AppDesign.Spacing.p12)
         .padding(.top, AppDesign.Spacing.p12)
-        .padding(.bottom, AppDesign.Spacing.p12)
+        .padding(.bottom, AppDesign.Spacing.p8)
         .alert("Cancel Generation?", isPresented: $showCancelGenerationAlert) {
             Button("Continue Generating", role: .cancel) { }
             Button("Cancel & Exit", role: .destructive) {
@@ -514,6 +543,12 @@ struct SimpleEditorSidebar: View {
             }
         } message: {
             Text("3D model generation is in progress. Canceling will lose the current generation.")
+        }
+        .alert("Start Over?", isPresented: $viewModel.showStartOverWarning) {
+            Button("Cancel", role: .cancel) { }
+            Button("Start Over", role: .destructive) { viewModel.clearAll() }
+        } message: {
+            Text("This will discard all progress and return to the home screen.")
         }
     }
 
@@ -565,7 +600,7 @@ struct SimpleEditorSidebar: View {
                         Button(action: viewModel.handleBackAction) {
                             HStack(spacing: AppDesign.Spacing.p6) {
                                 Image(systemName: "arrow.left")
-                                    .font(.system(size: 10, weight: .medium))
+                                    .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
                                     .foregroundStyle(.secondary)
                                 Text(viewModel.backButtonLabel)
                                     .font(.system(size: AppDesign.FontSize.caption))
@@ -617,7 +652,7 @@ struct SimpleEditorSidebar: View {
                         Button(action: viewModel.handleBackAction) {
                             HStack(spacing: AppDesign.Spacing.p6) {
                                 Image(systemName: "arrow.left")
-                                    .font(.system(size: 10, weight: .medium))
+                                    .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
                                     .foregroundStyle(.secondary)
                                 Text(viewModel.backButtonLabel)
                                     .font(.system(size: AppDesign.FontSize.caption))
@@ -665,7 +700,7 @@ struct SimpleEditorSidebar: View {
                     Button(action: viewModel.handleBackAction) {
                         HStack(spacing: AppDesign.Spacing.p6) {
                             Image(systemName: "arrow.left")
-                                .font(.system(size: 10, weight: .medium))
+                                .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
                                 .foregroundStyle(.secondary)
                             Text(viewModel.backButtonLabel)
                                 .font(.system(size: AppDesign.FontSize.caption))
@@ -711,7 +746,7 @@ struct SimpleEditorSidebar: View {
                         Button(action: viewModel.handleBackAction) {
                             HStack(spacing: AppDesign.Spacing.p6) {
                                 Image(systemName: "arrow.left")
-                                    .font(.system(size: 10, weight: .medium))
+                                    .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
                                     .foregroundStyle(.secondary)
                                 Text(viewModel.backButtonLabel)
                                     .font(.system(size: AppDesign.FontSize.caption))
@@ -725,7 +760,7 @@ struct SimpleEditorSidebar: View {
                         Button(action: viewModel.handleBackAction) {
                             HStack(spacing: AppDesign.Spacing.p6) {
                                 Image(systemName: "arrow.left")
-                                    .font(.system(size: 10, weight: .medium))
+                                    .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
                                     .foregroundStyle(.secondary)
                                 Text(viewModel.backButtonLabel)
                                     .font(.system(size: AppDesign.FontSize.caption))
@@ -753,11 +788,29 @@ struct SimpleEditorSidebar: View {
             PostProcessPanel(viewModel: viewModel)
 
             sectionFooter {
+                // Continue to Modify button
+                AppDesign.GlassButton("Continue to Modify", icon: "wand.and.stars") {
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        viewModel.currentStep = .modify
+                        viewModel.visitedSteps.insert(.modify)
+                    }
+                }
+                .help("Apply voxelization or low poly reduction")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var modifyContent: some View {
+        if viewModel.currentStep == .modify {
+            ModifyPanel(viewModel: viewModel)
+
+            sectionFooter {
                 // Back navigation as text
                 Button(action: viewModel.handleBackAction) {
                     HStack(spacing: AppDesign.Spacing.p6) {
                         Image(systemName: "arrow.left")
-                            .font(.system(size: 10, weight: .medium))
+                            .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
                             .foregroundStyle(.secondary)
                         Text(viewModel.backButtonLabel)
                             .font(.system(size: AppDesign.FontSize.caption))
@@ -770,24 +823,6 @@ struct SimpleEditorSidebar: View {
     }
 
     // MARK: - Footer Elements
-
-    @ViewBuilder
-    private var startOverButton: some View {
-        HStack {
-            Spacer()
-            AppDesign.InlineDestructiveButton("Start Over", icon: "arrow.counterclockwise") {
-                viewModel.showStartOverWarning = true
-            }
-        }
-        .padding(.horizontal, AppDesign.Spacing.p16)
-        .padding(.bottom, AppDesign.Spacing.p12)
-        .alert("Start Over?", isPresented: $viewModel.showStartOverWarning) {
-            Button("Cancel", role: .cancel) { }
-            Button("Start Over", role: .destructive) { viewModel.clearAll() }
-        } message: {
-            Text("This will discard all progress and return to the home screen.")
-        }
-    }
 
     @ViewBuilder
     private var statusFooter: some View {
@@ -811,26 +846,27 @@ struct SimpleEditorSidebar: View {
 
     @ViewBuilder
     private var restoreCachedModelButton: some View {
-        HStack(spacing: AppDesign.Spacing.p8) {
-            Image(systemName: "arrow.uturn.forward")
-                .font(.system(size: AppDesign.FontSize.caption))
-                .foregroundStyle(AppDesign.accent)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Restore Previous Model")
-                    .font(.system(size: AppDesign.FontSize.subheadline, weight: .medium))
-                    .foregroundStyle(AppDesign.accent)
-                Text("Return to your generated 3D model")
-                    .font(.system(size: AppDesign.FontSize.xs))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-        .padding(AppDesign.Spacing.p8)
-        .background(AppDesign.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-        .contentShape(Rectangle())
-        .onTapGesture {
+        Button {
             viewModel.restoreCachedGeneration()
+        } label: {
+            HStack(spacing: AppDesign.Spacing.p10) {
+                Image(systemName: "arrow.uturn.forward")
+                    .font(.system(size: AppDesign.FontSize.body))
+                    .foregroundStyle(AppDesign.accent)
+                VStack(alignment: .leading, spacing: AppDesign.Spacing.p2) {
+                    Text("Restore Previous Model")
+                        .font(.system(size: AppDesign.FontSize.subheadline, weight: .medium))
+                        .foregroundStyle(AppDesign.accent)
+                    Text("Return to your generated 3D model")
+                        .font(.system(size: AppDesign.FontSize.xs))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(AppDesign.Spacing.p10)
+            .background(AppDesign.accent.opacity(AppDesign.Opacity.soft), in: RoundedRectangle(cornerRadius: AppDesign.Size.cornerRadius))
         }
+        .buttonStyle(.plain)
     }
 
 }

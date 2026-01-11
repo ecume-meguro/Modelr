@@ -714,6 +714,8 @@ struct ComponentModelViewerContainer: View {
     var preloadedNodes: [Int: SCNNode] = [:]
     @Binding var customColor: NSColor?
     @State private var showColorPicker = false
+    var sourceImage: NSImage? = nil
+    @State private var extractedColors: [NSColor] = []
 
     // Interaction callbacks (passed through to ComponentModelViewer)
     var onComponentClicked: ((Int) -> Void)? = nil
@@ -856,47 +858,87 @@ struct ComponentModelViewerContainer: View {
                 .font(.system(size: AppDesign.FontSize.caption, weight: .semibold))
                 .foregroundStyle(.secondary)
 
-            // Preset colors
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 28))], spacing: 8) {
-                // Reset to default
-                Button {
-                    customColor = nil
-                    showColorPicker = false
-                } label: {
-                    ZStack {
-                        Circle()
-                            .fill(Color(white: 0.7))
-                            .frame(width: 28, height: 28)
-                        if customColor == nil {
-                            Circle()
-                                .strokeBorder(Color.white, lineWidth: 2)
-                                .frame(width: 28, height: 28)
+            // Extracted colors from image (if available)
+            if !extractedColors.isEmpty {
+                VStack(alignment: .leading, spacing: AppDesign.Spacing.p6) {
+                    Text("From Image")
+                        .font(.system(size: AppDesign.FontSize.xs, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                        .textCase(.uppercase)
+
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 28))], spacing: 8) {
+                        ForEach(extractedColors, id: \.self) { color in
+                            Button {
+                                customColor = color
+                                showColorPicker = false
+                            } label: {
+                                Circle()
+                                    .fill(Color(nsColor: color))
+                                    .frame(width: 28, height: 28)
+                                    .overlay(
+                                        Circle()
+                                            .strokeBorder(
+                                                customColor == color ? Color.white : Color.clear,
+                                                lineWidth: 2
+                                            )
+                                    )
+                            }
+                            .buttonStyle(.plain)
                         }
-                        Text("×")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.5))
                     }
                 }
-                .buttonStyle(.plain)
-                .help("Default (Gray)")
 
-                ForEach(presetColors, id: \.self) { color in
+                Divider()
+            }
+
+            // Preset colors
+            VStack(alignment: .leading, spacing: AppDesign.Spacing.p6) {
+                Text("Presets")
+                    .font(.system(size: AppDesign.FontSize.xs, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                    .textCase(.uppercase)
+
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 28))], spacing: 8) {
+                    // Reset to default
                     Button {
-                        customColor = color
+                        customColor = nil
                         showColorPicker = false
                     } label: {
-                        Circle()
-                            .fill(Color(nsColor: color))
-                            .frame(width: 28, height: 28)
-                            .overlay(
+                        ZStack {
+                            Circle()
+                                .fill(Color(white: 0.7))
+                                .frame(width: 28, height: 28)
+                            if customColor == nil {
                                 Circle()
-                                    .strokeBorder(
-                                        customColor == color ? Color.white : Color.clear,
-                                        lineWidth: 2
-                                    )
-                            )
+                                    .strokeBorder(Color.white, lineWidth: 2)
+                                    .frame(width: 28, height: 28)
+                            }
+                            Text("×")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.5))
+                        }
                     }
                     .buttonStyle(.plain)
+                    .help("Default (Gray)")
+
+                    ForEach(presetColors, id: \.self) { color in
+                        Button {
+                            customColor = color
+                            showColorPicker = false
+                        } label: {
+                            Circle()
+                                .fill(Color(nsColor: color))
+                                .frame(width: 28, height: 28)
+                                .overlay(
+                                    Circle()
+                                        .strokeBorder(
+                                            customColor == color ? Color.white : Color.clear,
+                                            lineWidth: 2
+                                        )
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
 
@@ -911,6 +953,11 @@ struct ComponentModelViewerContainer: View {
         }
         .padding(AppDesign.Spacing.p12)
         .frame(width: 180)
+        .onAppear {
+            if extractedColors.isEmpty, let image = sourceImage {
+                extractedColors = ColorExtractor.extractPrimaryColors(from: image, count: 6)
+            }
+        }
     }
 
     private var presetColors: [NSColor] {
@@ -978,5 +1025,139 @@ struct ComponentModelViewerContainer: View {
             }
             Text(label)
         }
+    }
+}
+
+// MARK: - Color Extraction Utility
+
+struct ColorExtractor {
+    /// Extract primary colors from an image using k-means clustering
+    static func extractPrimaryColors(from image: NSImage, count: Int = 6) -> [NSColor] {
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return []
+        }
+
+        // Downsample image for performance
+        let maxDimension: CGFloat = 200
+        let scale = min(maxDimension / image.size.width, maxDimension / image.size.height, 1.0)
+        let width = Int(image.size.width * scale)
+        let height = Int(image.size.height * scale)
+
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return []
+        }
+
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        guard let data = context.data else { return [] }
+        let buffer = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
+
+        // Sample pixels (skip alpha, use stride for performance)
+        var pixels: [(r: CGFloat, g: CGFloat, b: CGFloat)] = []
+        let sampleStride = 4 // Sample every 4th pixel
+        for y in stride(from: 0, to: height, by: sampleStride) {
+            for x in stride(from: 0, to: width, by: sampleStride) {
+                let offset = (y * width + x) * 4
+                let r = CGFloat(buffer[offset]) / 255.0
+                let g = CGFloat(buffer[offset + 1]) / 255.0
+                let b = CGFloat(buffer[offset + 2]) / 255.0
+
+                // Filter out near-whites, near-blacks, and very desaturated colors
+                let brightness = (r + g + b) / 3.0
+                let maxChannel = max(r, max(g, b))
+                let minChannel = min(r, min(g, b))
+                let saturation = maxChannel - minChannel
+
+                if brightness > 0.15 && brightness < 0.95 && saturation > 0.1 {
+                    pixels.append((r, g, b))
+                }
+            }
+        }
+
+        guard !pixels.isEmpty else { return [] }
+
+        // K-means clustering
+        let clusters = kMeansClustering(pixels: pixels, k: count)
+
+        // Convert to NSColor and sort by vibrancy/saturation
+        return clusters
+            .map { NSColor(red: $0.r, green: $0.g, blue: $0.b, alpha: 1.0) }
+            .sorted { color1, color2 in
+                saturation(of: color1) > saturation(of: color2)
+            }
+    }
+
+    private static func kMeansClustering(pixels: [(r: CGFloat, g: CGFloat, b: CGFloat)], k: Int) -> [(r: CGFloat, g: CGFloat, b: CGFloat)] {
+        guard pixels.count >= k else { return pixels }
+
+        // Initialize centroids by sampling diverse pixels
+        var centroids: [(r: CGFloat, g: CGFloat, b: CGFloat)] = []
+        let step = pixels.count / k
+        for i in 0..<k {
+            centroids.append(pixels[min(i * step, pixels.count - 1)])
+        }
+
+        // Iterate k-means
+        for _ in 0..<10 {
+            var clusters: [[(r: CGFloat, g: CGFloat, b: CGFloat)]] = Array(repeating: [], count: k)
+
+            // Assign pixels to nearest centroid
+            for pixel in pixels {
+                var minDistance = CGFloat.infinity
+                var closestCluster = 0
+
+                for (index, centroid) in centroids.enumerated() {
+                    let distance = colorDistance(pixel, centroid)
+                    if distance < minDistance {
+                        minDistance = distance
+                        closestCluster = index
+                    }
+                }
+
+                clusters[closestCluster].append(pixel)
+            }
+
+            // Update centroids
+            var newCentroids: [(r: CGFloat, g: CGFloat, b: CGFloat)] = []
+            for cluster in clusters {
+                if cluster.isEmpty {
+                    newCentroids.append(centroids[newCentroids.count])
+                } else {
+                    let avgR = cluster.map { $0.r }.reduce(0, +) / CGFloat(cluster.count)
+                    let avgG = cluster.map { $0.g }.reduce(0, +) / CGFloat(cluster.count)
+                    let avgB = cluster.map { $0.b }.reduce(0, +) / CGFloat(cluster.count)
+                    newCentroids.append((avgR, avgG, avgB))
+                }
+            }
+
+            centroids = newCentroids
+        }
+
+        return centroids
+    }
+
+    private static func colorDistance(_ c1: (r: CGFloat, g: CGFloat, b: CGFloat), _ c2: (r: CGFloat, g: CGFloat, b: CGFloat)) -> CGFloat {
+        let dr = c1.r - c2.r
+        let dg = c1.g - c2.g
+        let db = c1.b - c2.b
+        return sqrt(dr * dr + dg * dg + db * db)
+    }
+
+    private static func saturation(of color: NSColor) -> CGFloat {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else { return 0 }
+        let r = rgb.redComponent
+        let g = rgb.greenComponent
+        let b = rgb.blueComponent
+        let maxChannel = max(r, max(g, b))
+        let minChannel = min(r, min(g, b))
+        return maxChannel - minChannel
     }
 }

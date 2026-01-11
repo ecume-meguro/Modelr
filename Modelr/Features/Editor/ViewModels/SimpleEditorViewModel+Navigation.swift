@@ -76,6 +76,9 @@ extension SimpleEditorViewModel {
         case .postProcess:
             meshPreloadTask?.cancel()
             meshPreloadTask = nil
+        case .modify:
+            // No long-running tasks in modify (modifications are immediate)
+            break
         }
     }
 
@@ -172,6 +175,12 @@ extension SimpleEditorViewModel {
             generationStatus = ""
             generationStartTime = nil
             generationDuration = nil
+        case .modify:
+            // Going back from modify - clear modified mesh
+            modifiedModelURL = nil
+            modifyType = .none
+            voxelResolution = 0
+            lowPolyReduction = 0
         }
     }
 
@@ -257,6 +266,7 @@ extension SimpleEditorViewModel {
         keepIndices.removeAll()
         deleteIndices.removeAll()
         highlightedComponentIndex = nil
+        hoveredComponentIndex = nil
         isolatedComponentIndex = nil
         processedModelURL = nil
         componentFiles.removeAll()
@@ -265,6 +275,13 @@ extension SimpleEditorViewModel {
         customModelColor = nil
         // Clean up temp mesh component files
         cleanupMeshComponentsTempDirectory()
+
+        // Modify state
+        modifiedModelURL = nil
+        modifyType = .none
+        voxelResolution = 0
+        lowPolyReduction = 0
+        isModifyingMesh = false
 
         // UI state
         zoomScale = 1.0
@@ -308,6 +325,7 @@ extension SimpleEditorViewModel {
         case .generateSettings: return "Back to Settings"
         case .generate: return "Back to Generate"
         case .postProcess: return "Back"
+        case .modify: return "Back"
         }
     }
 }

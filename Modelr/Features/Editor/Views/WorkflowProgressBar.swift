@@ -27,12 +27,12 @@ struct WorkflowProgressBar: View {
                 }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 16)
+        .padding(.horizontal, AppDesign.Spacing.p16)
+        .padding(.vertical, AppDesign.Spacing.p16)
         .background(
-            RoundedRectangle(cornerRadius: 16)
+            RoundedRectangle(cornerRadius: AppDesign.Size.cornerRadiusXL)
                 .fill(.ultraThinMaterial)
-                .shadow(color: Color.black.opacity(0.05), radius: 10, x: 0, y: 5)
+                .shadow(color: Color.black.opacity(AppDesign.Opacity.light), radius: 10, x: 0, y: 5)
         )
     }
 }
@@ -48,61 +48,61 @@ struct StepView: View {
     
     private var circleColor: Color {
         if isCompleted {
-            return .green
+            return AppDesign.success
         } else if isCurrent {
-            return .accentColor
+            return AppDesign.accent
         } else if isNextAvailable {
-            return .accentColor.opacity(0.4)
+            return AppDesign.accent.opacity(AppDesign.Opacity.strong)
         } else {
-            return Color.gray.opacity(0.2)
+            return Color.secondary.opacity(AppDesign.Opacity.moderate)
         }
     }
-    
+
     private var iconColor: Color {
         if isCompleted || isCurrent {
             return .white
         } else if isNextAvailable {
-            return .accentColor
+            return AppDesign.accent
         } else {
             return .secondary
         }
     }
-    
+
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: AppDesign.Spacing.p8) {
             ZStack {
                 // Background circle
                 Circle()
                     .fill(circleColor)
                     .frame(width: 40, height: 40)
-                    .shadow(color: isCurrent ? .accentColor.opacity(0.4) : .clear, radius: 8, y: 4)
-                
+                    .shadow(color: isCurrent ? AppDesign.accent.opacity(AppDesign.Opacity.strong) : .clear, radius: 8, y: 4)
+
                 // Pulse animation for current step
                 if isCurrent {
                     Circle()
-                        .stroke(Color.accentColor.opacity(0.3), lineWidth: 2)
+                        .stroke(AppDesign.accent.opacity(AppDesign.Opacity.prominent), lineWidth: 2)
                         .frame(width: 50, height: 50)
                         .scaleEffect(isHovering ? 1.1 : 1.0)
                         .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: isHovering)
                 }
-                
+
                 // Icon
                 if isCompleted {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 16, weight: .bold))
+                        .font(.system(size: AppDesign.FontSize.title3, weight: .bold))
                         .foregroundColor(.white)
                 } else {
                     Image(systemName: step.icon)
-                        .font(.system(size: 16, weight: isCurrent ? .semibold : .regular))
+                        .font(.system(size: AppDesign.FontSize.title3, weight: isCurrent ? .semibold : .regular))
                         .foregroundColor(iconColor)
                 }
             }
             .frame(width: 50, height: 50) // Fixed frame to contain pulse
             .scaleEffect(isHovering && !isLocked ? 1.05 : 1.0)
             .animation(.spring(response: 0.25), value: isHovering)
-            
+
             Text(step.title)
-                .font(.system(size: 12, weight: isCurrent ? .semibold : .medium))
+                .font(.system(size: AppDesign.FontSize.body, weight: isCurrent ? .semibold : .medium))
                 .foregroundColor(isCurrent ? .primary : .secondary)
                 .fixedSize() // Prevent truncation
         }
@@ -123,12 +123,12 @@ struct StepView: View {
 struct ConnectorView: View {
     let isCompleted: Bool
     let isActive: Bool
-    
+
     var body: some View {
         ZStack {
             // Background track
             Capsule()
-                .fill(Color.gray.opacity(0.15))
+                .fill(Color.secondary.opacity(AppDesign.Opacity.semi))
                 .frame(height: 4)
             
             // Progress fill

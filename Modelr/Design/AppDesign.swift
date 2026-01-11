@@ -52,6 +52,8 @@ enum AppDesign {
     // MARK: - Opacity Values (Standardized Tokens)
 
     enum Opacity {
+        /// Very subtle background tint (e.g., very light backgrounds)
+        static let verySubtle: Double = 0.02
         /// Subtle background tint (e.g., hover states, very light fills)
         static let subtle: Double = 0.03
         /// Light background tint (e.g., cards, selected states)
@@ -66,8 +68,12 @@ enum AppDesign {
         static let moderate: Double = 0.2
         /// Prominent opacity (e.g., shadows, disabled states)
         static let prominent: Double = 0.3
+        /// Strong opacity (e.g., strong overlays)
+        static let strong: Double = 0.4
         /// High opacity (e.g., modal overlays)
         static let high: Double = 0.5
+        /// Very high opacity (e.g., dark overlays, tooltips)
+        static let veryHigh: Double = 0.7
     }
 
     // MARK: - Component Sizes
@@ -89,10 +95,14 @@ enum AppDesign {
         static let iconSmall: CGFloat = 10
         /// Icon size medium
         static let iconMedium: CGFloat = 12
+        /// Small corner radius (for nested elements)
+        static let cornerRadiusSmall: CGFloat = 6
         /// Standard corner radius
         static let cornerRadius: CGFloat = 8
         /// Large corner radius
         static let cornerRadiusLarge: CGFloat = 12
+        /// Extra large corner radius (for prominent elements)
+        static let cornerRadiusXL: CGFloat = 16
         /// Button min height
         static let buttonMinHeight: CGFloat = 32
     }
@@ -105,12 +115,21 @@ enum AppDesign {
     static let destructive = Color.red
     static let secondary = Color.secondary
     static let tertiary = Color.secondary.opacity(0.7)
-    
+
     /// Standard mask overlay color
     static let maskColor = Color.accentColor
-    
+
     /// Destructive/Eraser mask color
     static let eraserColor = Color.red
+
+    /// Dark overlay for tooltips, modals
+    static let overlayDark = Color.black.opacity(0.7)
+
+    /// Medium overlay for interactive states
+    static let overlayMedium = Color.black.opacity(0.4)
+
+    /// Light overlay for subtle highlights
+    static let overlayLight = Color.black.opacity(0.3)
 
     // Neon colors for mask regions
     static let neonColors: [Color] = [

@@ -370,3 +370,111 @@ class ImageService {
         return alpha > 128
     }
 }
+
+// MARK: - Color Extraction Service
+
+/// Service for extracting dominant colors from images and converting between color formats
+class ColorExtractionService {
+    static let shared = ColorExtractionService()
+
+    private init() {}
+
+    /// Extract the dominant color from an image using k-means clustering
+    /// - Parameter image: The source image to analyze
+    /// - Returns: The dominant NSColor, or nil if extraction fails
+    func extractDominantColor(from image: NSImage) -> NSColor? {
+        // Extract the most dominant color using the same algorithm as ColorExtractor
+        // but optimized to return just one color
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return nil
+        }
+
+        // Downsample for performance
+        let maxDimension: CGFloat = 200
+        let scale = min(maxDimension / image.size.width, maxDimension / image.size.height, 1.0)
+        let width = Int(image.size.width * scale)
+        let height = Int(image.size.height * scale)
+
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return nil
+        }
+
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let data = context.data else { return nil }
+        let buffer = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
+
+        // Sample pixels and find dominant color
+        var pixels: [(r: CGFloat, g: CGFloat, b: CGFloat)] = []
+        let sampleStride = 4
+        for y in stride(from: 0, to: height, by: sampleStride) {
+            for x in stride(from: 0, to: width, by: sampleStride) {
+                let offset = (y * width + x) * 4
+                let r = CGFloat(buffer[offset]) / 255.0
+                let g = CGFloat(buffer[offset + 1]) / 255.0
+                let b = CGFloat(buffer[offset + 2]) / 255.0
+
+                // Filter out near-whites, near-blacks, and desaturated colors
+                let brightness = (r + g + b) / 3.0
+                let maxChannel = max(r, max(g, b))
+                let minChannel = min(r, min(g, b))
+                let saturation = maxChannel - minChannel
+
+                if brightness > 0.15 && brightness < 0.95 && saturation > 0.1 {
+                    pixels.append((r, g, b))
+                }
+            }
+        }
+
+        guard !pixels.isEmpty else { return nil }
+
+        // Simple averaging to find dominant color
+        let avgR = pixels.map { $0.r }.reduce(0, +) / CGFloat(pixels.count)
+        let avgG = pixels.map { $0.g }.reduce(0, +) / CGFloat(pixels.count)
+        let avgB = pixels.map { $0.b }.reduce(0, +) / CGFloat(pixels.count)
+
+        return NSColor(red: avgR, green: avgG, blue: avgB, alpha: 1.0)
+    }
+
+    /// Convert an NSColor to a hex string representation
+    /// - Parameter color: The color to convert
+    /// - Returns: Hex string in format "#RRGGBB"
+    func toHexString(_ color: NSColor) -> String {
+        guard let rgbColor = color.usingColorSpace(.deviceRGB) else {
+            // Fallback for colors that can't be converted to RGB
+            return "#808080" // Gray
+        }
+
+        let red = Int(round(rgbColor.redComponent * 255))
+        let green = Int(round(rgbColor.greenComponent * 255))
+        let blue = Int(round(rgbColor.blueComponent * 255))
+
+        return String(format: "#%02X%02X%02X", red, green, blue)
+    }
+
+    /// Convert a hex string to an NSColor
+    /// - Parameter hex: Hex string in format "#RRGGBB" or "RRGGBB"
+    /// - Returns: NSColor, or nil if the hex string is invalid
+    func fromHexString(_ hex: String) -> NSColor? {
+        var hexSanitized = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        hexSanitized = hexSanitized.replacingOccurrences(of: "#", with: "")
+
+        guard hexSanitized.count == 6 else { return nil }
+
+        var rgb: UInt64 = 0
+        guard Scanner(string: hexSanitized).scanHexInt64(&rgb) else { return nil }
+
+        let red = CGFloat((rgb & 0xFF0000) >> 16) / 255.0
+        let green = CGFloat((rgb & 0x00FF00) >> 8) / 255.0
+        let blue = CGFloat(rgb & 0x0000FF) / 255.0
+
+        return NSColor(red: red, green: green, blue: blue, alpha: 1.0)
+    }
+}

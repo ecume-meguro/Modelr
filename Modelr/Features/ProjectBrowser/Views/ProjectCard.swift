@@ -30,27 +30,23 @@ struct ProjectCard: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
                 // Thumbnail
                 thumbnailView
                     .frame(height: 160)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-                    }
+                    .clipShape(RoundedRectangle(cornerRadius: AppDesign.Size.cornerRadiusSmall))
 
                 // Info Area
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: AppDesign.Spacing.p4) {
                     Text(project.name)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.system(size: AppDesign.FontSize.subheadline, weight: .medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
 
                     // Metadata row - minimal
-                    HStack(spacing: 6) {
+                    HStack(spacing: AppDesign.Spacing.p6) {
                         Text(formattedDate)
-                            .font(.system(size: 10))
+                            .font(.system(size: AppDesign.FontSize.caption))
                             .foregroundStyle(.tertiary)
 
                         Spacer()
@@ -60,16 +56,24 @@ struct ProjectCard: View {
                     }
                 }
             }
-            .padding(8)
+            .padding(AppDesign.Spacing.p10)
             .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(isHovered ? Color.primary.opacity(0.03) : Color.clear)
+                RoundedRectangle(cornerRadius: AppDesign.Size.cornerRadius)
+                    .fill(Color.primary.opacity(AppDesign.Opacity.subtle))
             )
+            .overlay(
+                RoundedRectangle(cornerRadius: AppDesign.Size.cornerRadius)
+                    .strokeBorder(Color.primary.opacity(AppDesign.Opacity.soft), lineWidth: 1)
+            )
+            .scaleEffect(isHovered ? 1.02 : 1.0)
+            .shadow(color: .black.opacity(isHovered ? AppDesign.Opacity.medium : 0), radius: 8, y: 4)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering in
-            isHovered = hovering
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                isHovered = hovering
+            }
         }
         .task(id: project.id) {
             await loadThumbnail()
@@ -93,12 +97,12 @@ struct ProjectCard: View {
         if isComplete {
             // Just a small checkmark for completed
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 10))
+                .font(.system(size: AppDesign.FontSize.caption))
                 .foregroundStyle(.secondary.opacity(0.6))
         } else {
             // Show step progress as subtle text
             Text("Step \(normalizedStep)")
-                .font(.system(size: 9))
+                .font(.system(size: AppDesign.FontSize.xs))
                 .foregroundStyle(.tertiary)
         }
     }
@@ -114,8 +118,8 @@ struct ProjectCard: View {
                     .aspectRatio(contentMode: .fill)
             } else if project.thumbnailPath == nil {
                 Image(systemName: "cube")
-                    .font(.system(size: 24))
-                    .foregroundStyle(.secondary.opacity(0.2))
+                    .font(.system(size: AppDesign.FontSize.title2))
+                    .foregroundStyle(.secondary.opacity(AppDesign.Opacity.moderate))
             } else {
                 ProgressView()
                     .controlSize(.small)

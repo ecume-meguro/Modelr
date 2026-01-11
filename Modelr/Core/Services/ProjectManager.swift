@@ -217,6 +217,7 @@ class ProjectManager: ObservableObject {
             newMetadata.customSteps = oldMetadata.customSteps
             newMetadata.customResolution = oldMetadata.customResolution
             newMetadata.hasMaskEdits = oldMetadata.hasMaskEdits
+            newMetadata.processedModelPath = oldMetadata.processedModelPath
             try saveMetadata(newMetadata)
         }
 

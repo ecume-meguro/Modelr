@@ -48,8 +48,8 @@ struct GenerationSettingsPanel: View {
                     qualityButton(for: preset)
                 }
             }
-            .background(Color.primary.opacity(0.06))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .background(Color.primary.opacity(AppDesign.Opacity.light))
+            .clipShape(RoundedRectangle(cornerRadius: AppDesign.Size.cornerRadius))
 
             // Time estimate for selected preset
             HStack(spacing: AppDesign.Spacing.p4) {
@@ -77,7 +77,7 @@ struct GenerationSettingsPanel: View {
                 .foregroundStyle(isSelected ? .primary : .secondary)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, AppDesign.Spacing.p6)
-                .background(isSelected ? Color.primary.opacity(0.1) : Color.clear)
+                .background(isSelected ? Color.primary.opacity(AppDesign.Opacity.medium) : Color.clear)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -118,11 +118,11 @@ struct GenerationSettingsPanel: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(AppDesign.Spacing.p10)
-            .background(isSelected ? AppDesign.accent.opacity(0.08) : Color.primary.opacity(0.03))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .background(isSelected ? AppDesign.accent.opacity(AppDesign.Opacity.soft) : Color.primary.opacity(AppDesign.Opacity.subtle))
+            .clipShape(RoundedRectangle(cornerRadius: AppDesign.Size.cornerRadius))
             .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(isSelected ? AppDesign.accent.opacity(0.5) : Color.primary.opacity(0.08), lineWidth: 1)
+                RoundedRectangle(cornerRadius: AppDesign.Size.cornerRadius)
+                    .stroke(isSelected ? AppDesign.accent.opacity(AppDesign.Opacity.high) : Color.primary.opacity(AppDesign.Opacity.soft), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -150,7 +150,7 @@ struct GenerationSettingsPanel: View {
                 Spacer()
             }
             .padding(AppDesign.Spacing.p10)
-            .background(AppDesign.warning.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+            .background(AppDesign.warning.opacity(AppDesign.Opacity.medium), in: RoundedRectangle(cornerRadius: AppDesign.Size.cornerRadius))
         }
     }
 
@@ -180,7 +180,7 @@ struct GenerationSettingsPanel: View {
                 }
                 .padding(.vertical, AppDesign.Spacing.p6)
                 .padding(.horizontal, AppDesign.Spacing.p8)
-                .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 6))
+                .background(Color.primary.opacity(AppDesign.Opacity.subtle), in: RoundedRectangle(cornerRadius: AppDesign.Size.cornerRadiusSmall))
                 .contentShape(Rectangle())  // Makes entire row tappable
             }
             .buttonStyle(.plain)
@@ -238,6 +238,24 @@ struct GenerationSettingsPanel: View {
                 step: 0.05,
                 format: "%.2f"
             )
+            AppDesign.SliderRow(
+                label: "Mesh Reduction",
+                value: $viewModel.customMeshReduction,
+                range: 0...90,
+                step: 10,
+                format: "%.0f%%"
+            )
+
+            // Tip for mesh reduction
+            HStack(spacing: AppDesign.Spacing.p6) {
+                Image(systemName: "info.circle")
+                    .font(.system(size: AppDesign.FontSize.caption))
+                    .foregroundStyle(.secondary)
+                Text("Simplifies mesh geometry using QEM. 50% is balanced, 0% disables.")
+                    .font(.system(size: AppDesign.FontSize.xs))
+                    .foregroundStyle(.secondary)
+            }
+
             AppDesign.HintText("Steps & resolution affect quality. Guidance controls input adherence. Box scale adjusts model size. Surface level shifts the mesh boundary.")
         }
     }
@@ -253,5 +271,6 @@ struct GenerationSettingsPanel: View {
         viewModel.customGuidanceScaleHunyuan = 5.0  // Default CFG
         viewModel.customBoxV = 1.01  // Default bounding box
         viewModel.customMcLevel = 0.0  // Default surface level
+        viewModel.customMeshReduction = 50.0  // Default QEM reduction
     }
 }

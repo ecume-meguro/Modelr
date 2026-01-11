@@ -100,8 +100,18 @@ struct ProjectMetadata: Codable {
     var customResolution: Int?
     var hasMaskEdits: Bool?
 
+    // Post-processing
+    var processedModelPath: String?  // Path to post-processed mesh (after cleanup/deletion)
+
+    // Modify (voxelize/low poly)
+    var modifiedModelPath: String?  // Path to modified mesh (after voxelize/simplify)
+    var modifySettings: ModifySettings?  // Settings used for modification
+
     // Merged mask path (the combined mask used for generation)
     var mergedMaskPath: String?
+
+    // Dominant color extracted from source image or set by user (stored as hex string, e.g., "#FF5733")
+    var dominantColor: String?
 
     init(projectId: UUID) {
         self.projectId = projectId
@@ -142,4 +152,11 @@ struct SegmentationData: Codable {
         self.maskPaths = maskPaths
         self.maskPath = maskPath
     }
+}
+
+/// Settings for mesh modification (voxelize or low poly)
+struct ModifySettings: Codable {
+    var type: String  // "voxelize", "lowPoly", or "none"
+    var voxelResolution: Double?
+    var lowPolyReduction: Double?
 }

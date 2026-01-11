@@ -9,6 +9,8 @@ dependencies = [
     "numpy>=2.0.0",
     # Graph operations for mesh component analysis
     "networkx>=3.0",
+    # Quadric decimation for proper low poly
+    "fast-simplification>=0.1.0",
     # Shared core module
     "modelr-core",
 ]

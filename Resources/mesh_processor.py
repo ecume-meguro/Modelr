@@ -359,15 +359,191 @@ def extract_all_components(mesh_path: str, output_dir: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+def voxelize_mesh(mesh_path: str, voxel_pitch: float, output_path: str) -> Dict[str, Any]:
+    """
+    Convert mesh to voxel representation and back to mesh.
+
+    Args:
+        mesh_path: Input mesh
+        voxel_pitch: Size of each voxel (smaller = higher resolution)
+        output_path: Output mesh path
+    """
+    try:
+        mesh = trimesh.load(mesh_path, force='mesh')
+
+        if isinstance(mesh, trimesh.Scene):
+            mesh = mesh.dump(concatenate=True)
+
+        # Create voxel grid
+        voxel_grid = mesh.voxelized(pitch=voxel_pitch)
+
+        # Convert back to mesh
+        voxel_mesh = voxel_grid.as_boxes()
+
+        # Export
+        voxel_mesh.export(output_path)
+
+        return {
+            "success": True,
+            "output_path": output_path,
+            "vertices": len(voxel_mesh.vertices),
+            "faces": len(voxel_mesh.faces),
+            "voxel_pitch": voxel_pitch
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def simplify_mesh(mesh_path: str, reduction_percent: float, output_path: str) -> Dict[str, Any]:
+    """
+    Reduce polygon count using quadric error metrics (like Blender's decimate).
+
+    Args:
+        mesh_path: Input mesh
+        reduction_percent: Percentage to reduce (0-99)
+        output_path: Output mesh path
+    """
+    try:
+        mesh = trimesh.load(mesh_path, force='mesh')
+
+        if isinstance(mesh, trimesh.Scene):
+            mesh = mesh.dump(concatenate=True)
+
+        original_faces = len(mesh.faces)
+        original_vertices = len(mesh.vertices)
+
+        # Calculate target ratio (0-1, where 0.9 means reduce by 90%)
+        # reduction_percent is 0-99.9, convert to 0-0.999 ratio
+        # At 99.9%, only 0.1% of faces remain (extremely low poly)
+        target_reduction = min(0.999, max(0.01, reduction_percent / 100.0))
+
+        # Use quadric decimation (requires fast_simplification package)
+        import fast_simplification
+        simplified_vertices, simplified_faces = fast_simplification.simplify(
+            mesh.vertices,
+            mesh.faces,
+            target_reduction=target_reduction
+        )
+        simplified = trimesh.Trimesh(vertices=simplified_vertices, faces=simplified_faces)
+
+        # Export
+        simplified.export(output_path)
+
+        return {
+            "success": True,
+            "output_path": output_path,
+            "original_faces": original_faces,
+            "original_vertices": original_vertices,
+            "final_faces": len(simplified.faces),
+            "final_vertices": len(simplified.vertices),
+            "reduction_percent": reduction_percent,
+            "method": "quadric_decimation"
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def optimize_mesh(mesh_path: str, output_path: str, target_reduction: float = 0.5) -> Dict[str, Any]:
+    """
+    Optimize mesh using lossless cleanup followed by QEM simplification.
+
+    Steps:
+    1. Merge duplicate vertices
+    2. Remove degenerate faces (zero area)
+    3. Remove duplicate faces
+    4. Remove unreferenced vertices
+    5. QEM (Quadric Error Metric) simplification to reduce polygon count
+
+    Args:
+        mesh_path: Input mesh
+        output_path: Output mesh path
+        target_reduction: Target reduction ratio for QEM (0.0-1.0, default 0.5 = 50% reduction)
+    """
+    try:
+        mesh = trimesh.load(mesh_path, force='mesh')
+
+        if isinstance(mesh, trimesh.Scene):
+            mesh = mesh.dump(concatenate=True)
+
+        original_faces = len(mesh.faces)
+        original_vertices = len(mesh.vertices)
+
+        # Step 1: Merge duplicate vertices (vertices at same position)
+        mesh.merge_vertices()
+
+        # Step 2: Remove degenerate faces (zero area triangles)
+        mask = mesh.nondegenerate_faces()
+        if mask is not None and len(mask) > 0:
+            mesh.update_faces(mask)
+
+        # Step 3: Remove duplicate faces
+        mesh.update_faces(mesh.unique_faces())
+
+        # Step 4: Remove unreferenced vertices
+        mesh.remove_unreferenced_vertices()
+
+        after_cleanup_faces = len(mesh.faces)
+        after_cleanup_vertices = len(mesh.vertices)
+
+        # Step 5: QEM simplification
+        qem_applied = False
+        if target_reduction > 0.01 and after_cleanup_faces > 100:
+            try:
+                import fast_simplification
+                simplified_vertices, simplified_faces = fast_simplification.simplify(
+                    mesh.vertices,
+                    mesh.faces,
+                    target_reduction=min(0.95, max(0.01, target_reduction))
+                )
+                mesh = trimesh.Trimesh(vertices=simplified_vertices, faces=simplified_faces)
+                qem_applied = True
+            except ImportError:
+                # fast_simplification not available, skip QEM step
+                pass
+            except Exception as qem_error:
+                # QEM failed, continue with cleaned mesh
+                print(f"QEM simplification failed: {qem_error}", file=sys.stderr)
+
+        final_faces = len(mesh.faces)
+        final_vertices = len(mesh.vertices)
+
+        # Export
+        mesh.export(output_path)
+
+        faces_removed = original_faces - final_faces
+        vertices_removed = original_vertices - final_vertices
+
+        return {
+            "success": True,
+            "output_path": output_path,
+            "original_faces": original_faces,
+            "original_vertices": original_vertices,
+            "after_cleanup_faces": after_cleanup_faces,
+            "after_cleanup_vertices": after_cleanup_vertices,
+            "final_faces": final_faces,
+            "final_vertices": final_vertices,
+            "faces_removed": faces_removed,
+            "vertices_removed": vertices_removed,
+            "faces_reduction_percent": round(faces_removed / original_faces * 100, 2) if original_faces > 0 else 0,
+            "vertices_reduction_percent": round(vertices_removed / original_vertices * 100, 2) if original_vertices > 0 else 0,
+            "qem_applied": qem_applied,
+            "target_reduction": target_reduction
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def main():
     parser = argparse.ArgumentParser(description='Mesh processing tool using trimesh')
-    parser.add_argument('command', choices=['analyze', 'delete', 'keep_largest', 'export', 'extract', 'extract_all'],
+    parser.add_argument('command', choices=['analyze', 'delete', 'keep_largest', 'export', 'extract', 'extract_all', 'voxelize', 'simplify', 'optimize'],
                         help='Command to execute')
     parser.add_argument('--input', '-i', required=True, help='Input mesh path')
     parser.add_argument('--output', '-o', help='Output mesh path or directory')
     parser.add_argument('--indices', '-d', help='Comma-separated list of component indices to delete')
     parser.add_argument('--format', '-f', default='obj', help='Export format (obj, glb, stl, ply)')
     parser.add_argument('--component', '-c', type=int, help='Component index for extraction')
+    parser.add_argument('--pitch', type=float, help='Voxel pitch for voxelize')
+    parser.add_argument('--reduction', type=float, help='Reduction percentage (0-99) for simplify/optimize (default: 50 for optimize)')
 
     args = parser.parse_args()
 
@@ -410,6 +586,26 @@ def main():
             result = {"success": False, "error": "Output directory required for extract_all command"}
         else:
             result = extract_all_components(args.input, args.output)
+
+    elif args.command == 'voxelize':
+        if not args.output or args.pitch is None:
+            result = {"success": False, "error": "Output path and pitch required for voxelize command"}
+        else:
+            result = voxelize_mesh(args.input, args.pitch, args.output)
+
+    elif args.command == 'simplify':
+        if not args.output or args.reduction is None:
+            result = {"success": False, "error": "Output path and reduction required for simplify command"}
+        else:
+            result = simplify_mesh(args.input, args.reduction, args.output)
+
+    elif args.command == 'optimize':
+        if not args.output:
+            result = {"success": False, "error": "Output path required for optimize command"}
+        else:
+            # Use reduction as target_reduction ratio (0-1), default 0.5 (50% reduction)
+            target_reduction = args.reduction / 100.0 if args.reduction is not None else 0.5
+            result = optimize_mesh(args.input, args.output, target_reduction)
 
     print(json.dumps(result), flush=True)
 

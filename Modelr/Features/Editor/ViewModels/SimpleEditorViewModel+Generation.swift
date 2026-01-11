@@ -62,6 +62,10 @@ extension SimpleEditorViewModel {
                             print("[Gen] transitionToPostProcess returned, currentStep=\(String(describing: self.currentStep))")
                         }
 
+                        // Losslessly optimize mesh (remove duplicate verts/faces)
+                        self.updateHandoffProgress(progress: 0.1, detail: "Optimizing mesh...")
+                        await self.optimizeMesh()
+
                         // Run preload (this does the heavy Python processing AND SceneKit preloading)
                         // Progress updates are handled inside preloadMeshAnalysis via updateHandoffProgress
                         // Even if this fails or times out, the defer block ensures transition happens

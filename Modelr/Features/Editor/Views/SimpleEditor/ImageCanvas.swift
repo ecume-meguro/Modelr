@@ -41,11 +41,11 @@ struct ImageCanvas: View {
                     .transition(.opacity.animation(.easeOut(duration: 0.2)))
             }
 
-            // Post-process: show colored component viewer (only after handoff completes)
-            if viewModel.currentStep == .postProcess {
+            // Post-process & Modify: show colored component viewer or modified mesh
+            if viewModel.currentStep == .postProcess || viewModel.currentStep == .modify {
                 ZStack {
                     Group {
-                        if viewModel.isAnalyzingMesh || viewModel.isExtractingComponents {
+                        if viewModel.isAnalyzingMesh || viewModel.isExtractingComponents || viewModel.isModifyingMesh {
                             postProcessLoadingView
                                 .padding(AppDesign.Spacing.p24)
                         } else if !viewModel.componentFiles.isEmpty && !viewModel.preloadedComponentNodes.isEmpty {
@@ -61,6 +61,7 @@ struct ImageCanvas: View {
                                 displayMode: $viewModel.meshDisplayMode,
                                 preloadedNodes: viewModel.preloadedComponentNodes,
                                 customColor: $viewModel.customModelColor,
+                                sourceImage: viewModel.inputImage,
                                 onComponentClicked: { index in
                                     withAnimation(.easeOut(duration: 0.15)) {
                                         viewModel.handleViewportComponentClick(index)
@@ -84,6 +85,7 @@ struct ImageCanvas: View {
                                 isolatedIndex: viewModel.isolatedComponentIndex,
                                 displayMode: $viewModel.meshDisplayMode,
                                 customColor: $viewModel.customModelColor,
+                                sourceImage: viewModel.inputImage,
                                 onComponentClicked: { index in
                                     withAnimation(.easeOut(duration: 0.15)) {
                                         viewModel.handleViewportComponentClick(index)
@@ -96,12 +98,13 @@ struct ImageCanvas: View {
                             .id("components-fallback-\(viewModel.componentFiles.count)")
                             .padding(AppDesign.Spacing.p24)
                         } else if let modelURL = viewModel.currentMeshURL {
-                            // Final fallback: show raw model
-                            ModelViewerContainer(modelURL: modelURL, viewMode: viewModel.viewMode)
-                                .id("\(modelURL)-\(viewModel.viewMode)")
+                            // Final fallback: show raw model (includes modified mesh)
+                            ModelViewerContainer(modelURL: modelURL, viewMode: viewModel.viewMode, customColor: viewModel.customModelColor)
+                                .id("mesh-\(modelURL.lastPathComponent)-\(viewModel.viewMode)-\(viewModel.modifiedModelURL?.lastPathComponent ?? "none")")
                                 .padding(AppDesign.Spacing.p24)
                         }
                     }
+                    .id("postprocess-\(viewModel.componentFiles.isEmpty)-\(viewModel.modifiedModelURL?.lastPathComponent ?? "none")-\(viewModel.isModifyingMesh)")
 
                     // Controls are now inside ComponentModelViewerContainer
                 }

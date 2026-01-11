@@ -379,6 +379,13 @@ extension SimpleEditorViewModel {
             } else {
                 goBack()
             }
+        case .modify:
+            // Warn if there are modifications applied
+            if modifiedModelURL != nil {
+                showDiscardModelWarning = true
+            } else {
+                goBack()
+            }
         }
     }
 
@@ -397,6 +404,8 @@ extension SimpleEditorViewModel {
             return generated3DModelURL == nil && !isGenerating
         case .postProcess:
             return !hasPendingDeletions && processedModelURL == nil
+        case .modify:
+            return modifiedModelURL == nil
         }
     }
 

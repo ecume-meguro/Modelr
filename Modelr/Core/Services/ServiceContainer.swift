@@ -407,6 +407,7 @@ class PreloadManager: ObservableObject {
         modelCheckTask?.cancel()
         modelCheckTask = nil
         maskMergeDebounceWorkItem?.cancel()
+        maskMergeDebounceWorkItem = nil
 
         preloadedMergedMask = nil
         preloadedComposite = nil
