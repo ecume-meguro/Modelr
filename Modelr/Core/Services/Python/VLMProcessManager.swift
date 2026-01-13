@@ -11,10 +11,8 @@ class VLMProcessManager {
     var onStdoutData: ((Data) -> Void)?
     var onStderrLine: ((String) -> Void)?
 
-    private var responseBuffer = Data()
-    private var pendingContinuations: [(Data) -> Void] = []
-    private let continuationLock = NSLock()
-    private let requestSemaphore = DispatchSemaphore(value: 1)
+    // Unified actor-based communication - no NSLocks, no race conditions
+    private let bridge = UnifiedProcessBridge<VLMRequest, VLMResponse>()
 
     var isRunning: Bool {
         process?.isRunning ?? false
@@ -92,6 +90,14 @@ class VLMProcessManager {
             }
         }
 
+        // Set up termination handler to cancel all pending requests
+        process?.terminationHandler = { [weak self] terminatedProcess in
+            print("[VLM] Process terminated unexpectedly (exit code: \(terminatedProcess.terminationStatus))")
+            Task {
+                await self?.bridge.cancelAll(error: PythonError.processTerminated)
+            }
+        }
+
         try process?.run()
 
         // Register for cleanup on app termination
@@ -103,13 +109,18 @@ class VLMProcessManager {
         print("[VLM] Server started with PID \(vlmPid)")
     }
 
-    /// Stop the server synchronously
+    /// Stop the server asynchronously (non-blocking)
     func stopServer() {
         guard let proc = process else { return }
         let pid = proc.processIdentifier
 
         // Unregister from cleanup
         ProcessCleanup.shared.unregisterProcess(pid)
+
+        // Cancel all pending requests asynchronously
+        Task {
+            await bridge.cancelAll(error: PythonError.workerNotRunning)
+        }
 
         // Try graceful exit first
         if let stdin = stdinPipe?.fileHandleForWriting {
@@ -120,6 +131,8 @@ class VLMProcessManager {
         // Clear handlers before waiting
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
         stderrPipe?.fileHandleForReading.readabilityHandler = nil
+        // Clear termination handler to prevent double-resuming continuations
+        proc.terminationHandler = nil
 
         // Give brief grace period for graceful exit
         if proc.isRunning {
@@ -198,141 +211,53 @@ class VLMProcessManager {
     // MARK: - Communication
 
     private func handleStdoutData(_ data: Data) {
-        responseBuffer.append(data)
+        Task {
+            // Parse responses using bridge
+            let responses = await bridge.handleStdout(data)
 
-        while let newlineRange = responseBuffer.range(of: Data("\n".utf8)) {
-            let lineData = responseBuffer.subdata(in: responseBuffer.startIndex..<newlineRange.lowerBound)
-            responseBuffer.removeSubrange(responseBuffer.startIndex...newlineRange.lowerBound)
-
-            guard let lineString = String(data: lineData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !lineString.isEmpty else { continue }
-
-            // Skip non-JSON lines
-            if !lineString.hasPrefix("{") || !lineString.hasSuffix("}") {
-                print("[VLM stdout] \(lineString)")
-                continue
-            }
-
-            print("[VLM JSON] \(lineString)")
-
-            onStdoutData?(Data(lineString.utf8))
-
-            continuationLock.lock()
-            if !pendingContinuations.isEmpty {
-                let continuation = pendingContinuations.removeFirst()
-                continuationLock.unlock()
-                continuation(Data(lineString.utf8))
-            } else {
-                continuationLock.unlock()
+            // Dispatch all parsed responses
+            for (messageId, response) in responses {
+                print("[VLM] Received response for \(messageId)")
+                await bridge.dispatchResponse(messageId: messageId, response: response)
             }
         }
     }
 
     /// Wait for the ready signal from the server
     func waitForReady(timeout: TimeInterval) async throws -> VLMResponse {
-        return try await withCheckedThrowingContinuation { continuation in
-            // Thread-safe tracker to prevent double-resume of continuation
-            final class ResumeTracker: @unchecked Sendable {
-                private let lock = NSLock()
-                private var _resumed = false
-
-                var resumed: Bool {
-                    get { lock.lock(); defer { lock.unlock() }; return _resumed }
-                    set { lock.lock(); defer { lock.unlock() }; _resumed = newValue }
-                }
-            }
-            let tracker = ResumeTracker()
-
-            continuationLock.lock()
-            pendingContinuations.append { [tracker] data in
-                guard !tracker.resumed else { return }
-                tracker.resumed = true
-                do {
-                    let response = try JSONDecoder().decode(VLMResponse.self, from: data)
-                    continuation.resume(returning: response)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-            continuationLock.unlock()
-
-            // Timeout handling
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self, tracker] in
-                self?.continuationLock.lock()
-                guard !tracker.resumed else {
-                    self?.continuationLock.unlock()
-                    return
-                }
-                tracker.resumed = true
-                // Remove pending continuation that hasn't been consumed yet
-                if let strongSelf = self, !strongSelf.pendingContinuations.isEmpty {
-                    strongSelf.pendingContinuations.removeFirst()
-                }
-                self?.continuationLock.unlock()
-                continuation.resume(throwing: PythonError.timeout)
-            }
+        // The Python server broadcasts ready with messageId "READY"
+        let readyMessageId = "READY"
+        let request = VLMRequest(command: "ready")
+        guard stdinPipe?.fileHandleForWriting != nil else {
+            throw PythonError.workerNotRunning
         }
+
+        return try await bridge.sendRequest(
+            request,
+            messageId: readyMessageId,
+            timeout: .seconds(Int64(timeout)),
+            write: { data in
+                // Don't actually send - just wait for server's ready broadcast
+            }
+        )
     }
 
     /// Send a request and wait for the response
     func sendRequest(_ request: VLMRequest, timeout: TimeInterval = 60) async throws -> VLMResponse {
-        requestSemaphore.wait()
-        defer { requestSemaphore.signal() }
-
         guard let stdin = stdinPipe?.fileHandleForWriting else {
             throw PythonError.workerNotRunning
         }
 
-        let jsonData = try JSONEncoder().encode(request)
-        guard var jsonString = String(data: jsonData, encoding: .utf8) else {
-            throw PythonError.encodingError
-        }
-        print("[VLM Request] \(jsonString)")
-        jsonString += "\n"
+        print("[VLM Request] \(request.command)")
 
-        try stdin.write(contentsOf: Data(jsonString.utf8))
-
-        return try await withCheckedThrowingContinuation { continuation in
-            // Thread-safe tracker to prevent double-resume of continuation
-            final class CompletionTracker: @unchecked Sendable {
-                private var _completed = false
-                private let lock = NSLock()
-
-                func tryComplete() -> Bool {
-                    lock.lock()
-                    defer { lock.unlock() }
-                    if _completed { return false }
-                    _completed = true
-                    return true
-                }
-
-                var isCompleted: Bool {
-                    lock.lock()
-                    defer { lock.unlock() }
-                    return _completed
-                }
+        return try await bridge.sendRequest(
+            request,
+            messageId: request.messageId,
+            timeout: .seconds(Int64(timeout)),
+            write: { data in
+                try stdin.write(contentsOf: data)
             }
-            let tracker = CompletionTracker()
-
-            continuationLock.lock()
-            pendingContinuations.append { [tracker] data in
-                guard tracker.tryComplete() else { return }
-                do {
-                    let response = try JSONDecoder().decode(VLMResponse.self, from: data)
-                    continuation.resume(returning: response)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-            continuationLock.unlock()
-
-            // Timeout handling
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [tracker] in
-                if tracker.tryComplete() {
-                    continuation.resume(throwing: PythonError.timeout)
-                }
-            }
-        }
+        )
     }
 
     /// Describe an image - returns the detected object name
@@ -367,6 +292,19 @@ class VLMProcessManager {
     }
 
     deinit {
-        stopServer()
+        // CRITICAL: deinit must be fast and non-blocking
+        // Fire-and-forget termination without waiting
+        let pid = process?.processIdentifier
+        process?.terminate()
+
+        // Forceful cleanup in background (don't block deinit)
+        if let pid = pid {
+            DispatchQueue.global().async {
+                usleep(200_000)  // 200ms grace period
+                kill(pid, SIGKILL)
+            }
+        }
+
+        // Don't call stopServer() - it blocks with waitUntilExit()
     }
 }

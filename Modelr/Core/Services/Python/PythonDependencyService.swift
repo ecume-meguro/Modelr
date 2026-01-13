@@ -9,6 +9,7 @@ class PythonDependencyService {
     var inferenceVenvReady = false
     var hunyuanVenvReady = false
     var resourcePathOverride: String?
+    var processTracker: ProcessTracker?  // Optional tracker for cleanup
 
     // Legacy flags (deprecated - use inferenceVenvReady)
     var samVenvReady: Bool { inferenceVenvReady }
@@ -192,6 +193,9 @@ class PythonDependencyService {
         process.standardOutput = pipe
         process.standardError = pipe
 
+        // Track process for cleanup
+        let description = "uv sync (Python \(pythonVersion)) - \(stage.rawValue)"
+
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             if let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty {
@@ -201,13 +205,32 @@ class PythonDependencyService {
             }
         }
 
-        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+        return await withCheckedContinuation { [weak self] (continuation: CheckedContinuation<Bool, Never>) in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     try process.run()
+                    self?.processTracker?.track(process, description: description)
+
+                    // Wait for process with timeout (10 minutes max)
+                    let timeout = DispatchTime.now() + .seconds(600)
+                    var timedOut = false
+
+                    DispatchQueue.global().asyncAfter(deadline: timeout) {
+                        if process.isRunning {
+                            timedOut = true
+                            process.terminate()
+                        }
+                    }
+
                     process.waitUntilExit()
                     pipe.fileHandleForReading.readabilityHandler = nil
-                    continuation.resume(returning: process.terminationStatus == 0)
+
+                    if timedOut {
+                        onProgress(SetupProgressUpdate(stage: .failed, status: "Sync timed out after 10 minutes", logLine: "Process timeout"))
+                        continuation.resume(returning: false)
+                    } else {
+                        continuation.resume(returning: process.terminationStatus == 0)
+                    }
                 } catch {
                     onProgress(SetupProgressUpdate(stage: .failed, status: "Sync failed", logLine: error.localizedDescription))
                     continuation.resume(returning: false)
@@ -221,6 +244,9 @@ class PythonDependencyService {
         process.standardOutput = pipe
         process.standardError = pipe
 
+        // Track process for cleanup
+        let description = "\(process.executableURL?.lastPathComponent ?? "process") - \(stage.rawValue)"
+
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             if let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty {
@@ -230,10 +256,11 @@ class PythonDependencyService {
             }
         }
 
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        await withCheckedContinuation { [weak self] (continuation: CheckedContinuation<Void, Never>) in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     try process.run()
+                    self?.processTracker?.track(process, description: description)
                     process.waitUntilExit()
                 } catch {
                     onProgress(SetupProgressUpdate(stage: .failed, status: "Process execution failed", logLine: error.localizedDescription))

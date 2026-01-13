@@ -13,6 +13,7 @@ extension SimpleEditorViewModel {
         guard voxelResolution > 0, let meshURL = currentMeshForModify else {
             await MainActor.run {
                 modifiedModelURL = nil
+                isModifyingMesh = false
             }
             return
         }
@@ -20,6 +21,12 @@ extension SimpleEditorViewModel {
         let outputPath = NSTemporaryDirectory() + "voxelized_\(UUID().uuidString).obj"
 
         await MainActor.run { isModifyingMesh = true }
+
+        // Check for early cancellation
+        guard !Task.isCancelled else {
+            await MainActor.run { isModifyingMesh = false }
+            return
+        }
 
         let result = await runMeshModifier(
             command: "voxelize",
@@ -56,6 +63,7 @@ extension SimpleEditorViewModel {
         guard lowPolyReduction > 0, let meshURL = currentMeshForModify else {
             await MainActor.run {
                 modifiedModelURL = nil
+                isModifyingMesh = false
             }
             return
         }
@@ -63,6 +71,12 @@ extension SimpleEditorViewModel {
         let outputPath = NSTemporaryDirectory() + "lowpoly_\(UUID().uuidString).obj"
 
         await MainActor.run { isModifyingMesh = true }
+
+        // Check for early cancellation
+        guard !Task.isCancelled else {
+            await MainActor.run { isModifyingMesh = false }
+            return
+        }
 
         // Apply custom curve: first 50% of slider → 0-95% reduction, last 50% → 95-99.9% reduction
         // This gives fine control at low values and makes the extreme reductions occupy the last half

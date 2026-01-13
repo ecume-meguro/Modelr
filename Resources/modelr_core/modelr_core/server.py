@@ -85,11 +85,12 @@ class BaseModelServer:
         """Standard JSON communication loop."""
         try:
             self.initialize()
-            
-            # Signal ready to Swift
+
+            # Signal ready to Swift with a known messageId for the UnifiedProcessBridge
             print(json.dumps({
-                "success": True, 
-                "ready": True, 
+                "messageId": "READY",
+                "success": True,
+                "ready": True,
                 "device": self.device,
                 "server": self.name
             }), flush=True)
@@ -98,11 +99,12 @@ class BaseModelServer:
                 line = line.strip()
                 if not line:
                     continue
-                
+
                 try:
                     request = json.loads(line)
                     command = request.get("command", "")
-                    
+                    message_id = request.get("messageId")  # Echo back messageId
+
                     if command == "set_image":
                         response = self.handle_set_image(request)
                     elif command == "predict":
@@ -110,11 +112,17 @@ class BaseModelServer:
                     elif command == "ping":
                         response = {"success": True, "status": "pong", "device": self.device}
                     elif command == "exit":
-                        print(json.dumps({"success": True, "status": "exiting"}), flush=True)
+                        exit_response = {"success": True, "status": "exiting"}
+                        if message_id:
+                            exit_response["messageId"] = message_id
+                        print(json.dumps(exit_response), flush=True)
                         break
                     else:
                         response = self.handle_custom_command(command, request)
-                    
+
+                    # Always include messageId in response if it was in request
+                    if message_id:
+                        response["messageId"] = message_id
                     print(json.dumps(response), flush=True)
 
                 except json.JSONDecodeError as e:

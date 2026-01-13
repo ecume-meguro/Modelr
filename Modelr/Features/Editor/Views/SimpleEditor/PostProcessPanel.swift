@@ -613,10 +613,13 @@ struct PostProcessPanel: View {
         panel.canCreateDirectories = true
 
         if panel.runModal() == .OK, let url = panel.url {
-            Task {
+            Task { @MainActor in
                 let success = await viewModel.exportMesh(to: url)
                 if success {
                     NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
+                } else {
+                    // Show error alert on failure
+                    viewModel.handleError(AppError.meshProcessing("Failed to export mesh to \(url.lastPathComponent)"))
                 }
             }
         }

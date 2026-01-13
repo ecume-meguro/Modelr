@@ -44,7 +44,23 @@ class PythonEnvironment: ObservableObject {
     }
     
 deinit {
-        processManager.stopPersistentWorker()
+        // CRITICAL: deinit must be fast and non-blocking
+        // Fire-and-forget cleanup without blocking
+        let process = processManager.persistentProcess
+        let pid = process?.processIdentifier
+
+        // Terminate process without waiting
+        process?.terminate()
+
+        // Forceful cleanup in background
+        if let pid = pid {
+            DispatchQueue.global().async {
+                usleep(200_000)  // 200ms grace period
+                kill(pid, SIGKILL)
+            }
+        }
+
+        // Don't call stopPersistentWorker() - it blocks
     }
     
     // MARK: - Setup

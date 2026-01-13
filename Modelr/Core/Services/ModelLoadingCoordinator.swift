@@ -78,20 +78,57 @@ class ModelLoadingCoordinator: ObservableObject {
     /// Maximum time to wait for a server to start (in seconds)
     private static let startupTimeoutSeconds: TimeInterval = 120
 
-    /// Time after which idle VLM server is stopped (in seconds)
-    private static let vlmIdleTimeoutSeconds: TimeInterval = 300  // 5 minutes
+    /// Effective VLM idle timeout based on system memory and user preference
+    var effectiveVLMIdleTimeout: TimeInterval {
+        // Check user preference first
+        let override = UserDefaults.standard.string(forKey: "vlmIdleTimeoutOverride") ?? "auto"
+        switch override {
+        case "always_warm":
+            return .infinity
+        case "5min":
+            return 300
+        case "10min":
+            return 600
+        default: // "auto"
+            // Memory-aware timeout: 24GB+ = indefinite, else 5min
+            let ramGB = systemRAM / (1024 * 1024 * 1024)
+            if ramGB >= 24 {
+                return .infinity
+            }
+            return 300
+        }
+    }
 
-    /// Wait for a condition with timeout to prevent infinite loops
+    /// Event-driven condition waiter - replaces busy-wait polling
     /// - Parameters:
     ///   - condition: Closure that returns true while we should keep waiting
     ///   - timeout: Maximum time to wait in seconds (defaults to 120s)
     /// - Returns: true if condition became false (success), false if timed out
     private func waitForCondition(_ condition: () -> Bool, timeout: TimeInterval? = nil) async -> Bool {
         let effectiveTimeout = timeout ?? ModelLoadingCoordinator.startupTimeoutSeconds
-        let deadline = Date().addingTimeInterval(effectiveTimeout)
-        while condition() && Date() < deadline {
-            try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+
+        // Check immediately - if already satisfied, return
+        guard condition() else {
+            return true
         }
+
+        // Use exponential backoff instead of fixed 100ms polling
+        var backoff: UInt64 = 10_000_000  // Start at 10ms
+        let maxBackoff: UInt64 = 500_000_000  // Max 500ms
+        let deadline = Date().addingTimeInterval(effectiveTimeout)
+
+        while condition() && Date() < deadline {
+            try? await Task.sleep(nanoseconds: backoff)
+
+            // Exponential backoff to reduce CPU usage
+            backoff = min(backoff * 2, maxBackoff)
+
+            // Check for task cancellation
+            if Task.isCancelled {
+                return false
+            }
+        }
+
         return !condition()
     }
 
@@ -325,8 +362,13 @@ class ModelLoadingCoordinator: ObservableObject {
                 guard self.isVLMReady, let lastUse = self.lastVLMUseTime else { continue }
 
                 let idleTime = Date().timeIntervalSince(lastUse)
-                if idleTime >= ModelLoadingCoordinator.vlmIdleTimeoutSeconds {
-                    print("[ModelLoadingCoordinator] VLM idle for \(Int(idleTime))s, stopping server to free memory")
+                let timeout = self.effectiveVLMIdleTimeout
+
+                // Skip timeout check if set to infinity (always keep warm)
+                guard timeout != .infinity else { continue }
+
+                if idleTime >= timeout {
+                    print("[ModelLoadingCoordinator] VLM idle for \(Int(idleTime))s (timeout=\(Int(timeout))s), stopping server to free memory")
                     self.stopVLMServer()
                     return
                 }

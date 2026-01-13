@@ -84,7 +84,15 @@ extension SimpleEditorViewModel {
         let success = await env.setup(modelChoice: selectedModelChoice) { [weak self] update in
             Task { @MainActor in
                 guard let self = self else { return }
-                
+
+                // Detect stage transition for download stages and reset query flag
+                let previousStage = self.currentSetupStage
+                let isEnteringNewDownloadStage = (update.stage == .downloadingSAM || update.stage == .downloadingHunyuan) &&
+                                                  update.stage != previousStage
+                if isEnteringNewDownloadStage {
+                    self.didQueryCurrentDownloadTotal = false
+                }
+
                 // 1. Map Stage to UI SubStep
                 self.currentSetupStage = update.stage
                 let newSubStep = self.mapStageToSubStep(update.stage)
@@ -179,6 +187,9 @@ extension SimpleEditorViewModel {
             setupStatus = "Setup Complete"
             setupSubStepCompleted = Set(SetupSubStep.allCases)
             isSetupComplete = true
+
+            // Stop download monitoring
+            downloadMonitor.stopMonitoring()
 
             // Write setup completion marker file
             do {

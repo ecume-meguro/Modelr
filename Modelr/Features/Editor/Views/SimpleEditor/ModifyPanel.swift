@@ -12,6 +12,10 @@ struct ModifyPanel: View {
 
     @State private var selection: ModifySelection = .voxelize
 
+    // Debounce tasks to prevent concurrent mesh operations during slider drag
+    @State private var voxelDebounceTask: Task<Void, Never>?
+    @State private var lowPolyDebounceTask: Task<Void, Never>?
+
     var body: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p16) {
             // Header with info
@@ -118,18 +122,28 @@ struct ModifyPanel: View {
                 format: "%.3f",
                 minimumValue: 0.015
             )
-            .onChange(of: viewModel.voxelResolution) { oldValue, newValue in
+            .onChange(of: viewModel.voxelResolution) { _, newValue in
                 // Snap to 0.015 minimum if user tries to set below (but allow 0 for disabled)
                 if newValue > 0 && newValue < 0.015 {
                     viewModel.voxelResolution = 0.015
                     return
                 }
 
+                // Cancel previous debounce task
+                voxelDebounceTask?.cancel()
+
                 if newValue >= 0.015 {
                     // Clear low poly when using voxelize
                     viewModel.lowPolyReduction = 0
                     viewModel.modifyType = .voxelize
-                    Task { await viewModel.applyVoxelization() }
+
+                    // Debounce with 300ms delay to prevent concurrent processes during slider drag
+                    voxelDebounceTask = Task {
+                        try? await Task.sleep(nanoseconds: 300_000_000) // 300ms
+                        guard !Task.isCancelled else { return }
+
+                        await viewModel.applyVoxelization()
+                    }
                 } else if viewModel.modifyType == .voxelize {
                     viewModel.modifyType = .none
                     viewModel.modifiedModelURL = nil
@@ -163,11 +177,21 @@ struct ModifyPanel: View {
                 valueSuffix: "%"
             )
             .onChange(of: viewModel.lowPolyReduction) { _, newValue in
+                // Cancel previous debounce task
+                lowPolyDebounceTask?.cancel()
+
                 if newValue > 0 {
                     // Clear voxelize when using low poly
                     viewModel.voxelResolution = 0
                     viewModel.modifyType = .lowPoly
-                    Task { await viewModel.applyLowPoly() }
+
+                    // Debounce with 300ms delay to prevent concurrent processes during slider drag
+                    lowPolyDebounceTask = Task {
+                        try? await Task.sleep(nanoseconds: 300_000_000) // 300ms
+                        guard !Task.isCancelled else { return }
+
+                        await viewModel.applyLowPoly()
+                    }
                 } else if viewModel.modifyType == .lowPoly {
                     viewModel.modifyType = .none
                     viewModel.modifiedModelURL = nil
@@ -299,10 +323,13 @@ struct ModifyPanel: View {
         panel.canCreateDirectories = true
 
         if panel.runModal() == .OK, let url = panel.url {
-            Task {
+            Task { @MainActor in
                 let success = await viewModel.exportMesh(to: url)
                 if success {
                     NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
+                } else {
+                    // Show error alert on failure
+                    viewModel.handleError(AppError.meshProcessing("Failed to export mesh to \(url.lastPathComponent)"))
                 }
             }
         }

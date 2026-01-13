@@ -185,6 +185,7 @@ enum PythonError: Error, LocalizedError {
     case invalidResponse(String)
     case predictionFailed(String)
     case timeout
+    case processTerminated
     
     var errorDescription: String? {
         switch self {
@@ -202,6 +203,8 @@ enum PythonError: Error, LocalizedError {
             return "Prediction failed: \(error)"
         case .timeout:
             return "Request timed out"
+        case .processTerminated:
+            return "Python process terminated unexpectedly"
         }
     }
 }
@@ -283,7 +286,7 @@ extension PythonError {
         switch self {
         case .timeout, .workerNotRunning:
             return true
-        case .uvNotFound, .invalidResponse, .predictionFailed, .encodingError, .workerNotReady:
+        case .uvNotFound, .invalidResponse, .predictionFailed, .encodingError, .workerNotReady, .processTerminated:
             return false
         }
     }
@@ -304,6 +307,8 @@ extension PythonError {
             return error
         case .timeout:
             return "Try again or reduce image size"
+        case .processTerminated:
+            return "Restart the application - Python process crashed"
         }
     }
 }

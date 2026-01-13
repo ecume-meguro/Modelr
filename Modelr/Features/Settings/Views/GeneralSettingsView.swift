@@ -7,6 +7,8 @@ struct GeneralSettingsView: View {
     @State private var showResetConfirmation = false
     @State private var isClearing = false
 
+    @AppStorage("vlmIdleTimeoutOverride") private var vlmTimeout: String = "auto"
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
@@ -28,6 +30,11 @@ struct GeneralSettingsView: View {
 
                 // Data Locations
                 dataLocationsSection
+
+                Divider()
+
+                // Performance
+                performanceSection
 
                 Divider()
 
@@ -169,6 +176,61 @@ struct GeneralSettingsView: View {
                 Label("Open in Finder", systemImage: "folder")
             }
             .buttonStyle(.bordered)
+        }
+    }
+
+    @ViewBuilder
+    private var performanceSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Performance", systemImage: "gauge")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 16) {
+                // VLM Idle Timeout setting
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Vision Model Idle Timeout")
+                        .font(.subheadline.weight(.medium))
+
+                    Text("Controls how long the vision model stays loaded in memory when not in use")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Picker("VLM Timeout", selection: $vlmTimeout) {
+                        Text("Auto (memory-based)").tag("auto")
+                        Text("Always keep warm").tag("always_warm")
+                        Text("5 minutes").tag("5min")
+                        Text("10 minutes").tag("10min")
+                    }
+                    .pickerStyle(.radioGroup)
+                    .labelsHidden()
+
+                    // Show current behavior based on selection and system memory
+                    let coordinator = ModelLoadingCoordinator.shared
+                    let ramGB = coordinator.systemRAM / (1024 * 1024 * 1024)
+                    let effectiveBehavior: String = {
+                        switch vlmTimeout {
+                        case "auto":
+                            return ramGB >= 24 ? "System has \(ramGB)GB RAM - keeping warm" : "System has \(ramGB)GB RAM - 5 minute timeout"
+                        case "always_warm":
+                            return "Always keeping warm"
+                        case "5min":
+                            return "5 minute timeout"
+                        case "10min":
+                            return "10 minute timeout"
+                        default:
+                            return ""
+                        }
+                    }()
+
+                    Text(effectiveBehavior)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .padding(.top, 4)
+                }
+                .padding()
+                .background(Color.primary.opacity(0.03))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
         }
     }
 

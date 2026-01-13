@@ -588,8 +588,9 @@ class HunyuanServer:
         try:
             self.initialize()
 
-            # Signal ready to Swift
+            # Signal ready to Swift with known messageId for UnifiedProcessBridge
             self.send_response({
+                "messageId": "READY",
                 "success": True,
                 "ready": True,
                 "device": self.generator.device,
@@ -651,20 +652,30 @@ class HunyuanServer:
                         response = {
                             "success": True,
                             "type": "cancelled",
-                            "message": "No active generation"
+                            "message": "No active generation",
+                            "messageId": request.get("messageId")
                         }
                     elif command == "ping":
                         response = {
                             "success": True,
                             "status": "pong",
                             "device": self.generator.device,
-                            "variant": self.model_variant
+                            "variant": self.model_variant,
+                            "messageId": request.get("messageId")
                         }
                     elif command == "exit":
-                        self.send_response({"success": True, "status": "exiting"})
+                        self.send_response({
+                            "success": True,
+                            "status": "exiting",
+                            "messageId": request.get("messageId")
+                        })
                         break
                     else:
-                        response = {"success": False, "error": f"Unknown command: {command}"}
+                        response = {
+                            "success": False,
+                            "error": f"Unknown command: {command}",
+                            "messageId": request.get("messageId")
+                        }
 
                     self.send_response(response)
 

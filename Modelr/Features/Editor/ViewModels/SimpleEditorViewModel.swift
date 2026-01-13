@@ -79,6 +79,31 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     @Published var lastError: AppError?
     @Published var showErrorAlert: Bool = false
 
+    /// Standardized error handling method
+    /// - Parameters:
+    ///   - error: The error to handle (can be AppError or any Error)
+    ///   - userFacing: If true, shows alert to user; if false, only logs
+    func handleError(_ error: Error, userFacing: Bool = true) {
+        // Convert to AppError if needed
+        let appError: AppError
+        if let err = error as? AppError {
+            appError = err
+        } else {
+            appError = .system(error)
+        }
+
+        // Always log the error
+        print("[Error] \(appError.localizedDescription)")
+
+        // Show alert to user if requested
+        if userFacing {
+            Task { @MainActor in
+                self.lastError = appError
+                self.showErrorAlert = true
+            }
+        }
+    }
+
     // MARK: - Setup State
     enum SetupSubStep: String, CaseIterable {
         case chooseModel = "Choose Model"
@@ -782,6 +807,18 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         imageLoadTask = Task { [weak self] in
             guard let self = self else { return }
 
+            // Ensure isInitializingProject is always reset, even on unexpected failures
+            defer {
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    // Only reset if still initializing (success path sets this explicitly)
+                    if self.isInitializingProject {
+                        self.isInitializingProject = false
+                        self.initializationStatus = ""
+                    }
+                }
+            }
+
             do {
                 try Task.checkCancellation()
 
@@ -1005,7 +1042,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
     /// Initialize the image with SAM backend only (no VLM trigger)
     /// Used during full initialization flow where VLM is called separately
     /// - Returns: true if initialization succeeded, false otherwise
-    private func initializeImageWithoutVLM() async -> Bool {
+    func initializeImageWithoutVLM() async -> Bool {
         guard let path = inputImagePath else {
             print("[Init] No input image path")
             return false

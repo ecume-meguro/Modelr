@@ -11,10 +11,9 @@ class HunyuanProcessManager {
     var onStdoutData: ((Data) -> Void)?
     var onStderrLine: ((String) -> Void)?
 
-    private var responseBuffer = Data()
-    private var pendingContinuations: [(Data) -> Void] = []
-    private let continuationLock = NSLock()
-    private let requestSemaphore = DispatchSemaphore(value: 1)
+    // Unified actor-based communication - eliminates all locks and race conditions
+    private let bridge = ProgressAwareBridge<HunyuanRequest, HunyuanResponse>()
+    private let rateLimiter = ProgressRateLimiter(minInterval: 0.1) // 10 updates/sec max
 
     var isRunning: Bool {
         process?.isRunning ?? false
@@ -96,6 +95,14 @@ class HunyuanProcessManager {
             }
         }
 
+        // Set up termination handler to cancel all pending requests
+        process?.terminationHandler = { [weak self] terminatedProcess in
+            print("[Hunyuan] Process terminated unexpectedly (exit code: \(terminatedProcess.terminationStatus))")
+            Task {
+                await self?.bridge.cancelAll(error: PythonError.processTerminated)
+            }
+        }
+
         try process?.run()
 
         // Register for cleanup on app termination
@@ -137,13 +144,18 @@ class HunyuanProcessManager {
         }
     }
 
-    /// Stop the server synchronously, ensuring all child processes are killed
+    /// Stop the server asynchronously (non-blocking)
     func stopServer() {
         guard let proc = process else { return }
         let pid = proc.processIdentifier
 
         // Unregister from cleanup
         ProcessCleanup.shared.unregisterProcess(pid)
+
+        // Cancel all pending requests asynchronously
+        Task {
+            await bridge.cancelAll(error: PythonError.workerNotRunning)
+        }
 
         // Try graceful exit first
         if let stdin = stdinPipe?.fileHandleForWriting {
@@ -154,6 +166,8 @@ class HunyuanProcessManager {
         // Clear handlers before waiting
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
         stderrPipe?.fileHandleForReading.readabilityHandler = nil
+        // Clear termination handler to prevent double-resuming continuations
+        proc.terminationHandler = nil
 
         // Give brief grace period for graceful exit
         if proc.isRunning {
@@ -233,228 +247,82 @@ class HunyuanProcessManager {
     // MARK: - Communication
 
     private func handleStdoutData(_ data: Data) {
-        responseBuffer.append(data)
+        Task {
+            // Parse responses using bridge
+            let responses = await bridge.handleStdout(data)
 
-        while let newlineRange = responseBuffer.range(of: Data("\n".utf8)) {
-            let lineData = responseBuffer.subdata(in: responseBuffer.startIndex..<newlineRange.lowerBound)
-            responseBuffer.removeSubrange(responseBuffer.startIndex...newlineRange.lowerBound)
+            for (messageId, response) in responses {
+                // Debug logging
+                print("[Hunyuan] Received response for \(messageId): type=\(response.type ?? "nil")")
 
-            guard let lineString = String(data: lineData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !lineString.isEmpty else { continue }
+                // Determine if this is progress or final
+                let isProgress = response.type == "progress"
+                let isFinal = response.type != "progress"
 
-            // Skip non-JSON lines
-            if !lineString.hasPrefix("{") || !lineString.hasSuffix("}") {
-                print("[Hunyuan stdout] \(lineString)")
-                continue
-            }
-
-            // Debug: Log received JSON (truncate if too long)
-            let debugStr = lineString.count > 200 ? String(lineString.prefix(200)) + "..." : lineString
-            print("[Hunyuan JSON] \(debugStr)")
-
-            // Dispatch to all pending continuations (they'll filter by messageId)
-            onStdoutData?(Data(lineString.utf8))
-
-            continuationLock.lock()
-            if !pendingContinuations.isEmpty {
-                let continuation = pendingContinuations.removeFirst()
-                continuationLock.unlock()
-                continuation(Data(lineString.utf8))
-            } else {
-                continuationLock.unlock()
+                // Dispatch with rate limiting for progress
+                if isProgress {
+                    let shouldEmit = await rateLimiter.shouldEmit()
+                    if shouldEmit {
+                        await bridge.dispatchResponse(messageId: messageId, response: response, isProgress: true, isFinal: false)
+                    }
+                } else {
+                    await bridge.dispatchResponse(messageId: messageId, response: response, isProgress: false, isFinal: isFinal)
+                }
             }
         }
     }
 
     /// Wait for the ready signal from the server
     func waitForReady(timeout: TimeInterval) async throws -> HunyuanResponse {
-        return try await withCheckedThrowingContinuation { continuation in
-            // Use a class to track whether continuation has been resumed
-            // Thread-safe tracker to prevent double-resume of continuation
-            final class ResumeTracker: @unchecked Sendable {
-                private let lock = NSLock()
-                private var _resumed = false
+        // The Python server broadcasts ready with messageId "READY"
+        let readyMessageId = "READY"
 
-                var resumed: Bool {
-                    get { lock.lock(); defer { lock.unlock() }; return _resumed }
-                    set { lock.lock(); defer { lock.unlock() }; _resumed = newValue }
-                }
-            }
-            let tracker = ResumeTracker()
-
-            continuationLock.lock()
-            pendingContinuations.append { [tracker] data in
-                guard !tracker.resumed else { return }
-                tracker.resumed = true
-                do {
-                    let response = try JSONDecoder().decode(HunyuanResponse.self, from: data)
-                    continuation.resume(returning: response)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-            continuationLock.unlock()
-
-            // Timeout handling
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self, tracker] in
-                self?.continuationLock.lock()
-                guard !tracker.resumed else {
-                    self?.continuationLock.unlock()
-                    return
-                }
-                tracker.resumed = true
-                // Remove pending continuation that hasn't been consumed yet
-                // Since we're timing out, we need to remove the handler we just added
-                if let strongSelf = self, !strongSelf.pendingContinuations.isEmpty {
-                    strongSelf.pendingContinuations.removeFirst()
-                }
-                self?.continuationLock.unlock()
-                continuation.resume(throwing: PythonError.timeout)
-            }
+        guard stdinPipe?.fileHandleForWriting != nil else {
+            throw PythonError.workerNotRunning
         }
+
+        return try await bridge.sendRequest(
+            HunyuanRequest(command: "ready"),
+            messageId: readyMessageId,
+            idleTimeout: .seconds(Int64(timeout)),
+            write: { data in
+                // Don't actually send - just wait for server's ready broadcast
+            },
+            onProgress: nil,
+            onActivityDetected: { _ in }
+        )
     }
 
-    /// Send a request and wait for the final response (ignoring progress updates)
+    /// Send a request and wait for the final response
     /// Uses idle timeout - only times out if no progress received for `idleTimeout` seconds
     /// - Parameters:
     ///   - request: The request to send
     ///   - onProgress: Called when JSON progress is received from Python
     ///   - onActivity: Called when any activity is detected (can be called externally for stderr progress)
     ///   - idleTimeout: Seconds of no activity before timing out (default 5 minutes)
-    func sendRequest(_ request: HunyuanRequest, onProgress: ((HunyuanResponse) -> Void)? = nil, onActivity: ((@escaping () -> Void) -> Void)? = nil, idleTimeout: TimeInterval = 300) async throws -> HunyuanResponse {
-        requestSemaphore.wait()
-        defer { requestSemaphore.signal() }
-
+    func sendRequest(
+        _ request: HunyuanRequest,
+        onProgress: ((HunyuanResponse) -> Void)? = nil,
+        onActivity: ((@escaping () -> Void) -> Void)? = nil,
+        idleTimeout: TimeInterval = 300
+    ) async throws -> HunyuanResponse {
         guard let stdin = stdinPipe?.fileHandleForWriting else {
             throw PythonError.workerNotRunning
         }
 
-        let jsonData = try JSONEncoder().encode(request)
-        guard var jsonString = String(data: jsonData, encoding: .utf8) else {
-            throw PythonError.encodingError
-        }
-        print("[Hunyuan Request] \(jsonString)")
-        jsonString += "\n"
+        print("[Hunyuan Request] \(request.command)")
 
-        try stdin.write(contentsOf: Data(jsonString.utf8))
-
-        // For generate commands, we need to handle multiple progress responses
-        // before getting the final complete/error response
-        return try await withCheckedThrowingContinuation { continuation in
-            // Thread-safe tracker to prevent double-resume and manage idle timeout
-            final class CompletionTracker: @unchecked Sendable {
-                private var _completed = false
-                private var _lastActivityTime: Date
-                private let lock = NSLock()
-                private var timeoutWorkItem: DispatchWorkItem?
-                let idleTimeout: TimeInterval
-
-                init(idleTimeout: TimeInterval) {
-                    self._lastActivityTime = Date()
-                    self.idleTimeout = idleTimeout
-                }
-
-                func tryComplete() -> Bool {
-                    lock.lock()
-                    defer { lock.unlock() }
-                    if _completed { return false }
-                    _completed = true
-                    timeoutWorkItem?.cancel()
-                    return true
-                }
-
-                var isCompleted: Bool {
-                    lock.lock()
-                    defer { lock.unlock() }
-                    return _completed
-                }
-
-                /// Called when progress is received - resets the idle timeout
-                func recordActivity() {
-                    lock.lock()
-                    _lastActivityTime = Date()
-                    lock.unlock()
-                }
-
-                /// Check if idle timeout has been exceeded
-                func hasTimedOut() -> Bool {
-                    lock.lock()
-                    defer { lock.unlock() }
-                    return Date().timeIntervalSince(_lastActivityTime) > idleTimeout
-                }
-
-                func setTimeoutWorkItem(_ item: DispatchWorkItem) {
-                    lock.lock()
-                    timeoutWorkItem = item
-                    lock.unlock()
-                }
-            }
-            let tracker = CompletionTracker(idleTimeout: idleTimeout)
-
-            // Provide activity recorder to external code (for stderr progress)
-            onActivity?({ tracker.recordActivity() })
-
-            // Recursive timeout checker - only times out if no activity for idleTimeout seconds
-            func scheduleTimeoutCheck() {
-                let checkInterval: TimeInterval = 10  // Check every 10 seconds
-                let workItem = DispatchWorkItem { [tracker] in
-                    guard !tracker.isCompleted else { return }
-
-                    if tracker.hasTimedOut() {
-                        if tracker.tryComplete() {
-                            print("[Hunyuan] Idle timeout - no progress for \(idleTimeout) seconds")
-                            continuation.resume(throwing: PythonError.timeout)
-                        }
-                    } else {
-                        // Still active, schedule another check
-                        scheduleTimeoutCheck()
-                    }
-                }
-                tracker.setTimeoutWorkItem(workItem)
-                DispatchQueue.global().asyncAfter(deadline: .now() + checkInterval, execute: workItem)
-            }
-
-            func handleResponse(_ data: Data) {
-                guard !tracker.isCompleted else { return }
-
-                do {
-                    let response = try JSONDecoder().decode(HunyuanResponse.self, from: data)
-
-                    // Check if this response matches our request
-                    if response.messageId != request.messageId && response.type != nil {
-                        // Might be for a different request, re-queue
-                        return
-                    }
-
-                    if response.type == "progress" {
-                        // Progress update - reset idle timeout and notify callback
-                        tracker.recordActivity()
-                        print("[Hunyuan Progress] stage=\(response.stage ?? "nil") progress=\(response.progress ?? 0) detail=\(response.detail ?? "nil")")
-                        onProgress?(response)
-                        // Re-register for next response
-                        self.continuationLock.lock()
-                        self.pendingContinuations.append(handleResponse)
-                        self.continuationLock.unlock()
-                    } else {
-                        // Complete or error - we're done
-                        if tracker.tryComplete() {
-                            continuation.resume(returning: response)
-                        }
-                    }
-                } catch {
-                    if tracker.tryComplete() {
-                        continuation.resume(throwing: error)
-                    }
-                }
-            }
-
-            continuationLock.lock()
-            pendingContinuations.append(handleResponse)
-            continuationLock.unlock()
-
-            // Start idle timeout checking
-            scheduleTimeoutCheck()
-        }
+        // Use unified progress-aware bridge - eliminates all manual tracking
+        return try await bridge.sendRequest(
+            request,
+            messageId: request.messageId,
+            idleTimeout: .seconds(Int64(idleTimeout)),
+            write: { data in
+                try stdin.write(contentsOf: data)
+            },
+            onProgress: onProgress,
+            onActivityDetected: onActivity ?? { _ in }
+        )
     }
 
     /// Send a ping to check if the server is responsive
@@ -465,6 +333,19 @@ class HunyuanProcessManager {
     }
 
     deinit {
-        stopServer()
+        // CRITICAL: deinit must be fast and non-blocking
+        // Fire-and-forget termination without waiting
+        let pid = process?.processIdentifier
+        process?.terminate()
+
+        // Forceful cleanup in background (don't block deinit)
+        if let pid = pid {
+            DispatchQueue.global().async {
+                usleep(200_000)  // 200ms grace period
+                kill(pid, SIGKILL)
+            }
+        }
+
+        // Don't call stopServer() - it blocks with waitUntilExit()
     }
 }

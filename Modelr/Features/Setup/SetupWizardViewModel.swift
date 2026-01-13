@@ -55,6 +55,10 @@ class SetupWizardViewModel: ObservableObject {
     private let dependencyService = PythonDependencyService()
     private var cancellables = Set<AnyCancellable>()
     private var downloadTask: Task<Void, Never>?
+    private let processTracker = ProcessTracker()
+    private let stateManager = SetupStateManager.shared
+    private var setupState: SetupStateManager.SetupState?
+    private var sleepPreventionActivity: NSObjectProtocol?
 
     // MARK: - Initialization
 
@@ -71,6 +75,9 @@ class SetupWizardViewModel: ObservableObject {
 
         // Default to fast (mini) model
         selectedModelChoice = .fast
+
+        // Wire up process tracker to dependency service
+        dependencyService.processTracker = processTracker
     }
 
     // MARK: - Navigation
@@ -113,6 +120,16 @@ class SetupWizardViewModel: ObservableObject {
     func startSetup() {
         guard !isDownloading else { return }
 
+        // Check network connectivity first
+        guard NetworkMonitor.isNetworkAvailable() else {
+            let errorMsg = NetworkMonitor.getNetworkErrorMessage(connectionType: NetworkMonitor.shared.connectionType)
+            downloadError = NSError(domain: "Setup", code: -1, userInfo: [
+                NSLocalizedDescriptionKey: "No internet connection",
+                NSLocalizedRecoverySuggestionErrorKey: errorMsg
+            ])
+            return
+        }
+
         isDownloading = true
         downloadError = nil
         isSettingUpEnvironment = true
@@ -120,42 +137,87 @@ class SetupWizardViewModel: ObservableObject {
         environmentSetupProgress = 0
         environmentSetupLogs = []
 
-        downloadTask = Task {
-            do {
-                // Step 1: Set up Python environments
-                environmentSetupStatus = "Setting up Python environments..."
-                let envSuccess = await setupPythonEnvironments()
+        // Prevent system sleep during setup
+        sleepPreventionActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.idleSystemSleepDisabled, .userInitiated],
+            reason: "Downloading models and setting up environments"
+        )
 
-                guard envSuccess else {
-                    throw NSError(domain: "Setup", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to set up Python environments"])
-                }
+        // Load or create setup state
+        setupState = stateManager.loadState() ?? stateManager.createNewState(modelVariant: selectedModelChoice.modelVariant)
 
-                // Step 2: Model download happens via the environment setup
-                isSettingUpEnvironment = false
-                environmentSetupStatus = "Setup complete"
+        downloadTask = Task { [weak self] in
+            await self?.performSetup()
+        }
+    }
 
-                // Step 3: Mark setup as complete
-                if downloadError == nil {
-                    markSetupComplete()
-                    withAnimation {
-                        currentStep = .complete
-                        isComplete = true
-                    }
-                }
-            } catch {
-                downloadError = error
-                isSettingUpEnvironment = false
+    private func performSetup() async {
+        do {
+            // Step 1: Set up Python environments
+            environmentSetupStatus = "Setting up Python environments..."
+            let envSuccess = await setupPythonEnvironments()
+
+            guard envSuccess else {
+                throw NSError(domain: "Setup", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey: "Failed to set up Python environments",
+                    NSLocalizedRecoverySuggestionErrorKey: "Check your internet connection and try again. View logs for details."
+                ])
             }
 
-            isDownloading = false
+            // Step 2: Model download happens via the environment setup
+            isSettingUpEnvironment = false
+            environmentSetupStatus = "Setup complete"
+
+            // Step 3: Mark setup as complete
+            if downloadError == nil, let state = setupState {
+                try stateManager.markSetupFullyComplete(modelVariant: state.modelVariant)
+                markSetupComplete()
+                withAnimation {
+                    currentStep = .complete
+                    isComplete = true
+                }
+            }
+        } catch {
+            downloadError = error
+            isSettingUpEnvironment = false
+
+            // Save failed state for potential retry
+            if var state = setupState, let currentStage = state.currentStage {
+                try? stateManager.markStageFailed(currentStage, error: error.localizedDescription, state: &state)
+            }
+        }
+
+        isDownloading = false
+
+        // End sleep prevention
+        if let activity = sleepPreventionActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            sleepPreventionActivity = nil
         }
     }
 
     func cancelDownload() {
+        print("[Setup] Cancelling setup...")
+
+        // Cancel the task
         downloadTask?.cancel()
         downloadTask = nil
+
+        // Kill all spawned processes
+        processTracker.killAll()
+
+        // End sleep prevention
+        if let activity = sleepPreventionActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            sleepPreventionActivity = nil
+        }
+
+        // Reset UI state
         isDownloading = false
         downloadProgress = nil
+        isSettingUpEnvironment = false
+
+        print("[Setup] Setup cancelled successfully")
     }
 
     private func setupPythonEnvironments() async -> Bool {

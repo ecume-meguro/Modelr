@@ -178,25 +178,84 @@ struct SetupDownloadView: View {
 
     @ViewBuilder
     private func errorView(_ error: Error) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.title2)
-                .foregroundStyle(.red)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.red)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Setup Failed")
-                    .font(.headline)
-                Text(error.localizedDescription)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Setup Failed")
+                        .font(.headline)
+                    Text(error.localizedDescription)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
             }
 
-            Spacer()
-
-            Button("Retry") {
-                viewModel.startSetup()
+            // Show recovery suggestion if available
+            if let nsError = error as NSError?,
+               let suggestion = nsError.userInfo[NSLocalizedRecoverySuggestionErrorKey] as? String {
+                HStack(spacing: 8) {
+                    Image(systemName: "lightbulb.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    Text(suggestion)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.top, 4)
             }
-            .buttonStyle(.bordered)
+
+            // Action buttons
+            HStack(spacing: 12) {
+                Button {
+                    viewModel.startSetup()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.clockwise")
+                        Text("Retry")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    // Open logs for troubleshooting
+                    NSWorkspace.shared.open(PathManager.logsDirectory)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "doc.text")
+                        Text("View Logs")
+                    }
+                }
+                .buttonStyle(.bordered)
+
+                // Check connectivity button for network errors
+                if error.localizedDescription.contains("connection") ||
+                   error.localizedDescription.contains("network") ||
+                   error.localizedDescription.contains("internet") {
+                    Button {
+                        Task {
+                            let canReach = await NetworkMonitor.canReachHuggingFace()
+                            let message = canReach ? "Connection to HuggingFace successful!" : "Cannot reach HuggingFace. Check your network."
+                            let alert = NSAlert()
+                            alert.messageText = "Network Check"
+                            alert.informativeText = message
+                            alert.alertStyle = canReach ? .informational : .warning
+                            alert.runModal()
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "network")
+                            Text("Test Connection")
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .padding(.top, 8)
         }
         .padding()
         .background(Color.red.opacity(0.1))

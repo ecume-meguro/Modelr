@@ -57,30 +57,41 @@ extension SimpleEditorViewModel {
                     Task { @MainActor in
                         print("[Gen] Starting handoff task...")
 
-                        // Use defer to GUARANTEE transition happens even if preload fails
+                        var wasCancelled = false
+
+                        // Use defer to transition to post-process (only if not cancelled)
                         defer {
-                            print("[Gen] Calling transitionToPostProcess (defer)...")
+                            // Check if generation was cancelled - don't transition if it was
+                            if !wasCancelled {
+                                print("[Gen] Calling transitionToPostProcess (defer)...")
 
-                            // Mark handoff complete - set directly without explicit animation
-                            // The sidebar has implicit .animation(value:) that handles this
-                            self.generationStages[.handoff] = StageProgress(status: .completed, progress: 1.0, detail: "")
+                                // Mark handoff complete - set directly without explicit animation
+                                // The sidebar has implicit .animation(value:) that handles this
+                                self.generationStages[.handoff] = StageProgress(status: .completed, progress: 1.0, detail: "")
 
-                            // Transition to post-process (also sets state directly, letting implicit animations work)
-                            self.transitionToPostProcess()
+                                // Transition to post-process (also sets state directly, letting implicit animations work)
+                                self.transitionToPostProcess()
 
-                            print("[Gen] transitionToPostProcess returned, currentStep=\(String(describing: self.currentStep))")
+                                print("[Gen] transitionToPostProcess returned, currentStep=\(String(describing: self.currentStep))")
+                            } else {
+                                print("[Gen] Handoff defer: generation was cancelled, skipping transition")
+                            }
                         }
 
-                        // Losslessly optimize mesh (remove duplicate verts/faces)
-                        self.updateHandoffProgress(progress: 0.1, detail: "Optimizing mesh...")
-                        await self.optimizeMesh()
+                        // Check for cancellation before starting work
+                        wasCancelled = self.generationStages.values.contains { $0.status == .cancelled }
 
-                        // Run preload (this does the heavy Python processing AND SceneKit preloading)
-                        // Progress updates are handled inside preloadMeshAnalysis via updateHandoffProgress
-                        // Even if this fails or times out, the defer block ensures transition happens
-                        await self.preloadMeshAnalysis()
+                        if !wasCancelled {
+                            // Optimize mesh first (this updates generated3DModelURL)
+                            self.updateHandoffProgress(progress: 0.1, detail: "Optimizing mesh...")
+                            await self.optimizeMesh()
 
-                        print("[Gen] Preload complete")
+                            // Then analyze the optimized mesh
+                            // Progress updates are handled inside preloadMeshAnalysis
+                            await self.preloadMeshAnalysis()
+
+                            print("[Gen] Preload complete")
+                        }
                     }
                 case .failed(let projectId, let error):
                     guard projectId == self.projectId else { return }
@@ -103,6 +114,14 @@ extension SimpleEditorViewModel {
 
         // Prepare composite image in background
         prepareCompositeImage()
+
+        // Start preloading Hunyuan model to reduce generation wait time
+        Task {
+            _ = await ModelLoadingCoordinator.shared.ensureHunyuanReady(
+                env: self.env,
+                variant: self.selectedPreset.modelVariant
+            )
+        }
 
         // Transition to settings step
         withFastSpring {
@@ -325,7 +344,8 @@ extension SimpleEditorViewModel {
 
     /// Generate 3D model using Hunyuan
     private func generateHunyuan(imagePath: String, maskPath: String) {
-        generationTask = Task { [weak self] in
+        // CRITICAL: Task must be @MainActor to safely mutate @Published properties
+        generationTask = Task { @MainActor [weak self] in
             guard let self = self else { return }
 
             do {
@@ -362,9 +382,11 @@ extension SimpleEditorViewModel {
                 )
             } catch is CancellationError {
                 print("[Generation] Hunyuan generation cancelled")
+                // Already on MainActor - safe to mutate
                 self.isGenerating = false
             } catch {
                 print("[Generation] Hunyuan error: \(error)")
+                // Already on MainActor - safe to mutate
                 self.isGenerating = false
                 self.lastError = (error as? AppError) ?? AppError.generation(error.localizedDescription)
                 self.showErrorAlert = true
@@ -478,6 +500,8 @@ extension SimpleEditorViewModel {
             withFastSpring {
                 if generationStages[.downloading] != nil {
                     generationStages[.downloading] = StageProgress(status: .completed, progress: 1.0, detail: "")
+                    // Stop download monitoring when extracting starts
+                    downloadMonitor.stopMonitoring()
                 }
                 generationStages[.extracting] = StageProgress(status: .inProgress, progress: 0, detail: "")
             }
