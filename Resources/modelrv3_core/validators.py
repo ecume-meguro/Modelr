@@ -45,7 +45,7 @@ def validate_coordinates(
         for point in points:
             x, y = point
             clamped_points.append([max(0, min(max_x, x)), max(0, min(max_y, y))])
-    
+
     clamped_box = None
     if box:
         if len(box) != 4:
@@ -62,7 +62,7 @@ def validate_coordinates(
 
         clamped_box = [nx1, ny1, nx2, ny2]
 
-    return clamped_points if points else points, clamped_box if box else box
+    return clamped_points if points is not None else None, clamped_box if box is not None else None
 
 
 def validate_output_dir(output_dir: str) -> None:
