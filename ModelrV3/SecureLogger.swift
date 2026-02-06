@@ -86,9 +86,9 @@ class SecureLogger {
         case .info:
             os_log("%{public}@", log: self.osLog, type: .info, sanitizedMessage)
         case .warning:
-            os_log("%{public}@", log: self.osLog, type: .default, "[WARNING] %{public}@", sanitizedMessage)
+            os_log("[WARNING] %{public}@", log: self.osLog, type: .default, sanitizedMessage)
         case .error:
-            os_log("%{public}@", log: self.osLog, type: .error, "[ERROR] %{public}@", sanitizedMessage)
+            os_log("[ERROR] %{public}@", log: self.osLog, type: .error, sanitizedMessage)
         }
     }
 
@@ -195,7 +195,9 @@ class SecureLogger {
 
     func saveLogsToFile(url: URL) throws {
         let logs = exportLogs()
-        let data = logs.data(using: .utf8)!
+        guard let data = logs.data(using: .utf8) else {
+            throw FileError.writeError(url.path, underlying: nil)
+        }
         
         try data.write(to: url)
     }

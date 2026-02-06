@@ -1038,27 +1038,30 @@ class PythonEnvironment: ObservableObject {
     }
 
     private func handleStdoutData(_ data: Data) {
-        responseBuffer.append(data)
+        processQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.responseBuffer.append(data)
 
-        // Look for complete JSON lines
-        while let newlineRange = responseBuffer.range(of: Data("\n".utf8)) {
-            let lineData = responseBuffer.subdata(in: responseBuffer.startIndex..<newlineRange.lowerBound)
-            responseBuffer.removeSubrange(responseBuffer.startIndex...newlineRange.lowerBound)
+            // Look for complete JSON lines
+            while let newlineRange = self.responseBuffer.range(of: Data("\n".utf8)) {
+                let lineData = self.responseBuffer.subdata(in: self.responseBuffer.startIndex..<newlineRange.lowerBound)
+                self.responseBuffer.removeSubrange(self.responseBuffer.startIndex...newlineRange.lowerBound)
 
-            guard let line = String(data: lineData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !line.isEmpty else { continue }
+                guard let line = String(data: lineData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !line.isEmpty else { continue }
 
-            do {
-                let response = try JSONDecoder().decode(SAMResponse.self, from: Data(line.utf8))
-                if let continuation = pendingContinuation {
-                    pendingContinuation = nil
-                    continuation.resume(returning: response)
-                }
-            } catch {
-                print("Failed to decode response: \(error), line: \(line)")
-                if let continuation = pendingContinuation {
-                    pendingContinuation = nil
-                    continuation.resume(throwing: PythonError.invalidResponse(line))
+                do {
+                    let response = try JSONDecoder().decode(SAMResponse.self, from: Data(line.utf8))
+                    if let continuation = self.pendingContinuation {
+                        self.pendingContinuation = nil
+                        continuation.resume(returning: response)
+                    }
+                } catch {
+                    print("Failed to decode response: \(error), line: \(line)")
+                    if let continuation = self.pendingContinuation {
+                        self.pendingContinuation = nil
+                        continuation.resume(throwing: PythonError.invalidResponse(line))
+                    }
                 }
             }
         }
@@ -1076,26 +1079,40 @@ class PythonEnvironment: ObservableObject {
         jsonString += "\n"
 
         return try await withCheckedThrowingContinuation { continuation in
-            self.pendingContinuation = continuation
+            self.processQueue.async { [weak self] in
+                guard let self = self else {
+                    continuation.resume(throwing: PythonError.workerNotRunning)
+                    return
+                }
+                self.pendingContinuation = continuation
 
-            do {
-                try stdin.write(contentsOf: Data(jsonString.utf8))
-            } catch {
-                self.pendingContinuation = nil
-                continuation.resume(throwing: error)
+                do {
+                    try stdin.write(contentsOf: Data(jsonString.utf8))
+                } catch {
+                    self.pendingContinuation = nil
+                    continuation.resume(throwing: error)
+                }
             }
         }
     }
 
     private func waitForResponse(timeout: TimeInterval) async throws -> SAMResponse {
         try await withCheckedThrowingContinuation { continuation in
-            self.pendingContinuation = continuation
+            self.processQueue.async { [weak self] in
+                guard let self = self else {
+                    continuation.resume(throwing: PythonError.workerNotRunning)
+                    return
+                }
+                self.pendingContinuation = continuation
+            }
 
             // Set timeout
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
-                if let cont = self?.pendingContinuation {
-                    self?.pendingContinuation = nil
-                    cont.resume(throwing: PythonError.timeout)
+                self?.processQueue.async {
+                    if let cont = self?.pendingContinuation {
+                        self?.pendingContinuation = nil
+                        cont.resume(throwing: PythonError.timeout)
+                    }
                 }
             }
         }

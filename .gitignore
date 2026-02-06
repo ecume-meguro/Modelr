@@ -4,3 +4,27 @@ sam2-studio/
 *.profraw
 Hunyuan3D-2
 stable-fast-3d/
+
+# Xcode
+DerivedData/
+*.xcworkspace/xcuserdata/
+xcuserdata/
+
+# macOS
+.DS_Store
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Environment & secrets
+.env
+*.pem
+*.key
+credentials.json
+
+# Logs
+run_logs/

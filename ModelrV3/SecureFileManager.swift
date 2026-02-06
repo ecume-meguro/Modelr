@@ -7,7 +7,7 @@ class SecureFileManager {
     private let pathValidator = PathValidator.shared
     private let logger = SecureLogger.shared
 
-    private let fileLocks = NSMapTable<NSString, NSLock>.strongToWeakObjects()
+    private let fileLocks = NSMapTable<NSString, NSLock>.strongToStrongObjects()
     private let lockQueue = DispatchQueue(label: "com.modelr.filelocks", attributes: .concurrent)
 
     private let directoryPermissions: UInt16 = 0o700
@@ -17,7 +17,9 @@ class SecureFileManager {
     private init() {}
 
     func verifyAppSupportPermissions() throws {
-        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        guard let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            throw FileError.notFound("Application Support directory")
+        }
         let modelrDir = appSupport.appendingPathComponent("ModelrV3")
 
         if fileManager.fileExists(atPath: modelrDir.path) {

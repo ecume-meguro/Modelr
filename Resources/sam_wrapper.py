@@ -94,17 +94,19 @@ except ImportError:
         box: Optional[List[float]],
         width: int,
         height: int
-    ) -> None:
+    ) -> Tuple[Optional[List[List[float]]], Optional[List[float]]]:
         """Validate that coordinates are within image bounds."""
-        for point in points:
-            if len(point) >= 2:
-                x, y = point[0], point[1]
-                if x < 0 or x >= width or y < 0 or y >= height:
-                    log_warning(f"Point ({x}, {y}) outside image bounds ({width}x{height})")
+        if points:
+            for point in points:
+                if len(point) >= 2:
+                    x, y = point[0], point[1]
+                    if x < 0 or x >= width or y < 0 or y >= height:
+                        log_warning(f"Point ({x}, {y}) outside image bounds ({width}x{height})")
         if box is not None and len(box) >= 4:
             x1, y1, x2, y2 = box[:4]
             if x1 < 0 or y1 < 0 or x2 > width or y2 > height:
                 log_warning(f"Box [{x1},{y1},{x2},{y2}] outside image bounds ({width}x{height})")
+        return points, box
 
     def health_check() -> Dict[str, Any]:
         """Basic health check."""
@@ -235,7 +237,7 @@ def get_checkpoint_path(model_type: str, script_dir: str) -> str:
             if logger
             else os.path.join(script_dir, "checkpoints")
         )
-    except:
+    except Exception:
         checkpoint_dir = os.path.join(script_dir, "checkpoints")
 
     checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
@@ -264,7 +266,7 @@ class ModelManager:
 
             try:
                 self.device = get_device()
-            except:
+            except Exception:
                 self.device = "mps" if torch.backends.mps.is_available() else "cpu"
 
             log_info(
@@ -454,7 +456,7 @@ def server_mode(model_type: str, script_dir: str, output_dir: str) -> None:
 
                         try:
                             if current_image_np is not None:
-                                validate_coordinates(
+                                points, box = validate_coordinates(
                                     points,
                                     box,
                                     current_image_np.shape[1],
@@ -568,7 +570,7 @@ def server_mode(model_type: str, script_dir: str, output_dir: str) -> None:
                 elif command == "health":
                     try:
                         response = health_check()
-                    except:
+                    except Exception:
                         response = {
                             "status": "unknown",
                             "error": "Health check unavailable",

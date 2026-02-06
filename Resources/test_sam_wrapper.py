@@ -101,24 +101,24 @@ class TestValidation(unittest.TestCase):
     def test_validate_coordinates_clamps_points(self):
         """Points should be clamped to image bounds."""
         points = [[-10, -10], [2000, 2000]]
-        sam_wrapper.validate_coordinates(points, None, 100, 100)
+        clamped_points, _ = sam_wrapper.validate_coordinates(points, None, 100, 100)
 
-        self.assertEqual(points[0], [0, 0])
-        self.assertEqual(points[1], [100, 100])
+        self.assertEqual(clamped_points[0], [0, 0])
+        self.assertEqual(clamped_points[1], [100, 100])
 
     def test_validate_coordinates_clamps_box(self):
         """Box should be clamped and normalized."""
         box = [-10, -10, 200, 200]
-        sam_wrapper.validate_coordinates(None, box, 100, 100)
+        _, clamped_box = sam_wrapper.validate_coordinates(None, box, 100, 100)
 
-        self.assertEqual(box, [0, 0, 100, 100])
+        self.assertEqual(clamped_box, [0, 0, 100, 100])
 
     def test_validate_coordinates_normalizes_box_order(self):
         """Box with reversed coordinates should be normalized."""
         box = [80, 80, 20, 20]  # x2 < x1, y2 < y1
-        sam_wrapper.validate_coordinates(None, box, 100, 100)
+        _, clamped_box = sam_wrapper.validate_coordinates(None, box, 100, 100)
 
-        self.assertEqual(box, [20, 20, 80, 80])
+        self.assertEqual(clamped_box, [20, 20, 80, 80])
 
 
 if __name__ == "__main__":

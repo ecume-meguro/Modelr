@@ -98,11 +98,15 @@ class PathValidator {
 
     func isPathAllowed(_ url: URL) -> Bool {
         let standardizedURL = url.standardized
+        let candidatePath = standardizedURL.path
 
         for allowedDir in allowedDirectories {
-            let standardizedAllowed = allowedDir.standardized
+            let allowedPath = allowedDir.standardized.path
+            // Ensure the allowed path ends with "/" for proper prefix matching
+            // so "/tmp" doesn't match "/tmp_evil"
+            let allowedPrefix = allowedPath.hasSuffix("/") ? allowedPath : allowedPath + "/"
 
-            if standardizedURL.path.hasPrefix(standardizedAllowed.path) {
+            if candidatePath == allowedPath || candidatePath.hasPrefix(allowedPrefix) {
                 return true
             }
         }
@@ -187,9 +191,13 @@ class PathValidator {
         var outputPath = directory.appendingPathComponent("\(sanitizedBasename).\(sanitizedExtension)")
 
         var counter = 1
+        let maxAttempts = 10000
         while fileManager.fileExists(atPath: outputPath.path) {
             outputPath = directory.appendingPathComponent("\(sanitizedBasename)_\(counter).\(sanitizedExtension)")
             counter += 1
+            if counter > maxAttempts {
+                throw ValidationError.invalidPath("Unable to generate unique filename after \(maxAttempts) attempts")
+            }
         }
 
         try requirePathAllowed(outputPath)

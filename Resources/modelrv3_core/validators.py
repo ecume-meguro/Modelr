@@ -29,20 +29,24 @@ def validate_coordinates(
     image_width: int,
     image_height: int,
     normalized: bool = False,
-) -> None:
+) -> Tuple[Optional[List[List[float]]], Optional[List[float]]]:
+    """Validate and clamp coordinates. Returns clamped copies without modifying inputs."""
     max_x = 1.0 if normalized else image_width
     max_y = 1.0 if normalized else image_height
 
+    clamped_points = None
     if points:
         if len(points) > 100:
             raise ImageValidationError(
                 f"Too many points: {len(points)}. Maximum is 100"
             )
 
-        for i in range(len(points)):
-            x, y = points[i]
-            points[i] = [max(0, min(max_x, x)), max(0, min(max_y, y))]
-
+        clamped_points = []
+        for point in points:
+            x, y = point
+            clamped_points.append([max(0, min(max_x, x)), max(0, min(max_y, y))])
+    
+    clamped_box = None
     if box:
         if len(box) != 4:
             raise ImageValidationError(f"Box must have 4 coordinates, got {len(box)}")
@@ -56,7 +60,9 @@ def validate_coordinates(
         nx1, nx2 = min(x1, x2), max(x1, x2)
         ny1, ny2 = min(y1, y2), max(y1, y2)
 
-        box[0], box[1], box[2], box[3] = nx1, ny1, nx2, ny2
+        clamped_box = [nx1, ny1, nx2, ny2]
+
+    return clamped_points if points else points, clamped_box if box else box
 
 
 def validate_output_dir(output_dir: str) -> None:
