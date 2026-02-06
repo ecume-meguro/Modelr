@@ -10,17 +10,11 @@ dependencies = [
 
     # VLM dependencies (>=0.3.4 avoids scipy 1.13.1 build issue)
     "mlx-vlm>=0.3.4",
-    # PyTorch required by transformers AutoProcessor
-    "torch>=2.0.0",
-    "torchvision>=0.15.0",
 
-    # Text-to-Image dependencies (Stable Diffusion 1.5)
-    "diffusers>=0.25.0",
-    "accelerate>=0.25.0",
-
-    # Tools dependencies
+    # Tools dependencies (mesh processing)
     "trimesh>=4.0.0",
     "networkx>=3.0",
+    "fast-simplification>=0.1.0",
 
     # Shared
     "numpy>=2.0.0",

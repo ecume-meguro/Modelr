@@ -18,10 +18,17 @@ enum SettingsTab: String, CaseIterable {
 /// Main Settings window view
 struct SettingsWindow: View {
     @StateObject private var viewModel = SettingsViewModel()
-    @State private var selectedTab: SettingsTab = .models
+    @SceneStorage("settingsSelectedTab") private var selectedTab: String = SettingsTab.models.rawValue
+
+    private var selectedTabBinding: Binding<SettingsTab> {
+        Binding(
+            get: { SettingsTab(rawValue: selectedTab) ?? .models },
+            set: { selectedTab = $0.rawValue }
+        )
+    }
 
     var body: some View {
-        TabView(selection: $selectedTab) {
+        TabView(selection: selectedTabBinding) {
             ModelsSettingsView()
                 .environmentObject(viewModel)
                 .tabItem {
@@ -43,7 +50,8 @@ struct SettingsWindow: View {
                 }
                 .tag(SettingsTab.general)
         }
-        .frame(minWidth: 650, minHeight: 500)
+        .animation(.easeInOut(duration: 0.2), value: selectedTab)
+        .frame(minWidth: 700, minHeight: 500)
     }
 }
 
@@ -55,6 +63,7 @@ class SettingsViewModel: ObservableObject {
     @Published var storageInfo: StorageInfo?
     @Published var systemInfo: SystemInfo?
     @Published var isLoadingStorage = false
+    @Published var loadingError: Error?
 
     init() {
         loadSystemInfo()
@@ -67,12 +76,20 @@ class SettingsViewModel: ObservableObject {
     func loadStorageInfo() {
         guard !isLoadingStorage else { return }
         isLoadingStorage = true
+        loadingError = nil
 
         Task {
-            let info = await StorageInfo.calculate()
-            await MainActor.run {
-                self.storageInfo = info
-                self.isLoadingStorage = false
+            do {
+                let info = await StorageInfo.calculate()
+                await MainActor.run {
+                    self.storageInfo = info
+                    self.isLoadingStorage = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.loadingError = error
+                    self.isLoadingStorage = false
+                }
             }
         }
     }

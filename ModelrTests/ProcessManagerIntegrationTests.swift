@@ -139,20 +139,20 @@ final class ProcessManagerIntegrationTests: XCTestCase {
         // Test that progress handlers don't accumulate
         // This tests the fix for the memory leak bug
 
-        weak var weakBridge: ProgressAwareBridge<MockRequest, MockResponse>?
+        weak var weakBridge: ProgressAwareBridge<PMTestRequest, PMTestResponse>?
 
         do {
-            let bridge = ProgressAwareBridge<MockRequest, MockResponse>()
+            let bridge = ProgressAwareBridge<PMTestRequest, PMTestResponse>()
             weakBridge = bridge
 
             // Send 100 requests with progress
             for i in 0..<100 {
-                let request = MockRequest(command: "test", value: i)
+                let request = PMTestRequest(command: "test", value: i)
 
                 Task {
                     // Send progress
                     for j in 0..<10 {
-                        let progress = MockResponse(
+                        let progress = PMTestResponse(
                             messageId: request.messageId,
                             success: true,
                             result: j,
@@ -171,7 +171,7 @@ final class ProcessManagerIntegrationTests: XCTestCase {
                     }
 
                     // Send final
-                    let final = MockResponse(
+                    let final = PMTestResponse(
                         messageId: request.messageId,
                         success: true,
                         result: 100,
@@ -205,19 +205,19 @@ final class ProcessManagerIntegrationTests: XCTestCase {
     // MARK: - Buffer Overflow Tests
 
     func testBufferOverflowRecovery() async throws {
-        let bridge = UnifiedProcessBridge<MockRequest, MockResponse>()
+        let bridge = UnifiedProcessBridge<PMTestRequest, PMTestResponse>()
 
         // Send 11MB of garbage
         let garbage = Data(repeating: 0xFF, count: 11 * 1024 * 1024)
         _ = await bridge.handleStdout(garbage)
 
         // Bridge should still work
-        let request = MockRequest(command: "test")
+        let request = PMTestRequest(command: "test")
 
         Task {
             try await Task.sleep(for: .milliseconds(10))
 
-            let response = MockResponse(
+            let response = PMTestResponse(
                 messageId: request.messageId,
                 success: true,
                 result: 42,
@@ -357,7 +357,7 @@ final class ProcessManagerIntegrationTests: XCTestCase {
 
 // MARK: - Helper Types
 
-struct MockRequest: Codable {
+struct PMTestRequest: Codable {
     let messageId: String
     let command: String
     let value: Int?
@@ -369,7 +369,7 @@ struct MockRequest: Codable {
     }
 }
 
-struct MockResponse: Codable {
+struct PMTestResponse: Codable {
     let messageId: String?
     let success: Bool
     let result: Int?

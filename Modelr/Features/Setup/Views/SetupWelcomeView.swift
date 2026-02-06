@@ -1,162 +1,169 @@
 import SwiftUI
 
-/// Welcome step of the setup wizard
+/// Welcome step - clean, functional design with inline action
 struct SetupWelcomeView: View {
     @EnvironmentObject var viewModel: SetupWizardViewModel
+    var onContinue: () -> Void
+
+    private var hardwareInfo: WelcomeHardwareInfo { WelcomeHardwareInfo() }
 
     var body: some View {
-        VStack(spacing: 32) {
+        VStack(spacing: 0) {
             Spacer()
 
             // App icon and title
-            VStack(spacing: 16) {
-                // Animated icon
-                ZStack {
-                    Circle()
-                        .fill(
-                            LinearGradient(
-                                colors: [.blue, .purple],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .frame(width: 100, height: 100)
+            VStack(spacing: AppDesign.Spacing.p24) {
+                let appIcon = NSImage(named: "AppIcon")
+                Image(nsImage: appIcon ?? NSImage())
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 96, height: 96)
+                    .shadow(color: .black.opacity(0.1), radius: 12, y: 6)
+                    .overlay {
+                        if appIcon == nil {
+                            Image(systemName: "cube.fill")
+                                .font(.system(size: 56))
+                                .foregroundStyle(.tint)
+                        }
+                    }
 
-                    Image(systemName: "cube.transparent")
-                        .font(.system(size: 48, weight: .medium))
-                        .foregroundStyle(.white)
+                VStack(spacing: 8) {
+                    Text("Modelr")
+                        .font(.system(size: 28, weight: .bold))
+
+                    Text("Transform images into 3D models using local AI")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: 400)
                 }
-
-                Text("Welcome to Modelr")
-                    .font(.largeTitle.bold())
-
-                Text("Transform your images into stunning 3D models")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-            }
-
-            // Feature highlights
-            VStack(alignment: .leading, spacing: 16) {
-                featureRow(
-                    icon: "photo.stack",
-                    title: "Image to 3D",
-                    description: "Convert any image into a detailed 3D model using AI"
-                )
-                featureRow(
-                    icon: "wand.and.stars",
-                    title: "Smart Segmentation",
-                    description: "Automatically detect and isolate objects in your images"
-                )
-                featureRow(
-                    icon: "cube.box",
-                    title: "Export Anywhere",
-                    description: "Export to OBJ, USDZ, GLB and more"
-                )
-            }
-            .padding(.horizontal, 40)
-
-            Spacer()
-
-            // System requirements check
-            systemRequirementsCard
-        }
-        .padding()
-    }
-
-    @ViewBuilder
-    private func featureRow(icon: String, title: String, description: String) -> some View {
-        HStack(spacing: 16) {
-            Image(systemName: icon)
-                .font(.title2)
-                .foregroundStyle(.blue)
-                .frame(width: 36)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.headline)
-                Text(description)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
             }
 
             Spacer()
-        }
-        .padding(.vertical, 8)
-    }
-
-    @ViewBuilder
-    private var systemRequirementsCard: some View {
-        HStack(spacing: 24) {
-            systemInfoItem(
-                icon: "memorychip",
-                label: "RAM",
-                value: viewModel.formattedSystemRAM,
-                status: viewModel.systemRAM >= 8 * 1024 * 1024 * 1024 ? .good : .warning
-            )
-
-            Divider()
                 .frame(height: 40)
 
-            systemInfoItem(
-                icon: "internaldrive",
-                label: "Free Space",
-                value: viewModel.formattedAvailableSpace,
-                status: viewModel.availableSpace >= 20 * 1024 * 1024 * 1024 ? .good : .warning
-            )
+            // System info card
+            systemInfoCard
+                .padding(.horizontal, AppDesign.Spacing.p48)
+
+            Spacer()
+
+            // Action button
+            Button {
+                onContinue()
+            } label: {
+                Text("Get Started")
+                    .frame(minWidth: 100)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(!systemReady)
+            .opacity(systemReady ? 1.0 : 0.6)
+            .padding(.bottom, AppDesign.Spacing.p32)
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 16)
-        .background(Color.primary.opacity(0.03))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .padding(.horizontal, 40)
     }
 
-    private enum SystemStatus {
-        case good, warning, error
-    }
+    private var systemInfoCard: some View {
+        HStack(spacing: AppDesign.Spacing.p24) {
+            // Hardware
+            VStack(alignment: .leading, spacing: 4) {
+                Label(hardwareInfo.chipName, systemImage: "cpu")
+                    .font(.system(size: 12, weight: .medium))
 
-    @ViewBuilder
-    private func systemInfoItem(icon: String, label: String, value: String, status: SystemStatus) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.title2)
-                .foregroundStyle(statusColor(status))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(label)
-                    .font(.caption)
+                Text("\(hardwareInfo.formattedMemory) unified memory")
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Text(value)
-                    .font(.callout.weight(.medium))
             }
 
-            Image(systemName: statusIcon(status))
-                .font(.caption)
-                .foregroundStyle(statusColor(status))
+            Divider()
+                .frame(height: AppDesign.Spacing.p32)
+
+            // Storage
+            VStack(alignment: .leading, spacing: 4) {
+                Label(viewModel.formattedAvailableSpace, systemImage: "internaldrive")
+                    .font(.system(size: 12, weight: .medium))
+
+                Text("available storage")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
+            Divider()
+                .frame(height: AppDesign.Spacing.p32)
+
+            // Status
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(systemReady ? Color.green : Color.orange)
+                        .frame(width: 8, height: 8)
+                        .accessibilityLabel(systemReady ? "Status: Ready" : "Status: Requirements not met")
+
+                    Text(systemReady ? "Ready" : "Check requirements")
+                        .font(.system(size: 12, weight: .medium))
+                }
+
+                Text(systemStatusDetail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
         }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 10))
     }
 
-    private func statusColor(_ status: SystemStatus) -> Color {
-        switch status {
-        case .good: return .green
-        case .warning: return .orange
-        case .error: return .red
-        }
+    private var systemReady: Bool {
+        let ramOK = viewModel.systemRAM >= 8 * 1024 * 1024 * 1024
+        let spaceOK = viewModel.availableSpace >= 10 * 1024 * 1024 * 1024
+        return ramOK && spaceOK
     }
 
-    private func statusIcon(_ status: SystemStatus) -> String {
-        switch status {
-        case .good: return "checkmark.circle.fill"
-        case .warning: return "exclamationmark.triangle.fill"
-        case .error: return "xmark.circle.fill"
+    private var systemStatusDetail: String {
+        let ramOK = viewModel.systemRAM >= 8 * 1024 * 1024 * 1024
+        let spaceOK = viewModel.availableSpace >= 10 * 1024 * 1024 * 1024
+
+        if !ramOK { return "8GB+ RAM required" }
+        if !spaceOK { return "10GB+ storage required" }
+        return "System requirements met"
+    }
+}
+
+// MARK: - Hardware Info
+
+private struct WelcomeHardwareInfo {
+    let chipName: String
+    let totalMemoryGB: Int
+
+    init() {
+        var size: size_t = 0
+        sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0)
+        var brand = [CChar](repeating: 0, count: size)
+        sysctlbyname("machdep.cpu.brand_string", &brand, &size, nil, 0)
+        let cpuBrand = String(cString: brand)
+
+        if cpuBrand.contains("Apple") {
+            chipName = cpuBrand.replacingOccurrences(of: "Apple ", with: "")
+        } else {
+            #if arch(arm64)
+            chipName = "Apple Silicon"
+            #else
+            chipName = cpuBrand.isEmpty ? "Intel" : cpuBrand
+            #endif
         }
+
+        totalMemoryGB = Int(ProcessInfo.processInfo.physicalMemory / (1024 * 1024 * 1024))
+    }
+
+    var formattedMemory: String {
+        "\(totalMemoryGB)GB"
     }
 }
 
 // MARK: - Preview
 
 #Preview {
-    SetupWelcomeView()
+    SetupWelcomeView(onContinue: {})
         .environmentObject(SetupWizardViewModel())
-        .frame(width: 700, height: 550)
+        .frame(width: 560, height: 420)
+        .background(Color(nsColor: .windowBackgroundColor))
 }

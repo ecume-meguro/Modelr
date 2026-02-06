@@ -288,6 +288,9 @@ struct AppConstants {
     /// Name of VLM pyproject file
     static let vlmPyprojectFileName = "pyproject_vlm.toml"
 
+    /// Name of model downloader script
+    static let modelDownloaderFileName = "model_downloader.py"
+
     /// Prefix for generated 3D models
     static let generatedModelPrefix = "generated_model_"
 
@@ -296,8 +299,8 @@ struct AppConstants {
     /// Default SAM2 model variant
     static let defaultSAMModel = "base_plus"
 
-    /// Python version for SAM2
-    static let samPythonVersion = "3.12"
+    /// Python version for inference environment (SAM, VLM, tools)
+    static let inferencePythonVersion = "3.13"
 
     /// Python version for Hunyuan3D
     static let hunyuanPythonVersion = "3.10"
@@ -392,4 +395,40 @@ struct AppConstants {
 
     /// Clay material roughness
     static let clayRoughness: CGFloat = 0.75
+
+    // MARK: - Process Management
+
+    /// Grace period for SIGTERM before SIGKILL (microseconds)
+    static let sigtermGracePeriodMicroseconds: UInt32 = 100_000  // 100ms
+
+    /// Grace period for process group termination (microseconds)
+    static let processGroupGracePeriodMicroseconds: UInt32 = 50_000  // 50ms
+
+    /// Grace period for graceful exit before forced termination (microseconds)
+    static let gracefulExitPeriodMicroseconds: UInt32 = 200_000  // 200ms
+
+    // MARK: - Download Monitoring
+
+    /// Polling interval for download progress (nanoseconds)
+    static let downloadPollingIntervalNanoseconds: UInt64 = 500_000_000  // 500ms
+
+    /// Number of speed samples to keep for averaging
+    static let speedSampleCount: Int = 5
+
+    /// Progress emit interval (seconds)
+    static let progressEmitInterval: TimeInterval = 0.15
+
+    // MARK: - Low-Poly Reduction Curve
+
+    /// Threshold for first half of reduction slider
+    static let lowPolySliderMidpoint: Double = 50.0
+
+    /// Multiplier for first half of reduction (0-50% slider → 0-95% reduction)
+    static let lowPolyFirstHalfMultiplier: Double = 1.9
+
+    /// Base reduction for second half
+    static let lowPolySecondHalfBase: Double = 95.0
+
+    /// Multiplier for second half of reduction (50-100% slider → 95-99.9% reduction)
+    static let lowPolySecondHalfMultiplier: Double = 0.098
 }

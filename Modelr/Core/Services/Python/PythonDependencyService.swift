@@ -1,4 +1,3 @@
-import os.log
 import Foundation
 
 /// Manages Python dependency installation and environment setup
@@ -65,11 +64,17 @@ class PythonDependencyService {
 
         // 2. Download SAM model
         report(.downloadingSAM, "Downloading segmentation model...", nil, false)
-        await warmupSAMModel(uvPath: uvPath, onProgress: onProgress)
+        guard await downloadAndVerifySAM(uvPath: uvPath, onProgress: onProgress) else {
+            report(.failed, "SAM model download or verification failed", nil, false)
+            return false
+        }
 
         // 3. Download VLM model
         report(.downloadingSAM, "Downloading VLM model...", nil, false)
-        await warmupVLMModel(uvPath: uvPath, onProgress: onProgress)
+        guard await downloadVLMModel(uvPath: uvPath, onProgress: onProgress) else {
+            report(.failed, "VLM model download or verification failed", nil, false)
+            return false
+        }
 
         // 4. 3D Generation (separate environment - requires Python 3.10)
         report(.syncingHunyuan, "Syncing 3D generation environment...", nil, false)
@@ -80,7 +85,10 @@ class PythonDependencyService {
         }
 
         report(.downloadingHunyuan, "Downloading 3D generation model (\(modelChoice.displayName))...", nil, false)
-        await downloadHunyuanModel(uvPath: uvPath, variant: modelChoice.modelVariant, onProgress: onProgress)
+        guard await downloadHunyuanModel(uvPath: uvPath, variant: modelChoice.modelVariant, onProgress: onProgress) else {
+            report(.failed, "Hunyuan model download failed", nil, false)
+            return false
+        }
 
         report(.completed, "Ready", nil, false)
         return true
@@ -110,36 +118,34 @@ class PythonDependencyService {
         )
     }
 
-    private func warmupSAMModel(uvPath: String, onProgress: @escaping (SetupProgressUpdate) -> Void) async {
-        // SAM wrapper still lives in sam project dir, but uses inference venv
-        let samProjectDir = PathManager.samProjectDirectory
+    private func downloadAndVerifySAM(uvPath: String, onProgress: @escaping (SetupProgressUpdate) -> Void) async -> Bool {
+        // Download SAM model using the unified downloader
+        // SHA256 verification happens during download, so no need for separate model load test
+        let downloaderPath = PathManager.sharedDirectory.appendingPathComponent(AppConstants.modelDownloaderFileName)
         let inferenceVenvDir = PathManager.inferenceVenvDirectory
-        let modelsHubDir = PathManager.modelsHubDirectory
-        try? PathManager.ensureDirectoryExists(at: modelsHubDir)
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: uvPath)
-        process.arguments = ["run", "--project", samProjectDir.path, AppConstants.samWrapperFileName, "--test"]
-        process.currentDirectoryURL = samProjectDir
-        process.environment = createPythonEnvironment(venvPath: inferenceVenvDir, modelsHubDir: modelsHubDir)
+        let downloadProcess = Process()
+        downloadProcess.executableURL = URL(fileURLWithPath: uvPath)
+        downloadProcess.arguments = ["run", "--python", "3.13", "--with", "requests", downloaderPath.path, "download", "--model", "sam3"]
+        downloadProcess.currentDirectoryURL = PathManager.sharedDirectory
+        downloadProcess.environment = createPythonEnvironment(venvPath: inferenceVenvDir, modelsHubDir: PathManager.modelsHubDirectory)
 
-        await runProcessAsync(process, stage: .downloadingSAM, onProgress: onProgress)
+        return await runProcessSimple(downloadProcess, stage: .downloadingSAM, onProgress: onProgress)
     }
 
-    private func warmupVLMModel(uvPath: String, onProgress: @escaping (SetupProgressUpdate) -> Void) async {
-        // VLM wrapper still lives in vlm project dir, but uses inference venv
-        let vlmProjectDir = PathManager.vlmProjectDirectory
+    private func downloadVLMModel(uvPath: String, onProgress: @escaping (SetupProgressUpdate) -> Void) async -> Bool {
+        // Download VLM model using the unified downloader
+        // SHA256 verification happens during download for large files
+        let downloaderPath = PathManager.sharedDirectory.appendingPathComponent(AppConstants.modelDownloaderFileName)
         let inferenceVenvDir = PathManager.inferenceVenvDirectory
-        let modelsHubDir = PathManager.modelsHubDirectory
-        try? PathManager.ensureDirectoryExists(at: modelsHubDir)
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: uvPath)
-        process.arguments = ["run", "--project", vlmProjectDir.path, AppConstants.vlmWrapperFileName, "--warmup"]
-        process.currentDirectoryURL = vlmProjectDir
-        process.environment = createPythonEnvironment(venvPath: inferenceVenvDir, modelsHubDir: modelsHubDir)
+        let downloadProcess = Process()
+        downloadProcess.executableURL = URL(fileURLWithPath: uvPath)
+        downloadProcess.arguments = ["run", "--python", "3.13", "--with", "requests", downloaderPath.path, "download", "--model", "vlm"]
+        downloadProcess.currentDirectoryURL = PathManager.sharedDirectory
+        downloadProcess.environment = createPythonEnvironment(venvPath: inferenceVenvDir, modelsHubDir: PathManager.modelsHubDirectory)
 
-        await runProcessAsync(process, stage: .downloadingSAM, onProgress: onProgress)
+        return await runProcessSimple(downloadProcess, stage: .downloadingSAM, onProgress: onProgress)
     }
 
     private func setupHunyuanEnvironment(uvPath: String, onProgress: @escaping (SetupProgressUpdate) -> Void) async {
@@ -162,19 +168,179 @@ class PythonDependencyService {
         )
     }
 
-    private func downloadHunyuanModel(uvPath: String, variant: String, onProgress: @escaping (SetupProgressUpdate) -> Void) async {
-        let hunyuanProjectDir = PathManager.hunyuanProjectDirectory
-        let modelsHubDir = PathManager.modelsHubDirectory
-        try? PathManager.ensureDirectoryExists(at: modelsHubDir)
+    private func downloadHunyuanModel(uvPath: String, variant: String, onProgress: @escaping (SetupProgressUpdate) -> Void) async -> Bool {
+        // Map variant to model key for downloader
+        let modelKey = "hunyuan-2mini"  // Only mini model supported
+
+        let downloaderPath = PathManager.sharedDirectory.appendingPathComponent(AppConstants.modelDownloaderFileName)
+        let inferenceVenvDir = PathManager.inferenceVenvDirectory
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: uvPath)
-        process.arguments = ["run", "--project", hunyuanProjectDir.path, AppConstants.hunyuanWrapperFileName, "--warmup", "--model", variant]
-        process.currentDirectoryURL = hunyuanProjectDir
-        process.environment = createPythonEnvironment(venvPath: PathManager.hunyuanVenvDirectory, modelsHubDir: modelsHubDir)
+        process.arguments = ["run", "--python", "3.13", "--with", "requests", downloaderPath.path, "download", "--model", modelKey]
+        process.currentDirectoryURL = PathManager.sharedDirectory
+        process.environment = createPythonEnvironment(venvPath: inferenceVenvDir, modelsHubDir: PathManager.modelsHubDirectory)
 
-        await runProcessAsync(process, stage: .downloadingHunyuan, onProgress: onProgress)
-        UserDefaults.standard.set(variant, forKey: "SelectedHunyuanModel")
+        let success = await runProcessSimple(process, stage: .downloadingHunyuan, onProgress: onProgress)
+        if success {
+            UserDefaults.standard.set(variant, forKey: "SelectedHunyuanModel")
+        }
+        return success
+    }
+
+    /// Run a process, parsing JSON progress output and forwarding to onProgress.
+    /// JSON lines (starting with {) are parsed for download progress.
+    /// Non-JSON lines are logged and forwarded as log lines.
+    /// Returns true if the process completed successfully (exit code 0).
+    /// Includes timeout and stall detection for long-running downloads.
+    @discardableResult
+    private func runProcessSimple(
+        _ process: Process,
+        stage: SetupStage,
+        timeoutMinutes: Int = 30,  // Default 30 minutes for downloads
+        stallTimeoutMinutes: Int = 5,  // 5 minutes without output = stalled
+        onProgress: @escaping (SetupProgressUpdate) -> Void
+    ) async -> Bool {
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        let description = "\(process.executableURL?.lastPathComponent ?? "process") - \(stage.rawValue)"
+
+        // Actor to safely track last activity time across threads
+        actor ActivityTracker {
+            private var lastActivityTime = Date()
+
+            func recordActivity() {
+                lastActivityTime = Date()
+            }
+
+            func timeSinceLastActivity() -> TimeInterval {
+                return Date().timeIntervalSince(lastActivityTime)
+            }
+        }
+
+        let activityTracker = ActivityTracker()
+
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !output.isEmpty {
+                // Record activity
+                Task { await activityTracker.recordActivity() }
+
+                // Process each line separately (output may contain multiple lines)
+                for line in output.components(separatedBy: .newlines) where !line.isEmpty {
+                    print("[Setup][\(stage.rawValue)] \(line)")
+
+                    // Check if this is JSON progress output (from model_downloader.py)
+                    if line.hasPrefix("{") && line.hasSuffix("}") {
+                        // Pass the JSON line to the progress handler for parsing
+                        onProgress(SetupProgressUpdate(stage: stage, status: "", logLine: line, isDetailedLog: true))
+                    } else {
+                        // Regular log line
+                        onProgress(SetupProgressUpdate(stage: stage, status: line, logLine: line, isDetailedLog: false))
+                    }
+                }
+            }
+        }
+
+        do {
+            try process.run()
+            processTracker?.track(process, description: description)
+
+            let timeoutSeconds: UInt64 = UInt64(timeoutMinutes * 60)
+            let stallTimeoutSeconds: TimeInterval = TimeInterval(stallTimeoutMinutes * 60)
+
+            enum ProcessResult {
+                case completed(Bool)
+                case timeout
+                case stalled
+            }
+
+            let result = await withTaskGroup(of: ProcessResult.self) { group -> ProcessResult in
+                // Task 1: Wait for process to complete
+                group.addTask {
+                    await withCheckedContinuation { (cont: CheckedContinuation<ProcessResult, Never>) in
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            process.waitUntilExit()
+                            cont.resume(returning: .completed(process.terminationStatus == 0))
+                        }
+                    }
+                }
+
+                // Task 2: Absolute timeout
+                group.addTask {
+                    do {
+                        try await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
+                        if process.isRunning {
+                            process.terminate()
+                        }
+                        return .timeout
+                    } catch {
+                        return .completed(true)  // Task cancelled, process finished first
+                    }
+                }
+
+                // Task 3: Stall detection (check every 30 seconds)
+                group.addTask {
+                    while !Task.isCancelled {
+                        do {
+                            try await Task.sleep(nanoseconds: 30 * 1_000_000_000)  // 30 seconds
+                            let timeSinceActivity = await activityTracker.timeSinceLastActivity()
+                            if timeSinceActivity > stallTimeoutSeconds && process.isRunning {
+                                process.terminate()
+                                return .stalled
+                            }
+                        } catch {
+                            break  // Task cancelled
+                        }
+                    }
+                    return .completed(true)  // Task cancelled, process finished first
+                }
+
+                // Wait for first result
+                let firstResult = await group.next() ?? .completed(false)
+
+                // Cancel remaining tasks
+                group.cancelAll()
+
+                return firstResult
+            }
+
+            pipe.fileHandleForReading.readabilityHandler = nil
+
+            switch result {
+            case .completed(let success):
+                if !success {
+                    print("[Setup][\(stage.rawValue)] Process exited with code \(process.terminationStatus)")
+                    onProgress(SetupProgressUpdate(stage: .failed, status: "Process failed with exit code \(process.terminationStatus)", logLine: nil))
+                }
+                return success
+
+            case .timeout:
+                print("[Setup][\(stage.rawValue)] Process timed out after \(timeoutMinutes) minutes")
+                onProgress(SetupProgressUpdate(
+                    stage: .failed,
+                    status: "Download timed out after \(timeoutMinutes) minutes",
+                    logLine: "The operation took too long. Please check your network connection and try again."
+                ))
+                return false
+
+            case .stalled:
+                print("[Setup][\(stage.rawValue)] Process stalled - no activity for \(stallTimeoutMinutes) minutes")
+                onProgress(SetupProgressUpdate(
+                    stage: .failed,
+                    status: "Download stalled - no activity for \(stallTimeoutMinutes) minutes",
+                    logLine: "The download appears to have stopped. This may be due to network issues."
+                ))
+                return false
+            }
+        } catch {
+            print("[Setup][\(stage.rawValue)] Process failed: \(error)")
+            onProgress(SetupProgressUpdate(stage: .failed, status: "Process failed", logLine: error.localizedDescription))
+            pipe.fileHandleForReading.readabilityHandler = nil
+            return false
+        }
     }
 
     // MARK: - Process Helpers
@@ -205,69 +371,66 @@ class PythonDependencyService {
             }
         }
 
-        return await withCheckedContinuation { [weak self] (continuation: CheckedContinuation<Bool, Never>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    try process.run()
-                    self?.processTracker?.track(process, description: description)
+        do {
+            try process.run()
+            processTracker?.track(process, description: description)
 
-                    // Wait for process with timeout (10 minutes max)
-                    let timeout = DispatchTime.now() + .seconds(600)
-                    var timedOut = false
-
-                    DispatchQueue.global().asyncAfter(deadline: timeout) {
-                        if process.isRunning {
-                            timedOut = true
-                            process.terminate()
+            // Wait for process with timeout using async/await pattern
+            // This avoids race conditions from DispatchQueue.asyncAfter
+            let timeoutSeconds: UInt64 = 600 // 10 minutes
+            let result = await withTaskGroup(of: Bool.self) { group -> Bool in
+                // Task 1: Wait for process to complete
+                group.addTask {
+                    await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            process.waitUntilExit()
+                            cont.resume(returning: process.terminationStatus == 0)
                         }
                     }
+                }
 
-                    process.waitUntilExit()
-                    pipe.fileHandleForReading.readabilityHandler = nil
-
-                    if timedOut {
-                        onProgress(SetupProgressUpdate(stage: .failed, status: "Sync timed out after 10 minutes", logLine: "Process timeout"))
-                        continuation.resume(returning: false)
-                    } else {
-                        continuation.resume(returning: process.terminationStatus == 0)
+                // Task 2: Timeout
+                group.addTask {
+                    do {
+                        try await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
+                        // Timeout reached - terminate if still running
+                        if process.isRunning {
+                            process.terminate()
+                        }
+                        return false // Indicate timeout
+                    } catch {
+                        // Task was cancelled (process finished first)
+                        return true
                     }
-                } catch {
-                    onProgress(SetupProgressUpdate(stage: .failed, status: "Sync failed", logLine: error.localizedDescription))
-                    continuation.resume(returning: false)
                 }
-            }
-        }
-    }
 
-    private func runProcessAsync(_ process: Process, stage: SetupStage, onProgress: @escaping (SetupProgressUpdate) -> Void) async {
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
+                // Wait for first result
+                let firstResult = await group.next() ?? false
 
-        // Track process for cleanup
-        let description = "\(process.executableURL?.lastPathComponent ?? "process") - \(stage.rawValue)"
+                // Cancel remaining tasks
+                group.cancelAll()
 
-        pipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            if let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty {
-                print("[Setup][\(stage.rawValue)] \(line)")
-                let isDetailed = line.contains("|") || line.contains("%") || line.contains("Fetching")
-                onProgress(SetupProgressUpdate(stage: stage, status: isDetailed ? "" : line, logLine: line, isDetailedLog: isDetailed))
-            }
-        }
-
-        await withCheckedContinuation { [weak self] (continuation: CheckedContinuation<Void, Never>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    try process.run()
-                    self?.processTracker?.track(process, description: description)
-                    process.waitUntilExit()
-                } catch {
-                    onProgress(SetupProgressUpdate(stage: .failed, status: "Process execution failed", logLine: error.localizedDescription))
+                // Check if it was a timeout (process was still running when terminated)
+                if !firstResult && !process.isRunning && process.terminationStatus == 143 {
+                    // SIGTERM exit code indicates timeout
+                    return false
                 }
-                pipe.fileHandleForReading.readabilityHandler = nil
-                continuation.resume()
+
+                return firstResult
             }
+
+            pipe.fileHandleForReading.readabilityHandler = nil
+
+            if !result && process.terminationStatus == 143 {
+                onProgress(SetupProgressUpdate(stage: .failed, status: "Sync timed out after 10 minutes", logLine: "Process timeout"))
+                return false
+            }
+
+            return result
+        } catch {
+            onProgress(SetupProgressUpdate(stage: .failed, status: "Sync failed", logLine: error.localizedDescription))
+            pipe.fileHandleForReading.readabilityHandler = nil
+            return false
         }
     }
 
@@ -278,6 +441,7 @@ class PythonDependencyService {
         env["UV_CACHE_DIR"] = PathManager.uvCacheDirectory.path
         env["UV_PYTHON_PREFERENCE"] = "only-managed"
         env["PYTHONUNBUFFERED"] = "1"
+        env["HF_HUB_ENABLE_HF_TRANSFER"] = "1"  // Enable high-speed downloads
         env["HF_HOME"] = PathManager.modelsDirectory.path
         env["HUGGINGFACE_HUB_CACHE"] = modelsHubDir.path
         env["TRANSFORMERS_CACHE"] = modelsHubDir.path
@@ -287,6 +451,7 @@ class PythonDependencyService {
         env["MODELR_OUTPUTS_DIR"] = PathManager.outputsDirectory.path
         env["MODELR_WORKING_DIR"] = PathManager.workingDirectory.path
         env["MODELR_LOGS_DIR"] = PathManager.logsDirectory.path
+        env["MODELR_MODELS_DIR"] = PathManager.modelsDirectory.path
 
         let pythonPathEntries: [String] = [
             PathManager.libPythonDirectory.path,
@@ -421,6 +586,9 @@ class PythonDependencyService {
             let sharedMlxDst = PathManager.sharedDirectory.appendingPathComponent("mlx-sam3", isDirectory: true)
             try copyDirectoryFiltered(from: sharedMlxSrc, to: sharedMlxDst)
 
+            // Model downloader script (used for all model downloads)
+            try copyFile(from: source.appendingPathComponent(AppConstants.modelDownloaderFileName), to: PathManager.sharedDirectory.appendingPathComponent(AppConstants.modelDownloaderFileName))
+
             // Unified inference environment (SAM + VLM + Tools)
             try PathManager.ensureDirectoryExists(at: PathManager.inferenceProjectDirectory)
             let inferencePyprojectDst = PathManager.inferenceProjectDirectory.appendingPathComponent("pyproject.toml")
@@ -430,26 +598,14 @@ class PythonDependencyService {
             // SAM wrapper script (uses inference venv)
             try PathManager.ensureDirectoryExists(at: PathManager.samProjectDirectory)
             try copyFile(from: source.appendingPathComponent(AppConstants.samWrapperFileName), to: PathManager.samProjectDirectory.appendingPathComponent(AppConstants.samWrapperFileName))
-            // Keep legacy pyproject for backward compatibility
-            let samPyprojectDst = PathManager.samProjectDirectory.appendingPathComponent("pyproject.toml")
-            try copyFile(from: source.appendingPathComponent("pyproject_sam.toml"), to: samPyprojectDst)
-            normalizeUvLocalSourcePaths(inPyprojectAt: samPyprojectDst)
 
             // Tools wrapper script (uses inference venv)
             try PathManager.ensureDirectoryExists(at: PathManager.toolsProjectDirectory)
             try copyFile(from: source.appendingPathComponent("mesh_processor.py"), to: PathManager.toolsProjectDirectory.appendingPathComponent("mesh_processor.py"))
-            // Keep legacy pyproject for backward compatibility
-            let toolsPyprojectDst = PathManager.toolsProjectDirectory.appendingPathComponent("pyproject.toml")
-            try copyFile(from: source.appendingPathComponent("pyproject_tools.toml"), to: toolsPyprojectDst)
-            normalizeUvLocalSourcePaths(inPyprojectAt: toolsPyprojectDst)
 
             // VLM wrapper script (uses inference venv)
             try PathManager.ensureDirectoryExists(at: PathManager.vlmProjectDirectory)
             try copyFile(from: source.appendingPathComponent(AppConstants.vlmWrapperFileName), to: PathManager.vlmProjectDirectory.appendingPathComponent(AppConstants.vlmWrapperFileName))
-            // Keep legacy pyproject for backward compatibility
-            let vlmPyprojectDst = PathManager.vlmProjectDirectory.appendingPathComponent("pyproject.toml")
-            try copyFile(from: source.appendingPathComponent(AppConstants.vlmPyprojectFileName), to: vlmPyprojectDst)
-            normalizeUvLocalSourcePaths(inPyprojectAt: vlmPyprojectDst)
 
             // Hunyuan (separate environment - requires Python 3.10)
             try PathManager.ensureDirectoryExists(at: PathManager.hunyuanProjectDirectory)

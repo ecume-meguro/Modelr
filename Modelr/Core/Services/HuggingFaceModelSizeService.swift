@@ -76,28 +76,17 @@ class HuggingFaceModelSizeService: ObservableObject {
 
     /// Get display size for a specific model choice (uses live data if available)
     func displaySize(for choice: SetupModelChoice) -> String {
-        switch choice {
-        case .fast:
-            return hunyuanMiniDisplaySize
-        case .ultra:
-            return hunyuanStdDisplaySize
-        }
+        // Only mini model supported
+        return hunyuanMiniDisplaySize
     }
 
     /// Get raw bytes for a specific model choice (uses live data if available, else fallback)
     func bytes(for choice: SetupModelChoice) -> Int64 {
-        switch choice {
-        case .fast:
-            if isValidSize(hunyuanMiniBytes) {
-                return hunyuanMiniBytes!
-            }
-            return Int64(Self.miniFallbackGb * 1_000_000_000)
-        case .ultra:
-            if isValidSize(hunyuanStdBytes) {
-                return hunyuanStdBytes!
-            }
-            return Int64(Self.stdFallbackGb * 1_000_000_000)
+        // Only mini model supported
+        if isValidSize(hunyuanMiniBytes) {
+            return hunyuanMiniBytes!
         }
+        return Int64(Self.miniFallbackGb * 1_000_000_000)
     }
 
     /// Get SAM model bytes (uses live data if available, else fallback)

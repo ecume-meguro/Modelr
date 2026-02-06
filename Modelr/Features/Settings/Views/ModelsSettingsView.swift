@@ -7,6 +7,10 @@ struct ModelsSettingsView: View {
     @State private var isDownloading = false
     @State private var downloadProgress: Double = 0
     @State private var downloadingVariant: HunyuanVariant?
+    @State private var downloadedBytes: Int64 = 0
+    @State private var totalBytes: Int64 = 0
+    @State private var downloadError: String?
+    @State private var failedVariant: HunyuanVariant?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -54,6 +58,9 @@ struct ModelsSettingsView: View {
                             isSelected: settingsManager.selectedVariant == variant,
                             isDownloading: downloadingVariant == variant,
                             downloadProgress: downloadingVariant == variant ? downloadProgress : 0,
+                            downloadedBytes: downloadingVariant == variant ? downloadedBytes : 0,
+                            totalBytes: downloadingVariant == variant ? totalBytes : 0,
+                            errorMessage: failedVariant == variant ? downloadError : nil,
                             onSelect: {
                                 if variant.isDownloaded {
                                     withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
@@ -63,6 +70,16 @@ struct ModelsSettingsView: View {
                             },
                             onDownload: {
                                 startDownload(variant: variant)
+                            },
+                            onRetry: {
+                                // Clear error state and retry
+                                downloadError = nil
+                                failedVariant = nil
+                                startDownload(variant: variant)
+                            },
+                            onDismissError: {
+                                downloadError = nil
+                                failedVariant = nil
                             }
                         )
                     }
@@ -93,6 +110,7 @@ struct ModelsSettingsView: View {
                 Text("Models folder: \(ByteCountFormatter.string(fromByteCount: modelsSize, countStyle: .file))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 Spacer()
                 Button("Open in Finder") {
                     NSWorkspace.shared.open(PathManager.modelsDirectory)
@@ -150,8 +168,13 @@ private struct ModelSelectionCard: View {
     let isSelected: Bool
     let isDownloading: Bool
     let downloadProgress: Double
+    let downloadedBytes: Int64
+    let totalBytes: Int64
+    let errorMessage: String?
     let onSelect: () -> Void
     let onDownload: () -> Void
+    let onRetry: () -> Void
+    let onDismissError: () -> Void
 
     private var color: Color {
         variant == .mini ? .blue : .purple
@@ -211,19 +234,63 @@ private struct ModelSelectionCard: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .truncationMode(.tail)
                 }
 
                 Spacer()
 
                 // Status / Download
                 VStack(alignment: .trailing, spacing: 4) {
-                    if isDownloading {
+                    if let error = errorMessage {
+                        // Error state with retry option
+                        VStack(alignment: .trailing, spacing: 6) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                                Text("Failed")
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(.orange)
+                            }
+
+                            Text(error)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.trailing)
+                                .frame(maxWidth: 120)
+
+                            HStack(spacing: 8) {
+                                Button("Dismiss") {
+                                    onDismissError()
+                                }
+                                .font(.caption2)
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+
+                                Button(action: onRetry) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "arrow.clockwise")
+                                        Text("Retry")
+                                    }
+                                    .font(.caption.weight(.medium))
+                                }
+                                .buttonStyle(.bordered)
+                                .tint(.orange)
+                            }
+                        }
+                    } else if isDownloading {
                         VStack(alignment: .trailing, spacing: 4) {
                             ProgressView(value: downloadProgress)
                                 .frame(width: 80)
-                            Text("\(Int(downloadProgress * 100))%")
-                                .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.secondary)
+                            if totalBytes > 0 {
+                                Text("\(ByteCountFormatter.string(fromByteCount: downloadedBytes, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file))")
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Text("\(Int(downloadProgress * 100))%")
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     } else if variant.isDownloaded {
                         HStack(spacing: 4) {
@@ -241,7 +308,7 @@ private struct ModelSelectionCard: View {
                             }
                             .font(.caption.weight(.medium))
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.bordered)
                         .tint(color)
                     }
 
@@ -260,7 +327,8 @@ private struct ModelSelectionCard: View {
         }
         .buttonStyle(.plain)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isSelected)
-        .disabled(!variant.isDownloaded && !isDownloading)
+        .opacity(!variant.isDownloaded && !isDownloading && errorMessage == nil ? 0.6 : 1.0)
+        .disabled(!variant.isDownloaded && !isDownloading && errorMessage == nil)
     }
 }
 

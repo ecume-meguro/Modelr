@@ -1,7 +1,9 @@
 import Foundation
 
 /// Shared utilities for managing Python processes
+/// Consolidates process lifecycle management to avoid code duplication
 enum ProcessUtilities {
+
     /// Recursively find all child processes of a given PID
     /// Uses `pgrep` to find children and recursively finds their children
     /// - Parameter pid: The parent process ID
@@ -28,7 +30,6 @@ enum ProcessUtilities {
 
                 for childPid in childPids {
                     result.append(childPid)
-                    // Recursively find children of this child
                     result.append(contentsOf: findChildProcesses(childPid))
                 }
             }
@@ -39,40 +40,122 @@ enum ProcessUtilities {
         return result
     }
 
-    /// Gracefully terminate a process tree (process + all children)
-    /// First tries SIGTERM with grace period, then SIGKILL
-    /// Also attempts process group termination
-    /// - Parameters:
-    ///   - pid: The process ID to terminate
-    ///   - gracePeriod: Microseconds to wait between SIGTERM and SIGKILL (default: 200ms)
-    static func terminateProcessTree(_ pid: pid_t, gracePeriod: UInt32 = 200_000) {
-        guard pid > 0 else { return }
+    /// Check if a process is still running
+    /// - Parameter pid: The process ID to check
+    /// - Returns: true if process exists and is running
+    static func isProcessRunning(_ pid: pid_t) -> Bool {
+        // kill with signal 0 checks if process exists without sending a signal
+        return kill(pid, 0) == 0
+    }
 
-        // Find and kill all child processes first (uv spawns Python in separate group)
+    /// Terminate all child processes of a given PID
+    /// Sends SIGTERM first, waits, then SIGKILL only if still running
+    /// - Parameter pid: The parent process ID
+    static func terminateChildren(_ pid: pid_t) {
         let children = findChildProcesses(pid)
-        for childPid in children.reversed() {
-            print("[ProcessUtilities] Killing child PID \(childPid)")
-            kill(childPid, SIGTERM)
-        }
+        guard !children.isEmpty else { return }
 
-        if !children.isEmpty {
-            usleep(100_000) // 100ms for SIGTERM to take effect
-            for childPid in children.reversed() {
-                kill(childPid, SIGKILL)
+        // SIGTERM first (bottom-up), only if process is running
+        for childPid in children.reversed() {
+            if isProcessRunning(childPid) {
+                kill(childPid, SIGTERM)
             }
         }
 
-        // Also try process group (may work for some processes)
+        usleep(AppConstants.sigtermGracePeriodMicroseconds)
+
+        // Force kill any remaining (check if still running before SIGKILL)
+        for childPid in children.reversed() {
+            if isProcessRunning(childPid) {
+                kill(childPid, SIGKILL)
+            }
+        }
+    }
+
+    /// Terminate a process group
+    /// Checks if process is still running before sending signals
+    /// - Parameter pid: A process in the group
+    static func terminateProcessGroup(_ pid: pid_t) {
         let pgid = getpgid(pid)
-        if pgid > 0 {
-            kill(-pgid, SIGTERM)
-            usleep(50_000) // 50ms
+        guard pgid > 0 else { return }
+
+        // Check if any process in the group is running before sending signals
+        guard isProcessRunning(pid) else { return }
+
+        kill(-pgid, SIGTERM)
+        usleep(AppConstants.processGroupGracePeriodMicroseconds)
+
+        // Only send SIGKILL if process group still has running processes
+        if isProcessRunning(pid) {
             kill(-pgid, SIGKILL)
         }
+    }
 
-        // Finally terminate the main process
+    /// Gracefully terminate a process tree (process + all children + process group)
+    /// Consolidates termination logic to avoid duplicate signals by checking if process is still running
+    /// - Parameters:
+    ///   - pid: The process ID to terminate
+    ///   - gracePeriod: Microseconds to wait between SIGTERM and SIGKILL
+    static func terminateProcessTree(_ pid: pid_t, gracePeriod: UInt32 = AppConstants.gracefulExitPeriodMicroseconds) {
+        guard pid > 0 else { return }
+
+        // 1. Kill children first
+        terminateChildren(pid)
+
+        // 2. Try process group (only if main process still running)
+        if isProcessRunning(pid) {
+            terminateProcessGroup(pid)
+        }
+
+        // 3. Terminate the main process (only if still running after group termination)
+        guard isProcessRunning(pid) else { return }
+
         kill(pid, SIGTERM)
         usleep(gracePeriod)
-        kill(pid, SIGKILL)
+
+        // Only send SIGKILL if process is still running after grace period
+        if isProcessRunning(pid) {
+            kill(pid, SIGKILL)
+        }
+    }
+
+    /// Stop a running Process and all its children
+    /// Handles graceful shutdown with exit command, then forced termination
+    /// - Parameters:
+    ///   - process: The Process to stop
+    ///   - stdinPipe: Optional stdin pipe to send exit command
+    ///   - exitCommand: JSON exit command to send (default: {"command":"exit"})
+    ///   - timeout: Maximum time to wait for process to exit (default: 5 seconds)
+    static func stopProcess(_ process: Process, stdinPipe: Pipe?, exitCommand: String = "{\"command\":\"exit\"}\n", timeout: TimeInterval = 5.0) {
+        guard process.isRunning else { return }
+        let pid = process.processIdentifier
+
+        // Try graceful exit first
+        if let stdin = stdinPipe?.fileHandleForWriting {
+            try? stdin.write(contentsOf: Data(exitCommand.utf8))
+        }
+
+        // Grace period for graceful exit
+        usleep(AppConstants.gracefulExitPeriodMicroseconds)
+
+        if process.isRunning {
+            terminateChildren(pid)
+            terminateProcessGroup(pid)
+            process.terminate()
+        }
+
+        // Non-blocking wait with timeout to avoid deadlocks
+        // Move waitUntilExit to a background thread with timeout protection
+        let semaphore = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            process.waitUntilExit()
+            semaphore.signal()
+        }
+
+        let result = semaphore.wait(timeout: .now() + timeout)
+        if result == .timedOut {
+            // Force kill if waitUntilExit times out
+            kill(pid, SIGKILL)
+        }
     }
 }

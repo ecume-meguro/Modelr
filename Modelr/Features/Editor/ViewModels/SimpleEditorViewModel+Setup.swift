@@ -156,8 +156,6 @@ extension SimpleEditorViewModel {
             return .configuringGeneration
         case .downloadingHunyuan:
             return .downloadingGeneration
-        case .syncingTools:
-            return .configuringPostProcess
         case .completed:
             return .configuringPostProcess
         case .failed:

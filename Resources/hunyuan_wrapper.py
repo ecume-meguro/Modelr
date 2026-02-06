@@ -14,10 +14,20 @@ import gc
 import traceback
 import select
 import threading
+import tempfile
 from typing import Optional, Callable, Dict, Any
 from pathlib import Path
 
 _cancel_file_path = None  # Will be set before generation
+
+
+def _get_cancel_file_dir() -> Path:
+    """Get secure directory for cancel files using system temp directory."""
+    # Use tempfile.gettempdir() for platform-appropriate secure temp directory
+    # Create an app-specific subdirectory to avoid conflicts
+    cancel_dir = Path(tempfile.gettempdir()) / "modelr"
+    cancel_dir.mkdir(parents=True, exist_ok=True)
+    return cancel_dir
 
 
 def _touch_cancel_file() -> None:
@@ -30,11 +40,12 @@ def _touch_cancel_file() -> None:
     global _cancel_file_path
     try:
         if _cancel_file_path is None:
-            _cancel_file_path = Path(f"/tmp/modelr_cancel_{os.getpid()}")
+            cancel_dir = _get_cancel_file_dir()
+            _cancel_file_path = cancel_dir / f"modelr_cancel_{os.getpid()}"
         _cancel_file_path.parent.mkdir(parents=True, exist_ok=True)
         _cancel_file_path.touch(exist_ok=True)
         print(f"[CANCEL] Touched cancel file: {_cancel_file_path}", file=sys.stderr, flush=True)
-    except Exception as e:
+    except OSError as e:
         print(f"[CANCEL] Failed to touch cancel file: {e}", file=sys.stderr, flush=True)
 
 def _patch_tqdm():
@@ -54,7 +65,7 @@ def _patch_tqdm():
                 print(f"[TQDM] Cancel file detected, stopping!", file=sys.stderr, flush=True)
                 try:
                     _cancel_file_path.unlink()
-                except:
+                except (OSError, FileNotFoundError):
                     pass
                 from modelr_core.exceptions import GenerationError
                 raise GenerationError("Generation cancelled by user")
@@ -88,12 +99,10 @@ _patch_tqdm()
 import torch
 import numpy as np
 from PIL import Image
-from huggingface_hub import snapshot_download
 
 from modelr_core import (
     get_logger,
     get_device,
-    ModelConfig,
     log_info,
     log_error,
     log_debug,
@@ -108,185 +117,115 @@ from modelr_core.exceptions import (
 )
 
 logger = get_logger("hunyuan_wrapper")
-HUNYUAN_CACHE_DIR = ModelConfig.get_hunyuan_cache_dir()
+
+
+# JSON Schema validation for incoming requests
+VALID_COMMANDS = {"generate", "cancel", "ping", "exit"}
+REQUIRED_GENERATE_FIELDS = {"command", "imagePath", "outputPath"}
+
+
+def validate_request(request: Dict[str, Any]) -> tuple[bool, str]:
+    """Validate incoming JSON request structure.
+
+    Returns:
+        Tuple of (is_valid, error_message). error_message is empty if valid.
+    """
+    if not isinstance(request, dict):
+        return False, "Request must be a JSON object"
+
+    command = request.get("command")
+    if not command:
+        return False, "Missing required field: command"
+
+    if not isinstance(command, str):
+        return False, "Field 'command' must be a string"
+
+    if command not in VALID_COMMANDS:
+        return False, f"Unknown command: {command}. Valid commands: {', '.join(VALID_COMMANDS)}"
+
+    # Validate generate command has required fields
+    if command == "generate":
+        for field in REQUIRED_GENERATE_FIELDS:
+            if field not in request:
+                return False, f"Generate command missing required field: {field}"
+
+        # Validate field types for generate
+        if not isinstance(request.get("imagePath", ""), str):
+            return False, "Field 'imagePath' must be a string"
+        if not isinstance(request.get("outputPath", ""), str):
+            return False, "Field 'outputPath' must be a string"
+
+        # Validate optional numeric fields
+        if "steps" in request and not isinstance(request["steps"], (int, float)):
+            return False, "Field 'steps' must be a number"
+        if "resolution" in request and not isinstance(request["resolution"], (int, float)):
+            return False, "Field 'resolution' must be a number"
+        if "guidanceScale" in request and not isinstance(request["guidanceScale"], (int, float)):
+            return False, "Field 'guidanceScale' must be a number"
+
+    return True, ""
+
+
+def get_models_dir() -> Path:
+    """Get the models directory from environment or default."""
+    models_dir = os.environ.get("MODELR_MODELS_DIR")
+    if models_dir:
+        return Path(models_dir)
+    return Path.home() / "Library" / "Application Support" / "Modelr" / "models"
 
 
 class HunyuanGenerator:
     """Manages Hunyuan3D model generation."""
 
-    # Model variant mapping: variant -> (repo_id, subfolder, use_safetensors)
-    # Note: Hunyuan3D-2.1 (std) uses .ckpt files, not .safetensors
+    # Model variant mapping: variant -> (local_dir, subfolder, use_safetensors)
+    # Models are pre-downloaded by model_downloader.py to models/{local_dir}/{subfolder}/
     VARIANT_MAP = {
-        # Mini variants (all in same repo, different subfolders) - use safetensors
-        "mini": ("tencent/Hunyuan3D-2mini", "hunyuan3d-dit-v2-mini", True),
-        "mini-fast": ("tencent/Hunyuan3D-2mini", "hunyuan3d-dit-v2-mini-fast", True),
-        "mini-turbo": ("tencent/Hunyuan3D-2mini", "hunyuan3d-dit-v2-mini-turbo", True),
-        # Standard 2.1 model - uses .ckpt files (no safetensors available)
-        "std": ("tencent/Hunyuan3D-2.1", "hunyuan3d-dit-v2-1", False),
+        # Mini variants - use .safetensors
+        "mini": ("hunyuan-2mini", "hunyuan3d-dit-v2-mini", True),
+        "mini-fast": ("hunyuan-2mini", "hunyuan3d-dit-v2-mini-fast", True),
+        "mini-turbo": ("hunyuan-2mini", "hunyuan3d-dit-v2-mini-turbo", True),
     }
 
-    def __init__(self, model_variant: str = "std"):
+    def __init__(self, model_variant: str = "mini"):
         self.model_variant = model_variant
         self.pipeline = None
         self.device = get_device()
 
     def load(self):
-        """Load the pipeline."""
+        """Load the pipeline from local pre-downloaded model."""
         try:
             from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
 
-            repo_id, subfolder, use_safetensors = self.VARIANT_MAP.get(
-                self.model_variant, self.VARIANT_MAP["std"]
+            local_dir, subfolder, use_safetensors = self.VARIANT_MAP.get(
+                self.model_variant, self.VARIANT_MAP["mini"]
             )
-            log_info(f"Loading Hunyuan3D pipeline: {repo_id}/{subfolder} (safetensors={use_safetensors})")
 
-            configured_hy3dgen_models = os.environ.get("HY3DGEN_MODELS")
-            inferred_hy3dgen_models = Path(HUNYUAN_CACHE_DIR).parent / "hy3dgen"
-            if configured_hy3dgen_models and Path(configured_hy3dgen_models) != Path(HUNYUAN_CACHE_DIR):
-                hy3dgen_models_dir = Path(configured_hy3dgen_models)
-            else:
-                hy3dgen_models_dir = inferred_hy3dgen_models
-                os.environ["HY3DGEN_MODELS"] = str(hy3dgen_models_dir)
-            hy3dgen_models_dir.mkdir(parents=True, exist_ok=True)
+            # Model files are in models/{local_dir}/{subfolder}/
+            # hy3dgen expects the parent directory + subfolder parameter
+            model_path = get_models_dir() / local_dir
+            full_path = model_path / subfolder
+            log_info(f"Loading Hunyuan3D pipeline from: {full_path}")
 
-            # Build download patterns based on model type
-            # Hunyuan3D-2.1 uses .ckpt files, Mini uses .safetensors
-            if use_safetensors:
-                allow_patterns = [
-                    f"{subfolder}/*.safetensors",
-                    f"{subfolder}/*.json",
-                    f"{subfolder}/*.yaml",
-                    f"{subfolder}/*.yml",
-                    f"{subfolder}/*.txt",
-                ]
-                ignore_patterns = [
-                    f"{subfolder}/*.ckpt",
-                    f"{subfolder}/*.ckpt.*",
-                ]
-            else:
-                # For .ckpt models (like Hunyuan3D-2.1), download the checkpoint
-                allow_patterns = [
-                    f"{subfolder}/*.ckpt",
-                    f"{subfolder}/*.json",
-                    f"{subfolder}/*.yaml",
-                    f"{subfolder}/*.yml",
-                    f"{subfolder}/*.txt",
-                ]
-                ignore_patterns = []
-                log_info(f"[DOWNLOAD] Downloading model weights (this may take a while for ~8GB)...")
+            if not full_path.exists():
+                raise ModelLoadError(
+                    f"Model not found at {full_path}. Run model_downloader.py first."
+                )
 
-            snapshot_path = snapshot_download(
-                repo_id=repo_id,
-                allow_patterns=allow_patterns,
-                ignore_patterns=ignore_patterns,
-                cache_dir=str(HUNYUAN_CACHE_DIR),
+            # Verify required files exist
+            config_file = full_path / "config.yaml"
+            if not config_file.exists():
+                raise ModelLoadError(f"config.yaml not found at {full_path}")
+
+            # Load the pipeline from local path with explicit subfolder
+            self.pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+                str(model_path),
+                subfolder=subfolder,
+                device=self.device,
+                use_safetensors=use_safetensors,
+                local_files_only=True,
             )
-            log_info(f"Using local snapshot: {snapshot_path}")
 
-            try:
-                snapshot_dir = Path(snapshot_path)
-                snapshot_weights_dir = snapshot_dir / subfolder
-                hy3d_local_dir = hy3dgen_models_dir / repo_id / subfolder
-                hy3d_local_dir.mkdir(parents=True, exist_ok=True)
-
-                def link_into_local(name: str) -> None:
-                    src = snapshot_weights_dir / name
-                    if not src.exists() and not src.is_symlink():
-                        return
-                    try:
-                        target = src.resolve(strict=False) if src.is_symlink() else src
-                    except Exception:
-                        target = src
-                    dst = hy3d_local_dir / name
-                    try:
-                        if dst.exists() or dst.is_symlink():
-                            dst.unlink()
-                    except Exception:
-                        pass
-                    try:
-                        dst.symlink_to(target)
-                    except Exception:
-                        import shutil
-                        shutil.copy2(target, dst)
-
-                link_into_local("config.yaml")
-                # Link weight files based on model type
-                if use_safetensors:
-                    for st in snapshot_weights_dir.glob("*.safetensors"):
-                        link_into_local(st.name)
-                else:
-                    for ckpt in snapshot_weights_dir.glob("*.ckpt"):
-                        link_into_local(ckpt.name)
-                # Link metadata files
-                for meta in snapshot_weights_dir.glob("*.json"):
-                    link_into_local(meta.name)
-                for meta in snapshot_weights_dir.glob("*.yml"):
-                    link_into_local(meta.name)
-                for meta in snapshot_weights_dir.glob("*.yaml"):
-                    link_into_local(meta.name)
-                for meta in snapshot_weights_dir.glob("*.txt"):
-                    link_into_local(meta.name)
-            except Exception as e:
-                log_debug(f"Failed to stage hy3dgen local model dir: {e}")
-
-            # Only prune .ckpt files if we're using safetensors (have both available)
-            # Don't prune if we're intentionally using .ckpt files
-            if use_safetensors:
-                try:
-                    snapshot_dir = Path(snapshot_path)
-                    repo_root = snapshot_dir.parent.parent
-                    blobs_dir = repo_root / "blobs"
-                    weights_dir = snapshot_dir / subfolder
-
-                    if weights_dir.exists():
-                        safetensors = list(weights_dir.glob("**/*.safetensors"))
-                        ckpts = list(weights_dir.glob("**/*.ckpt")) + list(weights_dir.glob("**/*.ckpt.*"))
-                        if safetensors and ckpts:
-                            for ckpt in ckpts:
-                                target_blob: Optional[Path] = None
-                                if ckpt.is_symlink():
-                                    try:
-                                        target_blob = ckpt.resolve(strict=False)
-                                    except Exception:
-                                        target_blob = None
-
-                                try:
-                                    ckpt.unlink(missing_ok=True)
-                                except TypeError:
-                                    if ckpt.exists() or ckpt.is_symlink():
-                                        ckpt.unlink()
-
-                                if target_blob is not None:
-                                    try:
-                                        if blobs_dir in target_blob.parents and target_blob.exists():
-                                            target_blob.unlink()
-                                    except Exception:
-                                        pass
-
-                            log_info("Pruned cached .ckpt weights (keeping .safetensors)")
-                except Exception as e:
-                    log_debug(f"Failed to prune ckpt weights: {e}")
-
-            # Load the pipeline with appropriate settings
-            # For .ckpt models, don't specify variant as the file is already named model.fp16.ckpt
-            if use_safetensors:
-                self.pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-                    repo_id,
-                    subfolder=subfolder,
-                    device=self.device,
-                    use_safetensors=True,
-                    variant="fp16",
-                )
-            else:
-                # For .ckpt files, load without variant specification
-                # The hy3dgen library will find model.fp16.ckpt
-                log_info(f"Loading from .ckpt checkpoint...")
-                self.pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-                    repo_id,
-                    subfolder=subfolder,
-                    device=self.device,
-                    use_safetensors=False,
-                )
+            log_info("Hunyuan3D pipeline loaded successfully")
             return self.pipeline
         except Exception as e:
             raise ModelLoadError(f"Failed to load Hunyuan3D pipeline: {e}")
@@ -486,13 +425,13 @@ class HunyuanServer:
 
             # Set global cancel file path for the patched tqdm to check
             global _cancel_file_path
-            _cancel_file_path = Path(f"/tmp/modelr_cancel_{os.getpid()}")
-            # Clean up any stale cancel file from previous runs
-            if _cancel_file_path.exists():
-                try:
-                    _cancel_file_path.unlink()
-                except:
-                    pass
+            cancel_dir = _get_cancel_file_dir()
+            _cancel_file_path = cancel_dir / f"modelr_cancel_{os.getpid()}"
+            # Clean up any stale cancel file from previous runs (TOCTOU-safe: just try to unlink)
+            try:
+                _cancel_file_path.unlink()
+            except (OSError, FileNotFoundError):
+                pass  # File doesn't exist or can't be removed - that's fine
 
             # Cancel check function - checked at each diffusion step (backup)
             def should_cancel():
@@ -578,10 +517,17 @@ class HunyuanServer:
                         if not line_bytes:  # EOF
                             print("[HunyuanServer] stdin EOF, exiting reader", file=sys.stderr, flush=True)
                             break
-                        line = line_bytes.decode('utf-8').strip()
+                        try:
+                            line = line_bytes.decode('utf-8').strip()
+                        except UnicodeDecodeError:
+                            # Fallback: replace invalid bytes to avoid crashing
+                            line = line_bytes.decode('utf-8', errors='replace').strip()
+                            print(f"[HunyuanServer] Warning: stdin contained invalid UTF-8", file=sys.stderr, flush=True)
                         if line:
                             print(f"[HunyuanServer] stdin got: {line[:80]}...", file=sys.stderr, flush=True)
                             command_queue.put(line)
+            except (OSError, IOError) as e:
+                print(f"[HunyuanServer] stdin_reader I/O error: {e}", file=sys.stderr, flush=True)
             except Exception as e:
                 print(f"[HunyuanServer] stdin_reader error: {e}", file=sys.stderr, flush=True)
 
@@ -606,7 +552,25 @@ class HunyuanServer:
                 try:
                     # Get next command from queue (blocking)
                     line = command_queue.get()
-                    request = json.loads(line)
+                    try:
+                        request = json.loads(line)
+                    except json.JSONDecodeError as e:
+                        self.send_response({
+                            "success": False,
+                            "error": f"Malformed JSON: {e.msg} at position {e.pos}"
+                        })
+                        continue
+
+                    # Validate request structure
+                    is_valid, validation_error = validate_request(request)
+                    if not is_valid:
+                        self.send_response({
+                            "success": False,
+                            "error": validation_error,
+                            "messageId": request.get("messageId") if isinstance(request, dict) else None
+                        })
+                        continue
+
                     command = request.get("command", "")
 
                     if command == "generate":
@@ -631,14 +595,15 @@ class HunyuanServer:
                             try:
                                 cancel_line = command_queue.get_nowait()
                                 print(f"[HunyuanServer] Got during gen: {cancel_line}", file=sys.stderr, flush=True)
-                                cancel_req = json.loads(cancel_line)
-                                if cancel_req.get("command") == "cancel":
-                                    print("[HunyuanServer] CANCEL received - will stop at next step", file=sys.stderr, flush=True)
-                                    self._cancel_requested = True
-                                    _touch_cancel_file()
+                                try:
+                                    cancel_req = json.loads(cancel_line)
+                                    if isinstance(cancel_req, dict) and cancel_req.get("command") == "cancel":
+                                        print("[HunyuanServer] CANCEL received - will stop at next step", file=sys.stderr, flush=True)
+                                        self._cancel_requested = True
+                                        _touch_cancel_file()
+                                except json.JSONDecodeError as e:
+                                    print(f"[HunyuanServer] Invalid JSON during generation: {e.msg}", file=sys.stderr, flush=True)
                             except queue.Empty:
-                                pass
-                            except json.JSONDecodeError:
                                 pass
 
                         gen_thread.join()
@@ -679,8 +644,6 @@ class HunyuanServer:
 
                     self.send_response(response)
 
-                except json.JSONDecodeError as e:
-                    self.send_response({"success": False, "error": f"Invalid JSON: {e}"})
                 except Exception as e:
                     log_error(f"Request error: {e}", self.logger)
                     self.send_response({"success": False, "error": str(e)})
@@ -698,9 +661,9 @@ def main():
     parser.add_argument("--get-size", action="store_true", help="Query model download size")
     parser.add_argument(
         "--model",
-        default="std",
-        choices=["mini", "mini-fast", "mini-turbo", "std"],
-        help="Model variant (mini, mini-fast, mini-turbo, or std)"
+        default="mini",
+        choices=["mini", "mini-fast", "mini-turbo"],
+        help="Model variant (mini, mini-fast, or mini-turbo)"
     )
     parser.add_argument("--image", help="Input image path")
     parser.add_argument("--mask", help="Mask image path")
@@ -712,12 +675,11 @@ def main():
 
     if args.get_size:
         model_key_map = {
-            "mini": "hunyuan-mini",
-            "mini-fast": "hunyuan-mini",
-            "mini-turbo": "hunyuan-mini",
-            "std": "hunyuan-std",
+            "mini": "hunyuan-2mini",
+            "mini-fast": "hunyuan-2mini",
+            "mini-turbo": "hunyuan-2mini",
         }
-        model_key = model_key_map.get(args.model, "hunyuan-std")
+        model_key = model_key_map.get(args.model, "hunyuan-2mini")
         size_str = get_model_size_formatted(model_key)
         print(f"SIZE:{size_str}", flush=True)
         return
@@ -729,9 +691,23 @@ def main():
         return
 
     if args.warmup:
+        # Verify model exists locally and can load
+        local_dir, subfolder, _ = HunyuanGenerator.VARIANT_MAP.get(args.model, ("hunyuan-2mini", "hunyuan3d-dit-v2-mini", True))
+        full_path = get_models_dir() / local_dir / subfolder
+
+        if not full_path.exists():
+            log_error(f"Model not found at {full_path}. Run model_downloader.py first.")
+            sys.exit(1)
+
+        config_file = full_path / "config.yaml"
+        if not config_file.exists():
+            log_error(f"config.yaml not found at {full_path}. Run model_downloader.py first.")
+            sys.exit(1)
+
+        # Load model to verify
         generator = HunyuanGenerator(args.model)
         generator.load()
-        log_info("Warmup complete")
+        log_info(f"Model verified at {full_path}")
         return
 
     if args.image:

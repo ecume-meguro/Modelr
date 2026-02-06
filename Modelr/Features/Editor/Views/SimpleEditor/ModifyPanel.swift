@@ -114,14 +114,26 @@ struct ModifyPanel: View {
     private var voxelizeSettings: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
             // Slider with editable text field (0 = off, 0.015-0.085 = voxel pitch, minimum 0.015 to prevent timeouts)
-            EditableSliderRow(
-                label: "Voxel Size",
-                value: $viewModel.voxelResolution,
-                range: 0...0.085,
-                step: 0.001,
-                format: "%.3f",
-                minimumValue: 0.015
-            )
+            VStack(alignment: .leading, spacing: AppDesign.Spacing.p4) {
+                EditableSliderRow(
+                    label: "Voxel Size",
+                    value: $viewModel.voxelResolution,
+                    range: 0...0.085,
+                    step: 0.001,
+                    format: "%.3f",
+                    minimumValue: 0.015
+                )
+
+                // Semantic detail level indicator
+                HStack(spacing: AppDesign.Spacing.p6) {
+                    Text(voxelDetailLabel)
+                        .font(.system(size: AppDesign.FontSize.xs, weight: .medium))
+                        .foregroundStyle(voxelDetailColor)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(voxelDetailColor.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
+                }
+            }
             .onChange(of: viewModel.voxelResolution) { _, newValue in
                 // Snap to 0.015 minimum if user tries to set below (but allow 0 for disabled)
                 if newValue > 0 && newValue < 0.015 {
@@ -150,16 +162,37 @@ struct ModifyPanel: View {
                 }
             }
 
-            // Tip
+            // Tip with tooltip
             HStack(spacing: AppDesign.Spacing.p6) {
                 Image(systemName: "info.circle")
                     .font(.system(size: AppDesign.FontSize.caption))
                     .foregroundStyle(.secondary)
+                    .help("Voxel size controls the resolution of voxelization. Smaller values create more detailed voxels but take longer to process. Values: 0.015-0.030 = Very detailed, 0.030-0.050 = Medium detail, 0.050-0.085 = Low detail (blocky).")
                 Text("Smaller = more detail. Minimum 0.015. Set to 0 to disable.")
                     .font(.system(size: AppDesign.FontSize.xs))
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// Semantic label for voxel detail level
+    private var voxelDetailLabel: String {
+        let v = viewModel.voxelResolution
+        if v == 0 { return "Disabled" }
+        if v <= 0.025 { return "Very Detailed" }
+        if v <= 0.040 { return "Medium Detail" }
+        if v <= 0.060 { return "Low Detail" }
+        return "Very Blocky"
+    }
+
+    /// Color for voxel detail level
+    private var voxelDetailColor: Color {
+        let v = viewModel.voxelResolution
+        if v == 0 { return .secondary }
+        if v <= 0.025 { return AppDesign.success }
+        if v <= 0.040 { return AppDesign.accent }
+        if v <= 0.060 { return AppDesign.warning }
+        return AppDesign.destructive
     }
 
     // MARK: - Low Poly Settings
@@ -208,10 +241,41 @@ struct ModifyPanel: View {
                     .foregroundStyle(.secondary)
             }
 
+            // Face count preview (real-time estimate while dragging)
+            if viewModel.lowPolyReduction > 0 {
+                faceCountPreview
+            }
+
             // Face count stats (show when modified)
             if viewModel.modifiedFaceCount > 0 {
                 faceCountStats
             }
+        }
+    }
+
+    // MARK: - Face Count Preview (Real-time Estimate)
+
+    @ViewBuilder
+    private var faceCountPreview: some View {
+        if viewModel.originalFaceCount > 0 {
+            // Calculate estimated face count based on reduction percentage
+            // Using exponential scaling similar to the actual reduction algorithm
+            let reductionFactor = pow(viewModel.lowPolyReduction / 100.0, 1.5)
+            let estimatedFaces = Int(Double(viewModel.originalFaceCount) * (1.0 - reductionFactor))
+            let displayFaces = max(100, estimatedFaces) // Minimum reasonable face count
+
+            HStack(spacing: AppDesign.Spacing.p8) {
+                Image(systemName: "chart.line.downtrend.xyaxis")
+                    .font(.system(size: AppDesign.FontSize.caption))
+                    .foregroundStyle(AppDesign.accent)
+                Text("Estimated: ~\(formatNumber(displayFaces)) faces")
+                    .font(.system(size: AppDesign.FontSize.xs, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, AppDesign.Spacing.p8)
+            .padding(.vertical, AppDesign.Spacing.p6)
+            .background(AppDesign.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+            .animation(.easeOut(duration: 0.15), value: viewModel.lowPolyReduction)
         }
     }
 
@@ -268,7 +332,21 @@ struct ModifyPanel: View {
     @ViewBuilder
     private var exportSection: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-            AppDesign.SectionLabel("Export")
+            // Export header with format info button
+            HStack {
+                AppDesign.SectionLabel("Export")
+                Spacer()
+                // Format comparison info button
+                Button {
+                    // Shows tooltip on hover, this is the visual indicator
+                } label: {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: AppDesign.FontSize.caption))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(formatComparisonTooltip)
+            }
 
             FlowLayout(spacing: AppDesign.Spacing.p6) {
                 ForEach(ExportFormat.allCases) { format in
@@ -276,10 +354,41 @@ struct ModifyPanel: View {
                 }
             }
 
+            // Selected format description
+            Text(formatDescription(for: viewModel.selectedExportFormat))
+                .font(.system(size: AppDesign.FontSize.xs))
+                .foregroundStyle(.tertiary)
+                .padding(.top, AppDesign.Spacing.p2)
+
             AppDesign.GlassButton("Export \(viewModel.selectedExportFormat.rawValue)", icon: "square.and.arrow.up") {
                 exportMesh()
             }
             .disabled(viewModel.isProcessingMesh || viewModel.isModifyingMesh)
+        }
+    }
+
+    /// Tooltip explaining format differences
+    private var formatComparisonTooltip: String {
+        """
+        Format Comparison:
+
+        OBJ - Universal compatibility, separate texture files. Best for: most 3D software, game engines.
+
+        GLB - Single file with embedded textures, efficient. Best for: web/AR, Unity, Unreal.
+
+        STL - Geometry only, no textures/colors. Best for: 3D printing, CAD software.
+
+        PLY - Point cloud and mesh support. Best for: scientific visualization, photogrammetry.
+        """
+    }
+
+    /// Brief description for selected format
+    private func formatDescription(for format: ExportFormat) -> String {
+        switch format {
+        case .obj: return "Universal format - works with most 3D software"
+        case .glb: return "Single file with textures - great for web/AR"
+        case .stl: return "Geometry only - ideal for 3D printing"
+        case .ply: return "Mesh/point cloud - scientific visualization"
         }
     }
 
@@ -305,6 +414,7 @@ struct ModifyPanel: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(isSelected ? AppDesign.accent : .primary)
+        .help(formatDescription(for: format))
     }
 
     private func exportMesh() {

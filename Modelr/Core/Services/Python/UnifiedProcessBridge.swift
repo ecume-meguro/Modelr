@@ -19,6 +19,7 @@ actor UnifiedProcessBridge<Request: Codable, Response: Codable> {
     // MARK: - State
 
     private var pendingRequests: [String: PendingRequest] = [:]
+    private var fifoQueue: [String] = []  // Track insertion order for FIFO dispatch
     private var responseBuffer = Data()
     private let maxBufferSize = 10 * 1024 * 1024 // 10MB
 
@@ -50,12 +51,13 @@ actor UnifiedProcessBridge<Request: Codable, Response: Codable> {
                 }
             }
 
-            // Store pending request
+            // Store pending request and track insertion order for FIFO
             pendingRequests[messageId] = PendingRequest(
                 continuation: continuation,
                 startTime: Date(),
                 timeoutTask: timeoutTask
             )
+            fifoQueue.append(messageId)
 
             // Write request asynchronously
             Task {
@@ -84,12 +86,33 @@ actor UnifiedProcessBridge<Request: Codable, Response: Codable> {
     /// Process incoming stdout data
     /// Returns parsed responses ready for dispatch
     func handleStdout(_ data: Data) -> [(messageId: String, response: Response)] {
-        // Check buffer overflow - keep most recent half if exceeded
+        // Check buffer overflow - preserve complete JSON messages by finding last newline
         if responseBuffer.count + data.count > maxBufferSize {
+            // Find the last complete message (after last newline in the portion we're keeping)
             let keepSize = maxBufferSize / 2
             let dropCount = responseBuffer.count - keepSize
-            responseBuffer.removeFirst(dropCount)
-            print("[UnifiedBridge] Buffer overflow, dropped \(dropCount) bytes")
+
+            // Only drop if we have more than keepSize bytes
+            if dropCount > 0 {
+                // Find last newline in the portion we're dropping to avoid splitting a message
+                let dropRange = responseBuffer.startIndex..<responseBuffer.index(responseBuffer.startIndex, offsetBy: dropCount)
+                if let lastNewline = responseBuffer.range(of: Data("\n".utf8), options: .backwards, in: dropRange) {
+                    // Drop up to and including the last complete line
+                    let actualDropCount = responseBuffer.distance(from: responseBuffer.startIndex, to: lastNewline.upperBound)
+                    responseBuffer.removeFirst(actualDropCount)
+                    ErrorReporter.warning("Buffer overflow, dropped \(actualDropCount) bytes (preserving partial message)", subsystem: .python)
+                } else {
+                    // No newline found - drop the whole portion (incomplete data anyway)
+                    responseBuffer.removeFirst(dropCount)
+                    ErrorReporter.warning("Buffer overflow, dropped \(dropCount) bytes", subsystem: .python)
+                }
+            } else {
+                // Buffer is small but incoming data is huge - clear buffer to make room
+                if !responseBuffer.isEmpty {
+                    responseBuffer.removeAll()
+                    ErrorReporter.warning("Buffer overflow, cleared buffer for large incoming data", subsystem: .python)
+                }
+            }
         }
 
         responseBuffer.append(data)
@@ -108,7 +131,7 @@ actor UnifiedProcessBridge<Request: Codable, Response: Codable> {
 
             // Skip non-JSON lines (library output)
             guard lineString.hasPrefix("{"), lineString.hasSuffix("}") else {
-                print("[UnifiedBridge] Skipping non-JSON: \(lineString)")
+                ErrorReporter.debug("Skipping non-JSON output", subsystem: .python)
                 continue
             }
 
@@ -121,10 +144,10 @@ actor UnifiedProcessBridge<Request: Codable, Response: Codable> {
                 if let response = try? JSONDecoder().decode(Response.self, from: jsonData) {
                     results.append((messageId, response))
                 } else {
-                    print("[UnifiedBridge] Failed to decode response for messageId: \(messageId)")
+                    ErrorReporter.warning("Failed to decode response for messageId: \(messageId)", subsystem: .python)
                 }
             } else {
-                print("[UnifiedBridge] Response missing messageId: \(lineString.prefix(100))")
+                ErrorReporter.warning("Response missing messageId", subsystem: .python)
             }
         }
 
@@ -134,9 +157,12 @@ actor UnifiedProcessBridge<Request: Codable, Response: Codable> {
     /// Dispatch a response to the waiting continuation
     func dispatchResponse(messageId: String, response: Response) {
         guard let pending = pendingRequests.removeValue(forKey: messageId) else {
-            print("[UnifiedBridge] Received response for unknown messageId: \(messageId)")
+            ErrorReporter.debug("Response for unknown messageId: \(messageId)", subsystem: .python)
             return
         }
+
+        // Remove from FIFO queue
+        fifoQueue.removeAll { $0 == messageId }
 
         // Cancel timeout task
         pending.timeoutTask?.cancel()
@@ -146,14 +172,18 @@ actor UnifiedProcessBridge<Request: Codable, Response: Codable> {
     }
 
     /// Handle FIFO response (for protocols without messageId)
+    /// Uses proper queue-based ordering instead of timestamp comparison
     func dispatchResponseFIFO(_ response: Response) {
-        // Resume oldest pending request
-        guard let (messageId, pending) = pendingRequests.min(by: { $0.value.startTime < $1.value.startTime }) else {
-            print("[UnifiedBridge] Received FIFO response with no pending requests")
+        // Resume oldest pending request using queue order (not timestamps)
+        guard let messageId = fifoQueue.first,
+              let pending = pendingRequests.removeValue(forKey: messageId) else {
+            ErrorReporter.warning("FIFO response with no pending requests", subsystem: .python)
             return
         }
 
-        pendingRequests.removeValue(forKey: messageId)
+        // Remove from FIFO queue
+        fifoQueue.removeFirst()
+
         pending.timeoutTask?.cancel()
         pending.continuation.resume(returning: response)
     }
@@ -165,8 +195,11 @@ actor UnifiedProcessBridge<Request: Codable, Response: Codable> {
             return
         }
 
+        // Remove from FIFO queue
+        fifoQueue.removeAll { $0 == messageId }
+
         let elapsed = Date().timeIntervalSince(pending.startTime)
-        print("[UnifiedBridge] Request \(messageId) timed out after \(elapsed)s")
+        ErrorReporter.warning("Request \(messageId) timed out after \(elapsed)s", subsystem: .python)
         pending.continuation.resume(throwing: PythonError.timeout)
     }
 
@@ -175,6 +208,9 @@ actor UnifiedProcessBridge<Request: Codable, Response: Codable> {
             return
         }
 
+        // Remove from FIFO queue
+        fifoQueue.removeAll { $0 == messageId }
+
         pending.timeoutTask?.cancel()
         pending.continuation.resume(throwing: error)
     }
@@ -182,11 +218,12 @@ actor UnifiedProcessBridge<Request: Codable, Response: Codable> {
     /// Cancel all pending requests (called on process termination)
     func cancelAll(error: Error) {
         for (messageId, pending) in pendingRequests {
-            print("[UnifiedBridge] Cancelling request \(messageId): \(error)")
+            ErrorReporter.debug("Cancelling request \(messageId)", subsystem: .python)
             pending.timeoutTask?.cancel()
             pending.continuation.resume(throwing: error)
         }
         pendingRequests.removeAll()
+        fifoQueue.removeAll()
         responseBuffer.removeAll()
     }
 
@@ -281,11 +318,21 @@ actor ProgressAwareBridge<Request: Codable, Response: Codable> {
     // MARK: - Response Handling
 
     func handleStdout(_ data: Data) -> [(messageId: String, response: Response)] {
+        // Check buffer overflow - preserve complete JSON messages by finding last newline
         if responseBuffer.count + data.count > maxBufferSize {
             let keepSize = maxBufferSize / 2
             let dropCount = responseBuffer.count - keepSize
-            responseBuffer.removeFirst(dropCount)
-            print("[ProgressBridge] Buffer overflow, dropped \(dropCount) bytes")
+
+            // Find last newline in the portion we're dropping to avoid splitting a message
+            let dropRange = responseBuffer.startIndex..<responseBuffer.index(responseBuffer.startIndex, offsetBy: dropCount)
+            if let lastNewline = responseBuffer.range(of: Data("\n".utf8), options: .backwards, in: dropRange) {
+                let actualDropCount = responseBuffer.distance(from: responseBuffer.startIndex, to: lastNewline.upperBound)
+                responseBuffer.removeFirst(actualDropCount)
+                ErrorReporter.warning("Progress buffer overflow, dropped \(actualDropCount) bytes (preserving partial message)", subsystem: .python)
+            } else {
+                responseBuffer.removeFirst(dropCount)
+                ErrorReporter.warning("Progress buffer overflow, dropped \(dropCount) bytes", subsystem: .python)
+            }
         }
 
         responseBuffer.append(data)
@@ -316,7 +363,7 @@ actor ProgressAwareBridge<Request: Codable, Response: Codable> {
 
     func dispatchResponse(messageId: String, response: Response, isProgress: Bool, isFinal: Bool) {
         guard var pending = pendingRequests[messageId] else {
-            print("[ProgressBridge] Response for unknown messageId: \(messageId)")
+            ErrorReporter.debug("Progress response for unknown messageId: \(messageId)", subsystem: .python)
             return
         }
 
@@ -363,7 +410,7 @@ actor ProgressAwareBridge<Request: Codable, Response: Codable> {
             // Timed out
             pendingRequests.removeValue(forKey: messageId)
             pending.timeoutTask?.cancel()
-            print("[ProgressBridge] Request \(messageId) idle timeout after \(idleTime)s")
+            ErrorReporter.warning("Request \(messageId) idle timeout after \(idleTime)s", subsystem: .python)
             pending.onError(PythonError.timeout)
         } else {
             // Still active, reschedule inline
@@ -384,7 +431,7 @@ actor ProgressAwareBridge<Request: Codable, Response: Codable> {
 
     func cancelAll(error: Error) {
         for (messageId, pending) in pendingRequests {
-            print("[ProgressBridge] Cancelling \(messageId): \(error)")
+            ErrorReporter.debug("Cancelling progress request \(messageId)", subsystem: .python)
             pending.timeoutTask?.cancel()
             pending.onError(error)
         }

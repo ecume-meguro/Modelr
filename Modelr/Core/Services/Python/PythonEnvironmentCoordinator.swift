@@ -55,7 +55,7 @@ deinit {
         // Forceful cleanup in background
         if let pid = pid {
             DispatchQueue.global().async {
-                usleep(200_000)  // 200ms grace period
+                usleep(AppConstants.gracefulExitPeriodMicroseconds)
                 kill(pid, SIGKILL)
             }
         }
@@ -136,7 +136,7 @@ deinit {
 
         // Ensure resources are present before starting
         if !dependencyService.checkResources() {
-            print("[Python] Resources missing in Application Support, copying...")
+            ErrorReporter.info("Resources missing in Application Support, copying...", subsystem: .python)
             _ = await setup(onProgress: { _ in })
         }
 
@@ -151,7 +151,7 @@ deinit {
             throw PythonError.workerNotReady
         }
 
-        print("Persistent worker ready")
+        ErrorReporter.info("Persistent worker ready", subsystem: .python)
         await MainActor.run {
             samModelReady = true
             // Notify coordinator that SAM is ready (triggers async Hunyuan preload if aggressive strategy)
@@ -165,7 +165,7 @@ deinit {
         do {
             try await startPersistentWorker()
         } catch {
-            print("Failed to preload SAM model: \(error)")
+            ErrorReporter.logError(error, subsystem: .python, context: "Failed to preload SAM model")
         }
         await MainActor.run { status = "Ready" }
     }
@@ -177,7 +177,7 @@ deinit {
         imagePixelSize = .zero
         currentImageProjectId = nil  // Clear project ownership
         samModelReady = false
-        print("[PythonEnvironment] Worker stopped, all state cleared")
+        ErrorReporter.info("Worker stopped, all state cleared", subsystem: .python)
     }
     
     // MARK: - Image & Prediction API
@@ -198,7 +198,7 @@ deinit {
         imagePixelSize = size
         currentImageProjectId = projectId  // Track ownership
 
-        print("[PythonEnvironment] SAM image set for project \(projectId.uuidString.prefix(8))")
+        ErrorReporter.debug("SAM image set for project \(projectId.uuidString.prefix(8))", subsystem: .segmentation)
         return size
     }
 
@@ -268,7 +268,7 @@ deinit {
         currentImagePath = nil
         imagePixelSize = .zero
         currentImageProjectId = nil  // Clear project ownership
-        print("[PythonEnvironment] SAM predictor reset, project ownership cleared")
+        ErrorReporter.debug("SAM predictor reset, project ownership cleared", subsystem: .segmentation)
     }
     
     // MARK: - 3D Model Generation
@@ -329,22 +329,22 @@ deinit {
                         // stage is "loading", "diffusion", "volume_decoding", "saving"
                         // detail is step count like "1/25" or status message
                         let percent = Int(value * 100)
-                        print("[Coordinator] onProgress: stage=\(stage) detail=\(detail) value=\(value)")
+                        ErrorReporter.debug("onProgress: stage=\(stage) detail=\(detail) value=\(value)", subsystem: .generation)
                         if stage == "diffusion" {
                             // Include step count in parentheses for proper parsing
                             let stepInfo = detail.isEmpty ? "" : " (\(detail))"
                             let msg = "Diffusion Sampling\(stepInfo) - PROGRESS:\(percent)%"
-                            print("[Coordinator] Sending: \(msg)")
+                            ErrorReporter.debug("Sending: \(msg)", subsystem: .generation)
                             progress(msg)
                         } else if stage == "volume_decoding" {
                             let stepInfo = detail.isEmpty ? "" : " (\(detail))"
                             let msg = "Volume Decoding\(stepInfo) - PROGRESS:\(percent)%"
-                            print("[Coordinator] Sending: \(msg)")
+                            ErrorReporter.debug("Sending: \(msg)", subsystem: .generation)
                             progress(msg)
                         } else if stage == "saving" {
                             let stepInfo = detail.isEmpty ? "" : " (\(detail))"
                             let msg = "Saving\(stepInfo) - PROGRESS:\(percent)%"
-                            print("[Coordinator] Sending: \(msg)")
+                            ErrorReporter.debug("Sending: \(msg)", subsystem: .generation)
                             progress(msg)
                         } else if stage == "loading" {
                             progress("Loading Model - PROGRESS:\(percent)%")

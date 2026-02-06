@@ -95,7 +95,7 @@ struct GeneralSettingsView: View {
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.bordered)
                     .foregroundStyle(.secondary)
                 }
             }
@@ -126,7 +126,7 @@ struct GeneralSettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                .padding()
+                .padding(AppDesign.Spacing.p16)
                 .background(Color.primary.opacity(0.03))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
@@ -143,14 +143,33 @@ struct GeneralSettingsView: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(isClearing)
-            } else {
+            } else if viewModel.isLoadingStorage {
                 HStack {
                     ProgressView()
                     Text("Calculating storage...")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
-                .padding()
+                .padding(AppDesign.Spacing.p16)
+            } else {
+                // Error state: loading completed but storageInfo is nil
+                HStack(spacing: AppDesign.Spacing.p8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text("Unable to calculate storage information")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        viewModel.loadStorageInfo()
+                    } label: {
+                        Text("Retry")
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(AppDesign.Spacing.p16)
+                .background(Color.orange.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
             }
         }
     }
@@ -173,7 +192,7 @@ struct GeneralSettingsView: View {
             Button {
                 NSWorkspace.shared.open(PathManager.appSupportDirectory)
             } label: {
-                Label("Open in Finder", systemImage: "folder")
+                Label("Open Data Folder", systemImage: "folder")
             }
             .buttonStyle(.bordered)
         }
@@ -314,12 +333,13 @@ struct GeneralSettingsView: View {
         HStack {
             Text(label)
                 .font(.callout)
-                .frame(width: 80, alignment: .leading)
+                .frame(minWidth: 80, alignment: .leading)
             Text(path)
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .help(path)
             Spacer()
             Button {
                 NSPasteboard.general.clearContents()

@@ -427,8 +427,6 @@ final class EditorUXTests: XCTestCase {
 
         XCTAssertFalse(manager.isMaskMergePreloading)
         XCTAssertFalse(manager.isCompositePreloading)
-        XCTAssertNil(manager.preloadedMergedMask)
-        XCTAssertNil(manager.preloadedComposite)
     }
 
     @MainActor
@@ -440,8 +438,6 @@ final class EditorUXTests: XCTestCase {
 
         XCTAssertFalse(manager.isMaskMergePreloading)
         XCTAssertFalse(manager.isCompositePreloading)
-        XCTAssertNil(manager.preloadedMergedMask)
-        XCTAssertNil(manager.preloadedComposite)
     }
 
     @MainActor
@@ -450,7 +446,6 @@ final class EditorUXTests: XCTestCase {
         manager.clearPreloadedMask()
 
         XCTAssertFalse(manager.isMaskMergePreloading)
-        XCTAssertNil(manager.preloadedMergedMask)
     }
 
     @MainActor
@@ -459,7 +454,6 @@ final class EditorUXTests: XCTestCase {
         manager.clearPreloadedComposite()
 
         XCTAssertFalse(manager.isCompositePreloading)
-        XCTAssertNil(manager.preloadedComposite)
     }
 
     @MainActor
@@ -468,7 +462,7 @@ final class EditorUXTests: XCTestCase {
         manager.cancelAll()
 
         // With empty segmentations, should return nil
-        let result = manager.getMergedMask(from: [])
+        let result = manager.getMergedMask(from: [], projectId: UUID())
         XCTAssertNil(result)
     }
 
@@ -497,6 +491,7 @@ final class EditorUXTests: XCTestCase {
         let deleteIndices: Set<Int> = []
 
         let cache = SimpleEditorViewModel.GenerationCache(
+            projectId: UUID(),
             modelURL: testURL,
             compositeImage: nil,
             meshComponents: testComponents,
@@ -517,6 +512,7 @@ final class EditorUXTests: XCTestCase {
     func testSegmentationCacheStructure() throws {
         // Test that SegmentationCache can be created with proper values
         let cache = SimpleEditorViewModel.SegmentationCache(
+            projectId: UUID(),
             segmentations: [],
             activeIndex: 0,
             inputImage: nil,

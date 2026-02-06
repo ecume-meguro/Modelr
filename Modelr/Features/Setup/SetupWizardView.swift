@@ -1,192 +1,144 @@
 import SwiftUI
 
-/// Full-screen setup wizard for first-time users
+/// Native macOS setup wizard - functional desktop utility design
 struct SetupWizardView: View {
     @StateObject private var viewModel = SetupWizardViewModel()
+    @State private var showCancelConfirmation = false
     var onComplete: () -> Void
 
     var body: some View {
-        ZStack {
-            // Background gradient
-            LinearGradient(
-                colors: [
-                    Color(nsColor: .windowBackgroundColor),
-                    Color.accentColor.opacity(0.05)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
+        VStack(spacing: 0) {
+            // Step progress indicator at the top
+            stepProgressIndicator
+                .padding(.top, 16)
+                .padding(.horizontal, 32)
 
-            VStack(spacing: 0) {
-                // Progress indicator
-                progressIndicator
-                    .padding(.top, 40)
-                    .padding(.horizontal, 60)
-
-                // Content area
-                contentView
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                // Navigation buttons
-                navigationButtons
-                    .padding(.horizontal, 60)
-                    .padding(.bottom, 40)
-            }
+            contentView
         }
-        .frame(minWidth: 700, minHeight: 550)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
         .onChange(of: viewModel.isComplete) { _, isComplete in
             if isComplete {
-                // Delay slightly before transitioning
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                     onComplete()
                 }
             }
         }
+        .alert("Cancel Download?", isPresented: $showCancelConfirmation) {
+            Button("Continue Download", role: .cancel) { }
+            Button("Cancel", role: .destructive) {
+                viewModel.cancelDownload()
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    viewModel.goToPrevious()
+                }
+            }
+        } message: {
+            Text("Are you sure you want to cancel the download? You can resume later, but some progress may be lost.")
+        }
     }
 
-    // MARK: - Progress Indicator
+    // MARK: - Step Progress Indicator
 
-    @ViewBuilder
-    private var progressIndicator: some View {
-        HStack(spacing: 0) {
-            ForEach(SetupWizardStep.allCases, id: \.self) { step in
-                let isCurrent = step == viewModel.currentStep
-                let isPast = step.rawValue < viewModel.currentStep.rawValue
+    private var stepProgressIndicator: some View {
+        HStack(spacing: 8) {
+            ForEach(SetupWizardStep.allCases, id: \.rawValue) { step in
+                if step != .complete {
+                    stepDot(for: step)
 
-                // Step circle
-                ZStack {
-                    Circle()
-                        .fill(isPast ? Color.green : (isCurrent ? Color.accentColor : Color.primary.opacity(0.1)))
-                        .frame(width: 32, height: 32)
-
-                    if isPast {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(.white)
-                    } else {
-                        Text("\(step.rawValue + 1)")
-                            .font(.system(size: 14, weight: .semibold, design: .rounded))
-                            .foregroundStyle(isCurrent ? .white : .secondary)
+                    // Show connector after each step except the last visible step (download)
+                    if step.rawValue < SetupWizardStep.complete.rawValue - 1 {
+                        stepConnector(isCompleted: viewModel.currentStep.rawValue > step.rawValue)
                     }
-                }
-
-                // Connector line (except after last step)
-                if step != SetupWizardStep.allCases.last {
-                    Rectangle()
-                        .fill(isPast ? Color.green : Color.primary.opacity(0.1))
-                        .frame(height: 2)
                 }
             }
         }
-        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: viewModel.currentStep)
+        .frame(maxWidth: .infinity)
+        .fixedSize(horizontal: true, vertical: false)
     }
 
-    // MARK: - Content View
+    private func stepDot(for step: SetupWizardStep) -> some View {
+        let isActive = viewModel.currentStep == step
+        let isCompleted = viewModel.currentStep.rawValue > step.rawValue
+
+        // Accessibility hint based on step status
+        let accessibilityHint: String = {
+            if isCompleted {
+                return "Completed"
+            } else if isActive {
+                return "Current step"
+            } else {
+                return "Not yet started"
+            }
+        }()
+
+        return VStack(spacing: 4) {
+            ZStack {
+                Circle()
+                    .fill(isCompleted ? Color.green : (isActive ? Color.accentColor : Color.primary.opacity(0.1)))
+                    .frame(width: AppConstants.progressBarHeight * 2, height: AppConstants.progressBarHeight * 2)
+
+                if isCompleted {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white)
+                } else {
+                    Text("\(step.rawValue + 1)")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(isActive ? .white : .secondary)
+                }
+            }
+            .accessibilityLabel("Step \(step.rawValue + 1): \(step.title)")
+            .accessibilityHint(accessibilityHint)
+
+            Text(step.title)
+                .font(.system(size: 10))
+                .foregroundStyle(isActive ? .primary : .secondary)
+        }
+    }
+
+    private func stepConnector(isCompleted: Bool) -> some View {
+        Rectangle()
+            .fill(isCompleted ? Color.green : Color.primary.opacity(0.15))
+            .frame(width: 20, height: AppConstants.boundingBoxLineWidth)
+            .offset(y: -8)
+    }
 
     @ViewBuilder
     private var contentView: some View {
-        ZStack {
+        Group {
             switch viewModel.currentStep {
             case .welcome:
-                SetupWelcomeView()
-                    .environmentObject(viewModel)
-                    .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .move(edge: .trailing)),
-                        removal: .opacity.combined(with: .move(edge: .leading))
-                    ))
-
-            case .modelSelection:
-                SetupModelSelectionView(selectedChoice: $viewModel.selectedModelChoice)
-                    .environmentObject(viewModel)
-                    .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .move(edge: .trailing)),
-                        removal: .opacity.combined(with: .move(edge: .leading))
-                    ))
+                SetupWelcomeView {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        viewModel.goToNext()
+                    }
+                }
+                .environmentObject(viewModel)
 
             case .download:
-                SetupDownloadView()
-                    .environmentObject(viewModel)
-                    .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .move(edge: .trailing)),
-                        removal: .opacity.combined(with: .move(edge: .leading))
-                    ))
+                SetupDownloadView(
+                    onCancel: {
+                        // Show confirmation dialog before cancelling during download
+                        if viewModel.isDownloading {
+                            showCancelConfirmation = true
+                        } else {
+                            // If not actively downloading (e.g., error state), go back directly
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                viewModel.goToPrevious()
+                            }
+                        }
+                    }
+                )
+                .environmentObject(viewModel)
 
             case .complete:
                 SetupCompleteView(onContinue: onComplete)
                     .environmentObject(viewModel)
-                    .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .scale(scale: 0.95)),
-                        removal: .opacity
-                    ))
             }
         }
-        .animation(.spring(response: 0.45, dampingFraction: 0.85), value: viewModel.currentStep)
-    }
-
-    // MARK: - Navigation Buttons
-
-    @ViewBuilder
-    private var navigationButtons: some View {
-        HStack {
-            // Back button
-            if viewModel.currentStep != .welcome && viewModel.currentStep != .complete {
-                Button {
-                    viewModel.goToPrevious()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "chevron.left")
-                        Text("Back")
-                    }
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .disabled(viewModel.isDownloading && viewModel.currentStep == .download)
-            }
-
-            Spacer()
-
-            // Next/Skip button
-            if viewModel.currentStep == .welcome {
-                Button {
-                    viewModel.goToNext()
-                } label: {
-                    HStack(spacing: 6) {
-                        Text("Get Started")
-                        Image(systemName: "chevron.right")
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-            } else if viewModel.currentStep == .modelSelection {
-                Button {
-                    viewModel.goToNext()
-                } label: {
-                    HStack(spacing: 6) {
-                        Text("Download & Continue")
-                        Image(systemName: "arrow.down.circle")
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(!viewModel.hasEnoughSpace)
-            } else if viewModel.currentStep == .download && !viewModel.isComplete {
-                // Show nothing or cancel during download
-                if viewModel.isDownloading {
-                    Button(role: .destructive) {
-                        viewModel.cancelDownload()
-                        viewModel.goToPrevious()
-                    } label: {
-                        Text("Cancel")
-                    }
-                    .buttonStyle(.bordered)
-                }
-            }
-        }
+        .transition(.opacity.animation(.easeInOut(duration: 0.2)))
     }
 }
-
-// MARK: - Preview
 
 #Preview {
     SetupWizardView {

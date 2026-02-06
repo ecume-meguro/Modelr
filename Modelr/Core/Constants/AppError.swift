@@ -186,7 +186,8 @@ enum PythonError: Error, LocalizedError {
     case predictionFailed(String)
     case timeout
     case processTerminated
-    
+    case bufferOverflow(size: Int)
+
     var errorDescription: String? {
         switch self {
         case .uvNotFound:
@@ -205,6 +206,8 @@ enum PythonError: Error, LocalizedError {
             return "Request timed out"
         case .processTerminated:
             return "Python process terminated unexpectedly"
+        case .bufferOverflow(let size):
+            return "Response buffer overflow (\(size) bytes)"
         }
     }
 }
@@ -277,6 +280,78 @@ enum AppError: Error, LocalizedError {
             return "Please restart the app"
         }
     }
+
+    /// User-friendly error message that translates technical errors into understandable language
+    var userFriendlyDescription: String {
+        // Get the raw error message
+        let rawMessage = errorDescription ?? "An unknown error occurred"
+
+        // Apply translations for known technical error patterns
+        return AppError.translateToUserFriendly(rawMessage)
+    }
+
+    /// Translates technical error messages into user-friendly language
+    static func translateToUserFriendly(_ technicalMessage: String) -> String {
+        let lowercased = technicalMessage.lowercased()
+
+        // Memory errors
+        if lowercased.contains("cuda out of memory") || lowercased.contains("out of memory") || lowercased.contains("oom") {
+            return "Not enough memory to generate. Try using the Mini model or closing other apps."
+        }
+
+        // GPU/CUDA errors
+        if lowercased.contains("cuda") || lowercased.contains("mps") || lowercased.contains("gpu") {
+            if lowercased.contains("not available") || lowercased.contains("not found") {
+                return "GPU acceleration not available. Generation may be slower."
+            }
+            return "GPU error occurred. Try restarting the app."
+        }
+
+        // Network errors
+        if lowercased.contains("connection") || lowercased.contains("network") || lowercased.contains("timeout") {
+            return "Network connection issue. Check your internet and try again."
+        }
+
+        // Download errors
+        if lowercased.contains("download") && (lowercased.contains("fail") || lowercased.contains("error")) {
+            return "Model download failed. Check your internet connection and try again."
+        }
+
+        // Disk space errors
+        if lowercased.contains("disk") || lowercased.contains("space") || lowercased.contains("storage") {
+            return "Not enough disk space. Free up some space and try again."
+        }
+
+        // File permission errors
+        if lowercased.contains("permission") || lowercased.contains("access denied") {
+            return "Cannot access required files. Check app permissions."
+        }
+
+        // Model loading errors
+        if lowercased.contains("load") && lowercased.contains("model") {
+            return "Failed to load the AI model. Try restarting the app."
+        }
+
+        // Python/worker errors
+        if lowercased.contains("worker") || lowercased.contains("process") {
+            if lowercased.contains("not running") || lowercased.contains("terminated") {
+                return "Background process stopped unexpectedly. Restart the app."
+            }
+        }
+
+        // Encoding/decoding errors
+        if lowercased.contains("encoding") || lowercased.contains("decoding") || lowercased.contains("invalid response") {
+            return "Data processing error. Try again."
+        }
+
+        // Timeout errors
+        if lowercased.contains("timeout") || lowercased.contains("timed out") {
+            return "Operation took too long. Try again or use simpler settings."
+        }
+
+        // Return original if no translation matches
+        return technicalMessage
+    }
 }
 
 // MARK: - PythonError Extension
@@ -284,7 +359,7 @@ enum AppError: Error, LocalizedError {
 extension PythonError {
     var isRecoverable: Bool {
         switch self {
-        case .timeout, .workerNotRunning:
+        case .timeout, .workerNotRunning, .bufferOverflow:
             return true
         case .uvNotFound, .invalidResponse, .predictionFailed, .encodingError, .workerNotReady, .processTerminated:
             return false
@@ -309,6 +384,8 @@ extension PythonError {
             return "Try again or reduce image size"
         case .processTerminated:
             return "Restart the application - Python process crashed"
+        case .bufferOverflow:
+            return "Restart the application - response buffer overflow"
         }
     }
 }

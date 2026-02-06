@@ -47,9 +47,54 @@ struct GenerationPanel: View {
         }
     }
 
+    /// Calculate overall progress information
+    private var overallProgress: (current: Int, total: Int, percentage: Double) {
+        let stages = visibleStages
+        let total = stages.count
+
+        var completedCount = 0
+        var currentStageIndex = 0
+        var currentStageProgress = 0.0
+
+        for (index, stage) in stages.enumerated() {
+            let stageData = viewModel.generationStages[stage] ?? StageProgress()
+            if stageData.status == .completed {
+                completedCount += 1
+            } else if stageData.status == .inProgress {
+                currentStageIndex = index
+                currentStageProgress = stageData.progress
+                break
+            }
+        }
+
+        // Calculate overall percentage: completed stages + partial progress on current stage
+        let basePercentage = Double(completedCount) / Double(total) * 100
+        let currentContribution = currentStageProgress / Double(total)
+        let overallPercentage = basePercentage + currentContribution
+
+        return (completedCount + 1, total, min(overallPercentage, 100))
+    }
+
     @ViewBuilder
     private var generationProgressView: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+            // Overall progress header
+            let progress = overallProgress
+            HStack(spacing: AppDesign.Spacing.p8) {
+                Text("Step \(progress.current) of \(progress.total)")
+                    .font(.system(size: AppDesign.FontSize.caption, weight: .medium))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Text("\(Int(progress.percentage))%")
+                    .font(.system(size: AppDesign.FontSize.caption, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(AppDesign.accent)
+            }
+            .padding(.horizontal, AppDesign.Spacing.p8)
+            .padding(.vertical, AppDesign.Spacing.p6)
+            .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 6))
+
             // Stage progress list
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(visibleStages, id: \.self) { stage in
@@ -138,8 +183,9 @@ struct GenerationPanel: View {
                     .foregroundColor(.primary)
             }
 
-            if let error = viewModel.lastError {
-                Text(error.localizedDescription)
+            // Show user-friendly error message
+            if let errorMessage = viewModel.userFriendlyErrorMessage {
+                Text(errorMessage)
                     .font(.system(size: AppDesign.FontSize.caption))
                     .foregroundColor(.secondary)
             }
@@ -275,7 +321,7 @@ private struct StageProgressRowView: View {
     @ViewBuilder
     private var stageInfoRow: some View {
         HStack(spacing: AppDesign.Spacing.p4) {
-            Text(stage.rawValue)
+            Text(stage.displayName)
                 .font(.system(size: AppDesign.FontSize.body, weight: isActive ? .semibold : .regular))
                 .foregroundColor(stageTextColor(stageData.status))
                 .animation(.easeInOut(duration: 0.2), value: isActive)

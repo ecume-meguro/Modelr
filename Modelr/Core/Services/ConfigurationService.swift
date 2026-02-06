@@ -20,6 +20,13 @@ class ConfigurationService: ObservableObject {
                     case modelSizeGb = "model_size_gb"
                 }
             }
+            struct VLM: Codable {
+                let modelSizeGb: Double
+
+                enum CodingKeys: String, CodingKey {
+                    case modelSizeGb = "model_size_gb"
+                }
+            }
             struct Hunyuan3D: Codable {
                 let defaultSteps: Int
                 let defaultResolution: Int
@@ -34,7 +41,18 @@ class ConfigurationService: ObservableObject {
                 }
             }
             let sam2: SAM2
+            let vlm: VLM?
             let hunyuan3d: Hunyuan3D
+        }
+
+        struct Setup: Codable {
+            let uvPackagesSizeGb: Double
+            let assumedDownloadSpeedMbps: Double
+
+            enum CodingKeys: String, CodingKey {
+                case uvPackagesSizeGb = "uv_packages_size_gb"
+                case assumedDownloadSpeedMbps = "assumed_download_speed_mbps"
+            }
         }
 
         struct Limits: Codable {
@@ -50,6 +68,7 @@ class ConfigurationService: ObservableObject {
         }
 
         let models: Models
+        let setup: Setup?
         let limits: Limits
     }
 
@@ -112,5 +131,22 @@ class ConfigurationService: ObservableObject {
 
     var hunyuanStdModelSizeGb: Double {
         config?.models.hunyuan3d.stdModelSizeGb ?? 8.5
+    }
+
+    var vlmModelSizeGb: Double {
+        config?.models.vlm?.modelSizeGb ?? 1.5
+    }
+
+    var uvPackagesSizeGb: Double {
+        config?.setup?.uvPackagesSizeGb ?? 0.7
+    }
+
+    var assumedDownloadSpeedMbps: Double {
+        config?.setup?.assumedDownloadSpeedMbps ?? 20.0
+    }
+
+    /// Assumed download speed in bytes per second
+    var assumedDownloadSpeedBps: Double {
+        assumedDownloadSpeedMbps * 1_000_000
     }
 }

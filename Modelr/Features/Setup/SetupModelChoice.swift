@@ -1,80 +1,37 @@
 import Foundation
 
-/// Model choice for initial setup
+/// Model choice for initial setup - only mini model supported
 enum SetupModelChoice: String, CaseIterable {
-    case fast = "fast"           // mini (Hunyuan3D-2 Mini)
-    case ultra = "ultra"         // std (Hunyuan3D-2.1 Standard)
+    case fast = "fast"  // mini (Hunyuan3D-2 Mini) - only supported option
 
-    var displayName: String {
-        switch self {
-        case .fast: return "Fast"
-        case .ultra: return "Ultra"
-        }
-    }
+    var displayName: String { "Hunyuan3D Mini" }
+    var userBenefitLabel: String { "3D Generation" }
+    var ctaLabel: String { "Install" }
+    var modelVariant: String { "mini" }
+    var modelName: String { "Hunyuan3D-2 Mini" }
+    var description: String { "Fast, efficient 3D generation" }
+    var architecture: String { "DiT v2 Mini" }
+    var estimatedGenerationTime: String { "~30s" }
+    var vramRequirement: String { "8GB+" }
+    var memoryRequirementGB: Int { 8 }
 
-    var modelVariant: String {
-        switch self {
-        case .fast: return "mini"
-        case .ultra: return "std"
-        }
-    }
-
-    /// Download size string - uses config values (no external queries for display)
     var downloadSize: String {
-        let sizeGb: Double
-        switch self {
-        case .fast:
-            sizeGb = ConfigurationService.shared.hunyuanMiniModelSizeGb
-        case .ultra:
-            sizeGb = ConfigurationService.shared.hunyuanStdModelSizeGb
-        }
+        let sizeGb = ConfigurationService.shared.hunyuanMiniModelSizeGb
         return "~\(String(format: "%.1f", sizeGb)) GB"
     }
 
-    /// Formatted size for display (alias for downloadSize)
-    var formattedSize: String {
-        downloadSize
-    }
+    var formattedSize: String { downloadSize }
 
-    /// Size in bytes for space calculations
+    /// Total download size in bytes for space calculations (SAM + VLM + Hunyuan)
     var sizeBytes: Int64 {
-        switch self {
-        case .fast:
-            return AppConstants.hunyuanMiniModelBytes
-        case .ultra:
-            return AppConstants.hunyuanStdModelBytes
-        }
+        let config = ConfigurationService.shared
+        let samBytes = Int64(config.samModelSizeGb * 1_000_000_000)
+        let vlmBytes = Int64(config.vlmModelSizeGb * 1_000_000_000)
+        let hunyuanBytes = Int64(config.hunyuanMiniModelSizeGb * 1_000_000_000)
+        return samBytes + vlmBytes + hunyuanBytes
     }
 
-    var modelName: String {
-        switch self {
-        case .fast: return "Hunyuan3D-2 Mini"
-        case .ultra: return "Hunyuan3D-2.1 Standard"
-        }
-    }
-
-    var description: String {
-        switch self {
-        case .fast: return "Fast, efficient 3D generation"
-        case .ultra: return "Higher quality with more detail"
-        }
-    }
-
-    /// Whether this choice uses the mini repo
-    var usesMiniRepo: Bool {
-        switch self {
-        case .fast: return true
-        case .ultra: return false
-        }
-    }
-
-    /// HuggingFace model page URL (links to specific subfolder)
     var huggingFaceURL: URL? {
-        switch self {
-        case .fast:
-            return URL(string: "https://huggingface.co/tencent/Hunyuan3D-2mini/tree/main/hunyuan3d-dit-v2-mini")
-        case .ultra:
-            return URL(string: "https://huggingface.co/tencent/Hunyuan3D-2.1/tree/main/hunyuan3d-dit-v2-1")
-        }
+        URL(string: "https://huggingface.co/tencent/Hunyuan3D-2mini/tree/main/hunyuan3d-dit-v2-mini")
     }
 }

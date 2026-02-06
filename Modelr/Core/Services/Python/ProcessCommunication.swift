@@ -26,7 +26,7 @@ actor ProcessCommunication {
         if let continuation = pendingRequests.removeValue(forKey: messageId) {
             continuation.resume(returning: data)
         } else {
-            print("[ProcessCommunication] Warning: Received response for unknown messageId: \(messageId)")
+            ErrorReporter.debug("Response for unknown messageId: \(messageId)", subsystem: .python)
         }
     }
 
@@ -42,7 +42,7 @@ actor ProcessCommunication {
     /// - Parameter error: The error to resume all continuations with
     func cancelAll(with error: Error) {
         for (messageId, continuation) in pendingRequests {
-            print("[ProcessCommunication] Cancelling request \(messageId) due to: \(error)")
+            ErrorReporter.debug("Cancelling request \(messageId)", subsystem: .python)
             continuation.resume(throwing: error)
         }
         pendingRequests.removeAll()
@@ -52,10 +52,20 @@ actor ProcessCommunication {
     /// Handle incoming stdout data, parse JSON lines, and dispatch to pending requests
     /// - Parameter data: Raw data from stdout
     /// - Returns: Array of (messageId, jsonData) tuples for successfully parsed responses
+    /// - Note: On buffer overflow, all pending requests are notified with an error
     func handleStdoutChunk(_ data: Data) -> [(messageId: String, json: Data)] {
         // Check buffer size to prevent unbounded growth
         if responseBuffer.count + data.count > maxBufferSize {
-            print("[ProcessCommunication] ERROR: Response buffer overflow (\(responseBuffer.count + data.count) bytes), resetting")
+            let overflowSize = responseBuffer.count + data.count
+            ErrorReporter.error("Response buffer overflow (\(overflowSize) bytes), notifying pending requests and resetting", subsystem: .python)
+
+            // Notify all pending requests about the overflow error before resetting
+            let overflowError = PythonError.bufferOverflow(size: overflowSize)
+            for (messageId, continuation) in pendingRequests {
+                ErrorReporter.warning("Cancelling request \(messageId) due to buffer overflow", subsystem: .python)
+                continuation.resume(throwing: overflowError)
+            }
+            pendingRequests.removeAll()
             responseBuffer.removeAll()
             return []
         }
@@ -74,7 +84,7 @@ actor ProcessCommunication {
 
             // Skip non-JSON lines (library output, debug prints, etc.)
             guard lineString.hasPrefix("{"), lineString.hasSuffix("}") else {
-                print("[ProcessCommunication stdout] \(lineString)")
+                ErrorReporter.debug(lineString, subsystem: .python)
                 continue
             }
 
@@ -84,7 +94,7 @@ actor ProcessCommunication {
                let messageId = json["messageId"] as? String {
                 results.append((messageId, lineData))
             } else {
-                print("[ProcessCommunication] Warning: JSON response missing messageId: \(lineString.prefix(100))")
+                ErrorReporter.warning("JSON response missing messageId", subsystem: .python)
             }
         }
 

@@ -292,13 +292,12 @@ struct ProjectEditorView: View {
                 if let preset = GenerationPreset(rawValue: presetRaw) {
                     viewModel.selectedPreset = preset
                 } else {
-                    // Migrate old preset names to new ones
+                    // Migrate old preset names to new ones (only mini model supported now)
                     let migratedPreset: GenerationPreset = switch presetRaw {
                     case "Draft": .miniDraft
                     case "Normal": .miniNormal
                     case "High": .miniHigh
-                    case "Max": .miniMax
-                    case "Ultra": .stdNormal
+                    case "Max", "Ultra": .miniMax
                     default: SettingsManager.shared.defaultPreset
                     }
                     viewModel.selectedPreset = migratedPreset

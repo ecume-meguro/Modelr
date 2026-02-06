@@ -22,7 +22,7 @@ class PythonProcessManager {
 
     func startPersistentWorker(uvPath: String) throws {
         guard persistentProcess == nil else {
-            print("Persistent worker already running")
+            ErrorReporter.debug("Persistent worker already running", subsystem: .python)
             return
         }
 
@@ -38,45 +38,28 @@ class PythonProcessManager {
         let stderr = Pipe()
 
         process.executableURL = URL(fileURLWithPath: uvPath)
+        let checkpointPath = PathManager.modelsDirectory.appendingPathComponent("sam3/model.safetensors")
         process.arguments = [
             "run", "--project", inferenceProjectDir.path, scriptPath,
             "--server",
             "--model", selectedModel,
-            "--output-dir", outputDir.path
+            "--output-dir", outputDir.path,
+            "--checkpoint", checkpointPath.path
         ]
         process.currentDirectoryURL = inferenceProjectDir
 
-        var env = ProcessInfo.processInfo.environment
-        env["UV_PROJECT_ENVIRONMENT"] = inferenceVenv.path
-        env["UV_PYTHON_INSTALL_DIR"] = PathManager.pythonRuntimesDirectory.path
-        env["UV_CACHE_DIR"] = PathManager.uvCacheDirectory.path
-        env["UV_PYTHON_PREFERENCE"] = "only-managed"
-        env["UV_LINK_MODE"] = "copy"
-        env["PYTHONUNBUFFERED"] = "1"
-        env["HF_HOME"] = PathManager.modelsDirectory.path
-        env["HUGGINGFACE_HUB_CACHE"] = PathManager.modelsHubDirectory.path
-        env["TRANSFORMERS_CACHE"] = PathManager.modelsHubDirectory.path
-        env["MODELR_CONFIG_PATH"] = PathManager.projectConfigPath.path
-        env["MODELR_OUTPUTS_DIR"] = PathManager.outputsDirectory.path
-        env["MODELR_WORKING_DIR"] = PathManager.workingDirectory.path
-        env["MODELR_LOGS_DIR"] = PathManager.logsDirectory.path
-        env["MODELR_CHECKPOINTS_DIR"] = PathManager.checkpointsDirectory.path
-        env["PYTHONPATH"] = [
-            PathManager.libPythonDirectory.path,
-            PathManager.libPythonDirectory.appendingPathComponent("modelr_core", isDirectory: true).path,
-            PathManager.libPythonDirectory.appendingPathComponent("mlx-sam3", isDirectory: true).path
-        ].joined(separator: ":")
-        process.environment = env
+        process.environment = PythonEnvConfig.inferenceEnvironment(venvPath: inferenceVenv)
 
         process.standardInput = stdin
         process.standardOutput = stdout
         process.standardError = stderr
 
-        // Handle stderr
-        stderr.fileHandleForReading.readabilityHandler = { handle in
+        // Handle stderr - use [weak self] to match stdout handler pattern and prevent retain cycles
+        stderr.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            guard self != nil else { return }  // Early exit if self is deallocated
             let data = handle.availableData
             if let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty {
-                print("[Python stderr] \(line)")
+                ErrorReporter.debug(line, subsystem: .python)
             }
         }
 
@@ -96,42 +79,31 @@ class PythonProcessManager {
         // Register for cleanup on app termination
         ProcessCleanup.shared.registerProcess(process.processIdentifier)
 
-        print("Persistent worker started with PID \(process.processIdentifier)")
+        ErrorReporter.info("Persistent worker started with PID \(process.processIdentifier)", subsystem: .python)
     }
 
     func stopPersistentWorker() {
-        stdinPipe?.fileHandleForWriting.closeFile()
+        // Clear ALL readability handlers FIRST before closing pipes
+        // This prevents handlers from being called during/after pipe closure
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+
+        // Also need to clear the stderr handler that was set during startPersistentWorker
+        // The stderr pipe is local to startPersistentWorker, but we need to track it
+        // For now, get the stderr from the process if available
+        if let process = persistentProcess,
+           let stderrPipe = process.standardError as? Pipe {
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+        }
+
+        // Now safe to close stdin
+        stdinPipe?.fileHandleForWriting.closeFile()
 
         if let process = persistentProcess {
             let pid = process.processIdentifier
             ProcessCleanup.shared.unregisterProcess(pid)
 
             if process.isRunning {
-                // Find and kill all child processes first (uv spawns Python in separate group)
-                let children = Self.findChildProcesses(pid)
-                for childPid in children.reversed() {
-                    print("[SAM] Killing child PID \(childPid)")
-                    kill(childPid, SIGTERM)
-                }
-
-                if !children.isEmpty {
-                    usleep(100_000) // 100ms for SIGTERM
-                    for childPid in children.reversed() {
-                        kill(childPid, SIGKILL)
-                    }
-                }
-
-                // Also try process group (may work for some processes)
-                let pgid = getpgid(pid)
-                if pgid > 0 {
-                    kill(-pgid, SIGTERM)
-                    usleep(50_000)
-                    kill(-pgid, SIGKILL)
-                }
-
-                process.terminate()
-                process.waitUntilExit()
+                ProcessUtilities.terminateProcessTree(pid)
             }
         }
 
@@ -139,40 +111,7 @@ class PythonProcessManager {
         stdinPipe = nil
         stdoutPipe = nil
 
-        print("Persistent worker stopped")
-    }
-
-    /// Recursively find all child processes of a given PID
-    private static func findChildProcesses(_ pid: pid_t) -> [pid_t] {
-        var result: [pid_t] = []
-
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        task.arguments = ["-P", "\(pid)"]
-
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-
-        do {
-            try task.run()
-            task.waitUntilExit()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8) {
-                let childPids = output.components(separatedBy: .newlines)
-                    .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
-
-                for childPid in childPids {
-                    result.append(childPid)
-                    result.append(contentsOf: findChildProcesses(childPid))
-                }
-            }
-        } catch {
-            // Ignore - process may have already exited
-        }
-
-        return result
+        ErrorReporter.info("Persistent worker stopped", subsystem: .python)
     }
 
     var isWorkerRunning: Bool {
@@ -218,27 +157,7 @@ class PythonProcessManager {
         process.arguments = args
         process.currentDirectoryURL = hunyuanDir
 
-        var env = ProcessInfo.processInfo.environment
-        env["UV_PROJECT_ENVIRONMENT"] = hunyuanVenv.path
-        env["UV_PYTHON_INSTALL_DIR"] = PathManager.pythonRuntimesDirectory.path
-        env["UV_CACHE_DIR"] = PathManager.uvCacheDirectory.path
-        env["UV_PYTHON_PREFERENCE"] = "only-managed"
-        env["UV_LINK_MODE"] = "copy"
-        env["PYTHONUNBUFFERED"] = "1"
-        env["HF_HOME"] = PathManager.modelsDirectory.path
-        env["HUGGINGFACE_HUB_CACHE"] = PathManager.modelsHubDirectory.path
-        env["TRANSFORMERS_CACHE"] = PathManager.modelsHubDirectory.path
-        env["MODELR_CONFIG_PATH"] = PathManager.projectConfigPath.path
-        env["MODELR_OUTPUTS_DIR"] = PathManager.outputsDirectory.path
-        env["MODELR_WORKING_DIR"] = PathManager.workingDirectory.path
-        env["MODELR_LOGS_DIR"] = PathManager.logsDirectory.path
-        env["MODELR_CHECKPOINTS_DIR"] = PathManager.checkpointsDirectory.path
-        env["PYTHONPATH"] = [
-            PathManager.libPythonDirectory.path,
-            PathManager.libPythonDirectory.appendingPathComponent("modelr_core", isDirectory: true).path,
-            PathManager.libPythonDirectory.appendingPathComponent("mlx-sam3", isDirectory: true).path
-        ].joined(separator: ":")
-        process.environment = env
+        process.environment = PythonEnvConfig.hunyuanEnvironment(venvPath: hunyuanVenv)
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -253,7 +172,7 @@ class PythonProcessManager {
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { continue }
                 
-                print("[Hunyuan] \(trimmed)")
+                ErrorReporter.debug(trimmed, subsystem: .generation)
                 progressCallback(trimmed)
             }
         }
@@ -302,30 +221,8 @@ class PythonProcessManager {
         isGenerationCancelled = true
         let pid = process.processIdentifier
 
-        // Find and kill all child processes first (uv spawns Python in separate group)
-        let children = Self.findChildProcesses(pid)
-        for childPid in children.reversed() {
-            print("[Generation] Killing child PID \(childPid)")
-            kill(childPid, SIGTERM)
-        }
-
-        if !children.isEmpty {
-            usleep(100_000) // 100ms for SIGTERM
-            for childPid in children.reversed() {
-                kill(childPid, SIGKILL)
-            }
-        }
-
-        // Also try process group
-        let pgid = getpgid(pid)
-        if pgid > 0 {
-            kill(-pgid, SIGTERM)
-            usleep(50_000)
-            kill(-pgid, SIGKILL)
-        }
-
-        process.terminate()
-        kill(pid, SIGKILL)
+        // Use shared utilities for clean process tree termination
+        ProcessUtilities.terminateProcessTree(pid)
 
         ProcessCleanup.shared.unregisterProcess(pid)
         currentGenerationProcess = nil

@@ -8,6 +8,19 @@ extension SimpleEditorViewModel {
         processedModelURL ?? generated3DModelURL
     }
 
+    /// Transition to modify step
+    func transitionToModify() {
+        // CRITICAL: Restore custom color if not set (back then forward navigation)
+        if customModelColor == nil {
+            loadDominantColorFromMetadata()
+        }
+
+        withStandardSpring {
+            currentStep = .modify
+            visitedSteps.insert(.modify)
+        }
+    }
+
     /// Apply voxelization
     func applyVoxelization() async {
         guard voxelResolution > 0, let meshURL = currentMeshForModify else {
@@ -51,9 +64,9 @@ extension SimpleEditorViewModel {
                     modifiedFaceCount = faces
                 }
 
-                print("[Modify] Voxelization complete: \(path)")
+                ErrorReporter.info("Voxelization complete: \(path)", subsystem: .modify)
             } else if let error = result?["error"] as? String {
-                print("[Modify] Voxelization failed: \(error)")
+                ErrorReporter.error("Voxelization failed: \(error)", subsystem: .modify)
             }
         }
     }
@@ -78,17 +91,14 @@ extension SimpleEditorViewModel {
             return
         }
 
-        // Apply custom curve: first 50% of slider → 0-95% reduction, last 50% → 95-99.9% reduction
-        // This gives fine control at low values and makes the extreme reductions occupy the last half
-        // Examples: 25% → 47.5%, 50% → 95%, 75% → 97.45%, 99.9% → 99.9%
+        // Apply custom curve for fine control at low values, extreme reductions at high values
         let sliderValue = Double(lowPolyReduction)
         let exponentialReduction: Double
-        if sliderValue <= 50.0 {
-            // First half: 0-50% slider → 0-95% reduction
-            exponentialReduction = sliderValue * 1.9
+        if sliderValue <= AppConstants.lowPolySliderMidpoint {
+            exponentialReduction = sliderValue * AppConstants.lowPolyFirstHalfMultiplier
         } else {
-            // Second half: 50-99.9% slider → 95-99.9% reduction
-            exponentialReduction = 95.0 + (sliderValue - 50.0) * 0.098
+            exponentialReduction = AppConstants.lowPolySecondHalfBase +
+                (sliderValue - AppConstants.lowPolySliderMidpoint) * AppConstants.lowPolySecondHalfMultiplier
         }
 
         let result = await runMeshModifier(
@@ -117,9 +127,9 @@ extension SimpleEditorViewModel {
                     modifiedFaceCount = finalFaces
                 }
 
-                print("[Modify] Low poly complete: \(path)")
+                ErrorReporter.info("Low poly complete: \(path)", subsystem: .modify)
             } else if let error = result?["error"] as? String {
-                print("[Modify] Low poly failed: \(error)")
+                ErrorReporter.error("Low poly failed: \(error)", subsystem: .modify)
             }
         }
     }
@@ -137,24 +147,24 @@ extension SimpleEditorViewModel {
         let scriptPath = projectDir.appendingPathComponent("mesh_processor.py").path
         let venvPythonPath = envDir.appendingPathComponent(".venv/bin/python").path
 
-        print("[MeshModifier] Running command: \(command)")
-        print("[MeshModifier] Input: \(inputPath)")
-        print("[MeshModifier] Output: \(outputPath)")
-        print("[MeshModifier] Script path: \(scriptPath)")
-        print("[MeshModifier] Python path: \(venvPythonPath)")
+        ErrorReporter.debug("Running command: \(command)", subsystem: .modify)
+        ErrorReporter.debug("Input: \(inputPath)", subsystem: .modify)
+        ErrorReporter.debug("Output: \(outputPath)", subsystem: .modify)
+        ErrorReporter.debug("Script path: \(scriptPath)", subsystem: .modify)
+        ErrorReporter.debug("Python path: \(venvPythonPath)", subsystem: .modify)
 
         guard FileManager.default.fileExists(atPath: venvPythonPath) else {
-            print("[MeshModifier] Tools Python venv not found at: \(venvPythonPath)")
+            ErrorReporter.error("Tools Python venv not found at: \(venvPythonPath)", subsystem: .modify)
             return nil
         }
 
         guard FileManager.default.fileExists(atPath: scriptPath) else {
-            print("[MeshModifier] mesh_processor.py not found at: \(scriptPath)")
+            ErrorReporter.error("mesh_processor.py not found at: \(scriptPath)", subsystem: .modify)
             return nil
         }
 
         guard FileManager.default.fileExists(atPath: inputPath) else {
-            print("[MeshModifier] Input mesh not found at: \(inputPath)")
+            ErrorReporter.error("Input mesh not found at: \(inputPath)", subsystem: .modify)
             return nil
         }
 
@@ -187,7 +197,7 @@ extension SimpleEditorViewModel {
                 let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
 
                 if let errorStr = String(data: errorData, encoding: .utf8), !errorStr.isEmpty {
-                    print("[MeshModifier stderr] \(errorStr)")
+                    ErrorReporter.debug(errorStr, subsystem: .modify)
                 }
 
                 if let outputStr = String(data: outputData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) {
@@ -203,7 +213,7 @@ extension SimpleEditorViewModel {
             do {
                 try process.run()
             } catch {
-                print("[MeshModifier] Failed to run process: \(error)")
+                ErrorReporter.logError(error, subsystem: .modify, context: "Failed to run mesh modifier")
                 continuation.resume(returning: nil)
             }
         }

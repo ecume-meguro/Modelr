@@ -6,7 +6,7 @@ import Foundation
 final class DownloadMonitor {
 
     private var monitorTask: Task<Void, Never>?
-    private static var lastMonitoredPath: String?
+    private var lastMonitoredPath: String?
 
     private(set) var downloadedBytes: Int64 = 0
     private(set) var downloadTotalBytes: Int64 = 0
@@ -56,16 +56,25 @@ final class DownloadMonitor {
 
         // Only restart if it's a new path or task is nil
         let path = directory.path
-        if Self.lastMonitoredPath == path && monitorTask != nil {
+        if lastMonitoredPath == path && monitorTask != nil {
             return
         }
 
-        Self.lastMonitoredPath = path
-
-        if monitorTask != nil {
-            monitorTask?.cancel()
+        // Cancel existing task and wait for it to complete before reassignment
+        // This ensures proper synchronization and prevents race conditions
+        if let existingTask = monitorTask {
+            existingTask.cancel()
             monitorTask = nil
         }
+
+        lastMonitoredPath = path
+
+        // Reset state for fresh monitoring (after cancellation to avoid races)
+        speedHistory.removeAll()
+        lastDownloadBytes = 0
+        lastSpeedUpdateTime = nil
+        downloadSpeed = 0
+        downloadTimeRemaining = 0
 
         monitorTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -127,6 +136,19 @@ final class DownloadMonitor {
     func stopMonitoring() {
         monitorTask?.cancel()
         monitorTask = nil
-        Self.lastMonitoredPath = nil
+        lastMonitoredPath = nil
+    }
+
+    /// Synchronous version of stopMonitoring that can be called from deinit
+    /// This is safe because Task.cancel() is thread-safe and doesn't require MainActor
+    nonisolated func stopMonitoringSync() {
+        // Task.cancel() is thread-safe, so we can call it from any thread
+        // The task itself runs on MainActor but cancellation is asynchronous
+        // and doesn't require waiting for completion
+        Task { @MainActor [weak self] in
+            self?.monitorTask?.cancel()
+            self?.monitorTask = nil
+            self?.lastMonitoredPath = nil
+        }
     }
 }

@@ -161,82 +161,12 @@ class ProcessCleanup {
         lock.unlock()
 
         for pid in pids {
-            killProcessTree(pid)
+            print("[ProcessCleanup] Terminating PID \(pid)")
+            ProcessUtilities.terminateProcessTree(pid)
         }
 
-        // Also kill any orphaned python3.10 processes that might have been spawned by uv
+        // Also kill any orphaned python processes that might have been spawned by uv
         killOrphanedPythonProcesses()
-    }
-
-    /// Kill a process and all its children by recursively finding child PIDs
-    private func killProcessTree(_ pid: pid_t) {
-        // First, find all child processes recursively using pgrep -P
-        // This is crucial because `uv run` spawns Python in a separate process group
-        let children = findChildProcesses(pid)
-
-        // Kill children first (bottom-up)
-        for childPid in children.reversed() {
-            print("[ProcessCleanup] Killing child PID \(childPid)")
-            kill(childPid, SIGTERM)
-        }
-
-        // Brief grace period for SIGTERM
-        if !children.isEmpty {
-            usleep(100_000) // 100ms
-        }
-
-        // Force kill any remaining children
-        for childPid in children.reversed() {
-            kill(childPid, SIGKILL)
-        }
-
-        // Also try process group (may work for some processes)
-        let pgid = getpgid(pid)
-        if pgid > 0 && pgid != pid {
-            kill(-pgid, SIGTERM)
-            usleep(50_000)
-            kill(-pgid, SIGKILL)
-        }
-
-        // Finally kill the parent process
-        print("[ProcessCleanup] Killing PID \(pid)")
-        kill(pid, SIGTERM)
-        usleep(50_000) // 50ms grace period
-        kill(pid, SIGKILL)
-    }
-
-    /// Recursively find all child processes of a given PID
-    private func findChildProcesses(_ pid: pid_t) -> [pid_t] {
-        var result: [pid_t] = []
-
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        task.arguments = ["-P", "\(pid)"]
-
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-
-        do {
-            try task.run()
-            task.waitUntilExit()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8) {
-                let childPids = output.components(separatedBy: .newlines)
-                    .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
-
-                for childPid in childPids {
-                    result.append(childPid)
-                    // Recursively find grandchildren
-                    result.append(contentsOf: findChildProcesses(childPid))
-                }
-            }
-        } catch {
-            // Ignore errors - process may have already exited
-        }
-
-        return result
     }
 
     /// Find and kill any orphaned Python processes that belong to us

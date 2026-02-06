@@ -83,8 +83,11 @@ struct PerformanceSettingsView: View {
 
             Picker("Strategy", selection: $memoryStrategy) {
                 ForEach(MemoryStrategyPreference.allCases, id: \.self) { strategy in
-                    VStack(alignment: .leading) {
+                    VStack(alignment: .leading, spacing: AppDesign.Spacing.p2) {
                         Text(strategy.displayName)
+                        Text(strategy.description)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     .tag(strategy)
                 }
@@ -95,16 +98,16 @@ struct PerformanceSettingsView: View {
             }
 
             // Current strategy description
-            HStack(spacing: 8) {
+            HStack(spacing: AppDesign.Spacing.sm) {
                 Image(systemName: "info.circle")
                     .foregroundStyle(.secondary)
                 Text(memoryStrategy.description)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            .padding(10)
-            .background(Color.blue.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .padding(AppDesign.Spacing.p10)
+            .background(Color.blue.opacity(AppDesign.Opacity.soft))
+            .clipShape(RoundedRectangle(cornerRadius: AppDesign.Size.cornerRadiusSmall))
         }
     }
 
@@ -115,7 +118,7 @@ struct PerformanceSettingsView: View {
                 .font(.headline)
 
             Toggle(isOn: $preloadOnStartup) {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: AppDesign.Spacing.p2) {
                     Text("Preload models on startup")
                         .font(.body)
                     Text("Load frequently-used models when the app starts for faster generation")
@@ -137,7 +140,7 @@ struct PerformanceSettingsView: View {
                 .font(.headline)
 
             Toggle(isOn: $enableAutoDetection) {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: AppDesign.Spacing.p2) {
                     Text("Enable automatic object detection")
                         .font(.body)
                     Text("Use VLM to automatically identify objects in images for segmentation")
@@ -151,16 +154,16 @@ struct PerformanceSettingsView: View {
             }
 
             if !enableAutoDetection {
-                HStack(spacing: 8) {
+                HStack(spacing: AppDesign.Spacing.sm) {
                     Image(systemName: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(AppDesign.warning)
                     Text("You'll need to manually enter object names for segmentation")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                .padding(10)
-                .background(Color.orange.opacity(0.08))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .padding(AppDesign.Spacing.p10)
+                .background(AppDesign.warning.opacity(AppDesign.Opacity.soft))
+                .clipShape(RoundedRectangle(cornerRadius: AppDesign.Size.cornerRadiusSmall))
             }
         }
     }
@@ -184,7 +187,7 @@ struct PerformanceSettingsView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
         }
-        .frame(minWidth: 100, alignment: .leading)
+        .frame(minWidth: 150, maxWidth: .infinity, alignment: .leading)
     }
 
     private func loadSettings() {

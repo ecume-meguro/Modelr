@@ -46,6 +46,7 @@ struct GenerationSettingsPanel: View {
             HStack(spacing: 1) {
                 ForEach(selectedVariant.presets) { preset in
                     qualityButton(for: preset)
+                        .frame(minWidth: 0, maxWidth: .infinity)
                 }
             }
             .background(Color.primary.opacity(AppDesign.Opacity.light))
@@ -145,6 +146,7 @@ struct GenerationSettingsPanel: View {
                     Text("\(viewModel.selectedPreset.variant.downloadSize) download required before generation")
                         .font(.system(size: AppDesign.FontSize.xs))
                         .foregroundStyle(.secondary)
+                        .lineLimit(2)
                 }
 
                 Spacer()
@@ -176,7 +178,7 @@ struct GenerationSettingsPanel: View {
                         .font(.system(size: AppDesign.FontSize.xs, weight: .semibold))
                         .foregroundStyle(.tertiary)
                         .rotationEffect(.degrees(showAdvanced ? 90 : 0))
-                        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: showAdvanced)
+                        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: showAdvanced)
                 }
                 .padding(.vertical, AppDesign.Spacing.p6)
                 .padding(.horizontal, AppDesign.Spacing.p8)
@@ -211,12 +213,18 @@ struct GenerationSettingsPanel: View {
                 range: 10...100,
                 step: 5
             )
+            .accessibilityLabel("Diffusion Steps")
+            .accessibilityValue("\(Int(viewModel.customSteps)) steps")
+
             AppDesign.SliderRow(
                 label: "Octree Resolution",
                 value: $viewModel.customResolution,
                 range: 64...512,
                 step: 32
             )
+            .accessibilityLabel("Octree Resolution")
+            .accessibilityValue("\(Int(viewModel.customResolution))")
+
             AppDesign.SliderRow(
                 label: "Guidance Scale",
                 value: $viewModel.customGuidanceScaleHunyuan,
@@ -224,6 +232,9 @@ struct GenerationSettingsPanel: View {
                 step: 0.5,
                 format: "%.1f"
             )
+            .accessibilityLabel("Guidance Scale")
+            .accessibilityValue(String(format: "%.1f", viewModel.customGuidanceScaleHunyuan))
+
             AppDesign.SliderRow(
                 label: "Bounding Box Scale",
                 value: $viewModel.customBoxV,
@@ -231,6 +242,9 @@ struct GenerationSettingsPanel: View {
                 step: 0.01,
                 format: "%.2f"
             )
+            .accessibilityLabel("Bounding Box Scale")
+            .accessibilityValue(String(format: "%.2f", viewModel.customBoxV))
+
             AppDesign.SliderRow(
                 label: "Surface Level",
                 value: $viewModel.customMcLevel,
@@ -238,6 +252,9 @@ struct GenerationSettingsPanel: View {
                 step: 0.05,
                 format: "%.2f"
             )
+            .accessibilityLabel("Surface Level")
+            .accessibilityValue(String(format: "%.2f", viewModel.customMcLevel))
+
             AppDesign.SliderRow(
                 label: "Mesh Reduction",
                 value: $viewModel.customMeshReduction,
@@ -245,6 +262,8 @@ struct GenerationSettingsPanel: View {
                 step: 10,
                 format: "%.0f%%"
             )
+            .accessibilityLabel("Mesh Reduction")
+            .accessibilityValue(String(format: "%.0f percent", viewModel.customMeshReduction))
 
             // Tip for mesh reduction
             HStack(spacing: AppDesign.Spacing.p6) {
@@ -257,6 +276,7 @@ struct GenerationSettingsPanel: View {
             }
 
             AppDesign.HintText("Steps & resolution affect quality. Guidance controls input adherence. Box scale adjusts model size. Surface level shifts the mesh boundary.")
+                .lineLimit(3)
         }
     }
 

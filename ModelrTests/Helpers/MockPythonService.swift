@@ -84,6 +84,9 @@ class MockPythonService: PythonServiceProtocol {
         steps: Int,
         resolution: Int,
         modelVariant: String,
+        guidanceScale: Double,
+        boxV: Double,
+        mcLevel: Double,
         progress: @escaping (String) -> Void,
         completion: @escaping (Result<URL, Error>) -> Void
     ) async {

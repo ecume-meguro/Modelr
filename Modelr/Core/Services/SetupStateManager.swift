@@ -1,4 +1,3 @@
-import os.log
 import Foundation
 
 /// Manages setup state for resume capability and stage-level retry
@@ -66,11 +65,16 @@ class SetupStateManager {
         encoder.outputFormatting = .prettyPrinted
         let data = try encoder.encode(state)
 
-        // Write atomically using temp file + rename
+        // Write atomically using temp file + replace
         let tempPath = stateFilePath.deletingLastPathComponent()
             .appendingPathComponent("setup_state.tmp")
 
         try data.write(to: tempPath, options: .atomic)
+
+        // Remove existing file if present, then move temp file
+        if FileManager.default.fileExists(atPath: stateFilePath.path) {
+            try FileManager.default.removeItem(at: stateFilePath)
+        }
         try FileManager.default.moveItem(at: tempPath, to: stateFilePath)
 
         print("[SetupState] Saved state: current=\(state.currentStage?.rawValue ?? "nil"), completed=\(state.completedStages.count)")

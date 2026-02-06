@@ -26,7 +26,7 @@ class HunyuanProcessManager {
     /// Start the persistent Hunyuan server
     func startServer(uvPath: String, modelVariant: String) throws {
         guard !isRunning else {
-            print("[Hunyuan] Server already running")
+            ErrorReporter.debug("Hunyuan server already running", subsystem: .python)
             return
         }
 
@@ -43,26 +43,7 @@ class HunyuanProcessManager {
         ]
         process?.currentDirectoryURL = hunyuanDir
 
-        var env = ProcessInfo.processInfo.environment
-        env["UV_PROJECT_ENVIRONMENT"] = hunyuanVenv.path
-        env["UV_PYTHON_INSTALL_DIR"] = PathManager.pythonRuntimesDirectory.path
-        env["UV_CACHE_DIR"] = PathManager.uvCacheDirectory.path
-        env["UV_PYTHON_PREFERENCE"] = "only-managed"
-        env["UV_LINK_MODE"] = "copy"
-        env["PYTHONUNBUFFERED"] = "1"
-        env["HF_HOME"] = PathManager.modelsDirectory.path
-        env["HUGGINGFACE_HUB_CACHE"] = PathManager.modelsHubDirectory.path
-        env["TRANSFORMERS_CACHE"] = PathManager.modelsHubDirectory.path
-        env["MODELR_CONFIG_PATH"] = PathManager.projectConfigPath.path
-        env["MODELR_OUTPUTS_DIR"] = PathManager.outputsDirectory.path
-        env["MODELR_WORKING_DIR"] = PathManager.workingDirectory.path
-        env["MODELR_LOGS_DIR"] = PathManager.logsDirectory.path
-        env["MODELR_CHECKPOINTS_DIR"] = PathManager.checkpointsDirectory.path
-        env["PYTHONPATH"] = [
-            PathManager.libPythonDirectory.path,
-            PathManager.libPythonDirectory.appendingPathComponent("modelr_core", isDirectory: true).path
-        ].joined(separator: ":")
-        process?.environment = env
+        process?.environment = PythonEnvConfig.hunyuanEnvironment(venvPath: hunyuanVenv)
 
         stdinPipe = Pipe()
         stdoutPipe = Pipe()
@@ -97,7 +78,7 @@ class HunyuanProcessManager {
 
         // Set up termination handler to cancel all pending requests
         process?.terminationHandler = { [weak self] terminatedProcess in
-            print("[Hunyuan] Process terminated unexpectedly (exit code: \(terminatedProcess.terminationStatus))")
+            ErrorReporter.warning("Hunyuan process terminated unexpectedly (exit code: \(terminatedProcess.terminationStatus))", subsystem: .python)
             Task {
                 await self?.bridge.cancelAll(error: PythonError.processTerminated)
             }
@@ -109,9 +90,8 @@ class HunyuanProcessManager {
         let processId = process?.processIdentifier ?? -1
         if processId > 0 {
             ProcessCleanup.shared.registerProcess(processId)
+            ErrorReporter.info("Hunyuan server started with PID \(processId)", subsystem: .python)
         }
-
-        print("[Hunyuan] Server started with PID \(processId)")
     }
 
     /// Cancel current generation.
@@ -129,18 +109,16 @@ class HunyuanProcessManager {
             let cancelCommand = "{\"command\":\"cancel\"}\n"
             do {
                 try stdin.write(contentsOf: Data(cancelCommand.utf8))
-                print("[Hunyuan] Sent cancel command over stdin")
+                ErrorReporter.info("Sent cancel command", subsystem: .generation)
             } catch {
-                print("[Hunyuan] Failed to send cancel command: \(error)")
+                ErrorReporter.logError(error, subsystem: .generation, context: "Failed to send cancel command")
             }
         }
 
-        // Back-compat fallback: keep the cancel-file behavior as well.
-        // This may not work when launched via uv (PID mismatch), but is harmless.
+        // Back-compat fallback: cancel-file behavior (may not work via uv)
         if let pid = process?.processIdentifier {
             let cancelFile = "/tmp/modelr_cancel_\(pid)"
             FileManager.default.createFile(atPath: cancelFile, contents: nil)
-            print("[Hunyuan] Created cancel file: \(cancelFile)")
         }
     }
 
@@ -152,96 +130,30 @@ class HunyuanProcessManager {
         // Unregister from cleanup
         ProcessCleanup.shared.unregisterProcess(pid)
 
-        // Cancel all pending requests asynchronously
+        // IMPORTANT: Cancel all pending requests FIRST, before clearing handlers
+        // This ensures pending requests receive proper error notifications before
+        // the communication channels are torn down
         Task {
             await bridge.cancelAll(error: PythonError.workerNotRunning)
         }
 
-        // Try graceful exit first
-        if let stdin = stdinPipe?.fileHandleForWriting {
-            let exitCommand = "{\"command\":\"exit\"}\n"
-            try? stdin.write(contentsOf: Data(exitCommand.utf8))
-        }
-
-        // Clear handlers before waiting
-        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
-        stderrPipe?.fileHandleForReading.readabilityHandler = nil
-        // Clear termination handler to prevent double-resuming continuations
+        // Clear termination handler to prevent double-cancellation
         proc.terminationHandler = nil
 
-        // Give brief grace period for graceful exit
-        if proc.isRunning {
-            usleep(200_000) // 200ms grace period
+        // Clear I/O handlers AFTER initiating request cancellation
+        // This prevents new responses from being processed while we're shutting down
+        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+        stderrPipe?.fileHandleForReading.readabilityHandler = nil
 
-            if proc.isRunning {
-                // Find and kill all child processes first (uv spawns Python in separate group)
-                let children = Self.findChildProcesses(pid)
-                for childPid in children.reversed() {
-                    print("[Hunyuan] Killing child PID \(childPid)")
-                    kill(childPid, SIGTERM)
-                }
-
-                if !children.isEmpty {
-                    usleep(100_000) // 100ms for SIGTERM
-                    for childPid in children.reversed() {
-                        kill(childPid, SIGKILL)
-                    }
-                }
-
-                // Also try process group (may work for some processes)
-                let pgid = getpgid(pid)
-                if pgid > 0 {
-                    kill(-pgid, SIGTERM)
-                    usleep(50_000) // 50ms
-                    kill(-pgid, SIGKILL)
-                }
-
-                proc.terminate()
-            }
-
-            // Wait for exit to ensure cleanup is complete before returning
-            proc.waitUntilExit()
-        }
+        // Use shared process utilities for clean shutdown
+        ProcessUtilities.stopProcess(proc, stdinPipe: stdinPipe)
 
         process = nil
         stdinPipe = nil
         stdoutPipe = nil
         stderrPipe = nil
 
-        print("[Hunyuan] Server stopped")
-    }
-
-    /// Recursively find all child processes of a given PID
-    private static func findChildProcesses(_ pid: pid_t) -> [pid_t] {
-        var result: [pid_t] = []
-
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        task.arguments = ["-P", "\(pid)"]
-
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-
-        do {
-            try task.run()
-            task.waitUntilExit()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8) {
-                let childPids = output.components(separatedBy: .newlines)
-                    .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
-
-                for childPid in childPids {
-                    result.append(childPid)
-                    result.append(contentsOf: findChildProcesses(childPid))
-                }
-            }
-        } catch {
-            // Ignore - process may have already exited
-        }
-
-        return result
+        ErrorReporter.info("Hunyuan server stopped", subsystem: .python)
     }
 
     // MARK: - Communication
@@ -253,7 +165,7 @@ class HunyuanProcessManager {
 
             for (messageId, response) in responses {
                 // Debug logging
-                print("[Hunyuan] Received response for \(messageId): type=\(response.type ?? "nil")")
+                ErrorReporter.debug("Received response for \(messageId): type=\(response.type ?? "nil")", subsystem: .python)
 
                 // Determine if this is progress or final
                 let isProgress = response.type == "progress"
@@ -310,7 +222,7 @@ class HunyuanProcessManager {
             throw PythonError.workerNotRunning
         }
 
-        print("[Hunyuan Request] \(request.command)")
+        ErrorReporter.debug("Request: \(request.command)", subsystem: .python)
 
         // Use unified progress-aware bridge - eliminates all manual tracking
         return try await bridge.sendRequest(
@@ -334,18 +246,24 @@ class HunyuanProcessManager {
 
     deinit {
         // CRITICAL: deinit must be fast and non-blocking
-        // Fire-and-forget termination without waiting
-        let pid = process?.processIdentifier
-        process?.terminate()
+        // Use ProcessCleanup for guaranteed cleanup with proper tracking
+        guard let proc = process else { return }
+        let pid = proc.processIdentifier
 
-        // Forceful cleanup in background (don't block deinit)
-        if let pid = pid {
-            DispatchQueue.global().async {
-                usleep(200_000)  // 200ms grace period
-                kill(pid, SIGKILL)
-            }
-        }
+        // Clear handlers synchronously to prevent callbacks after deallocation
+        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+        stderrPipe?.fileHandleForReading.readabilityHandler = nil
+        proc.terminationHandler = nil
 
+        // Register with ProcessCleanup if not already registered (defensive)
+        // ProcessCleanup.shared handles the actual termination
+        ProcessCleanup.shared.registerProcess(pid)
+
+        // Send terminate signal synchronously (fast, non-blocking)
+        proc.terminate()
+
+        // ProcessCleanup.shared.killAllPythonProcesses() will handle SIGKILL
+        // during app termination if process doesn't exit cleanly
         // Don't call stopServer() - it blocks with waitUntilExit()
     }
 }

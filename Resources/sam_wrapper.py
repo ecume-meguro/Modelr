@@ -29,15 +29,20 @@ from modelr_core import (
 from modelr_core.exceptions import ModelLoadError, ImageValidationError
 
 class SAM3Server(BaseModelServer):
-    def __init__(self, model_type: str = "default", output_dir: str = "."):
+    def __init__(self, model_type: str = "default", output_dir: str = ".", checkpoint_path: Optional[str] = None):
         super().__init__("sam_wrapper", model_type)
         self.output_dir = output_dir
+        self.checkpoint_path = checkpoint_path
 
     def load_model(self) -> Tuple[Sam3Processor, str]:
         """Load the MLX SAM3 model."""
         try:
             log_info("Building MLX SAM3 model...", self.logger)
-            model = build_sam3_image_model()
+            if self.checkpoint_path:
+                log_info(f"Using local checkpoint: {self.checkpoint_path}", self.logger)
+                model = build_sam3_image_model(checkpoint_path=self.checkpoint_path)
+            else:
+                model = build_sam3_image_model()
             processor = Sam3Processor(model, confidence_threshold=0.5)
             return processor, "mlx"
         except Exception as e:
@@ -141,24 +146,29 @@ class SAM3Server(BaseModelServer):
             log_debug(f"Failed to save debug image: {e}", self.logger)
 
 def main():
+    # Parse common arguments
+    checkpoint_path = None
+    output_dir = "."
+    for i, arg in enumerate(sys.argv):
+        if arg == "--checkpoint" and i + 1 < len(sys.argv):
+            checkpoint_path = sys.argv[i + 1]
+        elif arg == "--output-dir" and i + 1 < len(sys.argv):
+            output_dir = sys.argv[i + 1]
+
     if "--get-size" in sys.argv:
         size_str = get_model_size_formatted("sam3")
         print(f"SIZE:{size_str}", flush=True)
         return
     elif "--server" in sys.argv:
-        output_dir = "."
-        for i, arg in enumerate(sys.argv):
-            if arg == "--output-dir" and i + 1 < len(sys.argv):
-                output_dir = sys.argv[i + 1]
-        server = SAM3Server(output_dir=output_dir)
+        server = SAM3Server(output_dir=output_dir, checkpoint_path=checkpoint_path)
         server.run()
     elif "--test" in sys.argv:
         # Simplified test mode
-        server = SAM3Server()
+        server = SAM3Server(checkpoint_path=checkpoint_path)
         server.initialize()
         print("Model loaded successfully")
     else:
-        print("Usage: sam_wrapper.py --server [--output-dir <path>] | --get-size | --test")
+        print("Usage: sam_wrapper.py --server [--output-dir <path>] [--checkpoint <path>] | --get-size | --test")
 
 if __name__ == "__main__":
     main()

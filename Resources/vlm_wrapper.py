@@ -26,39 +26,45 @@ from modelr_core import (
 )
 from modelr_core.exceptions import ModelLoadError
 
-# Default model and prompt
-MODEL_ID = "mlx-community/Qwen3-VL-2B-Instruct-4bit"
-# For Qwen3-VL, the prompt needs image tokens inserted via chat template
+# Model configuration
+MODEL_ID = "mlx-community/Qwen3-VL-2B-Instruct-4bit"  # For reference only
 DEFAULT_PROMPT = "State the common name of the item shown. Max 2 words. Do not be specific. Do not denote items by brand, name, etc. E.g Tesla should be Car, Bumblebee (transformers) should be robot, do not use names."
-
-# Qwen3-VL specific tokens
-VISION_START = "<|vision_start|>"
-IMAGE_PAD = "<|image_pad|>"
-VISION_END = "<|vision_end|>"
 
 # Image resize settings for faster inference
 # 384x384 is the sweet spot: ~100ms inference vs 50s at full resolution
 MAX_IMAGE_SIZE = 384
 
 
+def get_model_path() -> Path:
+    """Get the local model path from environment or default."""
+    models_dir = os.environ.get("MODELR_MODELS_DIR")
+    if models_dir:
+        return Path(models_dir) / "vlm"
+    return Path.home() / "Library" / "Application Support" / "Modelr" / "models" / "vlm"
+
+
 class VLMServer(BaseModelServer):
     """Vision Language Model server for object detection/description."""
 
-    def __init__(self, model_id: str = MODEL_ID):
-        super().__init__("vlm_wrapper", model_id)
-        self.model_id = model_id
+    def __init__(self):
+        self.model_path = get_model_path()
+        super().__init__("vlm_wrapper", str(self.model_path))
         self.model = None
         self.vlm_processor = None
         self.current_image_path: Optional[str] = None
 
     def load_model(self) -> Tuple[Any, str]:
-        """Load the MLX VLM model."""
+        """Load the MLX VLM model from local path."""
         try:
-            log_info(f"Loading VLM model: {self.model_id}", self.logger)
+            log_info(f"Loading VLM model from: {self.model_path}", self.logger)
+
+            if not self.model_path.exists():
+                raise ModelLoadError(f"Model not found at {self.model_path}. Run model_downloader.py first.")
 
             from mlx_vlm import load
 
-            self.model, self.vlm_processor = load(self.model_id)
+            # Load from local path
+            self.model, self.vlm_processor = load(str(self.model_path))
 
             log_info("VLM model loaded successfully", self.logger)
             return self.vlm_processor, "mlx"
@@ -302,18 +308,42 @@ class VLMServer(BaseModelServer):
         return {"success": False, "error": f"Unknown command: {command}"}
 
 
-def warmup_model():
-    """Pre-download the model weights."""
-    log_info("Warming up VLM model...")
-    try:
-        from mlx_vlm import load
-        model, processor = load(MODEL_ID)
-        del model, processor
-        gc.collect()
-        log_info("VLM warmup complete")
-    except Exception as e:
-        log_error(f"VLM warmup failed: {e}")
+def emit_progress(stage: str, **kwargs):
+    """Emit JSON progress in the same format as model_downloader.py."""
+    print(json.dumps({"stage": stage, "ts": time.time(), "model": "vlm", **kwargs}), flush=True)
+
+
+def verify_model():
+    """Check if VLM model files are present locally. No loading - just file verification."""
+    model_path = get_model_path()
+
+    emit_progress("checking")
+
+    if not model_path.exists():
+        emit_progress("error", message=f"Model not found at {model_path}")
+        print(f"Error: VLM model not found at {model_path}", file=sys.stderr)
+        print("Run: python model_downloader.py download --model vlm", file=sys.stderr)
         sys.exit(1)
+
+    # Check for required files (skip actual loading - that's tested when server starts)
+    required_files = ["model.safetensors", "config.json", "tokenizer.json"]
+    missing = [f for f in required_files if not (model_path / f).exists()]
+
+    if missing:
+        emit_progress("error", message=f"Missing files: {missing}")
+        print(f"Error: Missing VLM files: {missing}", file=sys.stderr)
+        print("Run: python model_downloader.py download --model vlm", file=sys.stderr)
+        sys.exit(1)
+
+    # Verify model.safetensors has reasonable size (>100MB)
+    model_file = model_path / "model.safetensors"
+    if model_file.stat().st_size < 100_000_000:
+        emit_progress("error", message="model.safetensors appears incomplete")
+        print("Error: model.safetensors appears incomplete", file=sys.stderr)
+        sys.exit(1)
+
+    emit_progress("complete", cached=True, path=str(model_path))
+    print(f"VLM model files verified at {model_path}")
 
 
 def main():
@@ -322,8 +352,9 @@ def main():
         print(f"SIZE:{size_str}", flush=True)
         return
 
-    if "--warmup" in sys.argv:
-        warmup_model()
+    if "--verify" in sys.argv or "--warmup" in sys.argv:
+        # --warmup kept for backwards compat, now just verifies
+        verify_model()
         return
 
     if "--server" in sys.argv:
@@ -332,13 +363,11 @@ def main():
         return
 
     if "--test" in sys.argv:
-        # Quick test - load model and run a test inference
         print("Testing VLM model loading...")
         server = VLMServer()
         server.initialize()
         print("VLM model loaded successfully!")
 
-        # Test with a sample image if provided
         for i, arg in enumerate(sys.argv):
             if arg == "--image" and i + 1 < len(sys.argv):
                 image_path = sys.argv[i + 1]
@@ -347,7 +376,8 @@ def main():
                 print(f"Raw output: {result.get('rawOutput', 'N/A')}")
         return
 
-    print("Usage: vlm_wrapper.py --server | --warmup | --get-size | --test [--image <path>]")
+    print("Usage: vlm_wrapper.py --server | --verify | --test [--image <path>]")
+    print(f"Model path: {get_model_path()}")
 
 
 if __name__ == "__main__":

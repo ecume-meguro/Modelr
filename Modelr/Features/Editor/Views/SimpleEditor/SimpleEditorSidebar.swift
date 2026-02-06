@@ -28,19 +28,19 @@ struct SimpleEditorSidebar: View {
                     workflowStepRow(displayNumber: 2, step: .segment, title: "Segment", isLast: false, isOptional: false) {
                         segmentContent
                     }
-                    workflowStepRow(displayNumber: 3, step: .touchup, title: "Touchup", isLast: false, isOptional: true) {
+                    workflowStepRow(displayNumber: 3, step: .touchup, title: "Touchup", isLast: false, isOptional: true, showOptionalBadgeEarly: true) {
                         touchupContent
                     }
-                    workflowStepRow(displayNumber: 4, step: .generateSettings, title: "Settings", isLast: false, isOptional: true) {
+                    workflowStepRow(displayNumber: 4, step: .generateSettings, title: "Settings", isLast: false, isOptional: true, showOptionalBadgeEarly: false) {
                         generateSettingsContent
                     }
-                    workflowStepRow(displayNumber: 5, step: .generate, title: "Generate 3D", isLast: false, isOptional: false) {
+                    workflowStepRow(displayNumber: 5, step: .generate, title: "Generate 3D", isLast: false, isOptional: false, showOptionalBadgeEarly: false, timeEstimate: viewModel.currentGenerationTimeEstimate) {
                         generateContent
                     }
-                    workflowStepRow(displayNumber: 6, step: .postProcess, title: "Post-Process", isLast: false, isOptional: false) {
+                    workflowStepRow(displayNumber: 6, step: .postProcess, title: "Post-Process", isLast: false, isOptional: false, showOptionalBadgeEarly: false) {
                         postProcessContent
                     }
-                    workflowStepRow(displayNumber: 7, step: .modify, title: "Modify", isLast: true, isOptional: true) {
+                    workflowStepRow(displayNumber: 7, step: .modify, title: "Modify", isLast: true, isOptional: true, showOptionalBadgeEarly: true) {
                         modifyContent
                     }
                 }
@@ -268,6 +268,8 @@ struct SimpleEditorSidebar: View {
         title: String,
         isLast: Bool,
         isOptional: Bool,
+        showOptionalBadgeEarly: Bool = false,
+        timeEstimate: String? = nil,
         @ViewBuilder content: () -> some View
     ) -> some View {
         let locked = !viewModel.isSetupComplete
@@ -337,16 +339,33 @@ struct SimpleEditorSidebar: View {
                 HStack(spacing: AppDesign.Spacing.p12) {
                     workflowStepCircle(displayNumber: displayNumber, isDone: isDone, isActive: isActive, locked: locked, isOptional: isOptional, wasVisited: wasVisited)
 
-                    HStack(spacing: AppDesign.Spacing.p4) {
-                        Text(title)
-                            .font(.system(size: AppDesign.FontSize.body, weight: isActive ? .semibold : .regular))
-                            .foregroundStyle(locked ? .tertiary : (isActive ? .primary : (isOptional ? .tertiary : .secondary)))
-                            .animation(.easeInOut(duration: 0.2), value: isActive)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: AppDesign.Spacing.p4) {
+                            Text(title)
+                                .font(.system(size: AppDesign.FontSize.body, weight: isActive ? .semibold : .regular))
+                                .foregroundStyle(locked ? .tertiary : (isActive ? .primary : (isOptional ? .tertiary : .secondary)))
+                                .animation(.easeInOut(duration: 0.2), value: isActive)
 
-                        if isOptional && !isActive && !isDone {
-                            Text("(optional)")
+                            // Show optional badge early for touchup/modify steps
+                            if isOptional && showOptionalBadgeEarly && !isDone {
+                                Text("Optional")
+                                    .font(.system(size: AppDesign.FontSize.xs, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.secondary.opacity(0.15), in: Capsule())
+                            } else if isOptional && !isActive && !isDone && !showOptionalBadgeEarly {
+                                Text("(optional)")
+                                    .font(.system(size: AppDesign.FontSize.xs))
+                                    .foregroundStyle(.quaternary)
+                            }
+                        }
+
+                        // Time estimate for generation step
+                        if let estimate = timeEstimate, !locked {
+                            Text(estimate)
                                 .font(.system(size: AppDesign.FontSize.xs))
-                                .foregroundStyle(.quaternary)
+                                .foregroundStyle(.tertiary)
                         }
                     }
 
@@ -542,7 +561,7 @@ struct SimpleEditorSidebar: View {
                 onClose?()
             }
         } message: {
-            Text("3D model generation is in progress. Canceling will lose the current generation.")
+            Text("The generated model will be saved. Cancel the current generation?")
         }
         .alert("Start Over?", isPresented: $viewModel.showStartOverWarning) {
             Button("Cancel", role: .cancel) { }
@@ -790,10 +809,7 @@ struct SimpleEditorSidebar: View {
             sectionFooter {
                 // Continue to Modify button
                 AppDesign.GlassButton("Continue to Modify", icon: "wand.and.stars") {
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        viewModel.currentStep = .modify
-                        viewModel.visitedSteps.insert(.modify)
-                    }
+                    viewModel.transitionToModify()
                 }
                 .help("Apply voxelization or low poly reduction")
             }

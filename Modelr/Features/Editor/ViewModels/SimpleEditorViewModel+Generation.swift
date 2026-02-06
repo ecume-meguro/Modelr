@@ -5,6 +5,17 @@ import os.log
 // MARK: - Generation
 extension SimpleEditorViewModel {
 
+    /// Get or set the handoff task (stored via objc_setAssociatedObject for extension compatibility)
+    /// Uses the key from the main class to ensure deinit can access and cancel it
+    private var handoffTask: Task<Void, Never>? {
+        get {
+            objc_getAssociatedObject(self, &Self.handoffTaskKeyStorage) as? Task<Void, Never>
+        }
+        set {
+            objc_setAssociatedObject(self, &Self.handoffTaskKeyStorage, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        }
+    }
+
     func setupGenerationObservation() {
         ServiceContainer.shared.generationService.$status
             .receive(on: DispatchQueue.main)
@@ -49,21 +60,56 @@ extension SimpleEditorViewModel {
                         ThumbnailCache.shared.regenerateModelPreview(for: projectId)
                     }
                     // Notify coordinator that generation is complete
-                    Task {
-                        await ModelLoadingCoordinator.shared.onGenerationComplete(env: self.env)
+                    Task { [weak self] in
+                        guard let self = self else { return }
+                        do {
+                            try Task.checkCancellation()
+                            await ModelLoadingCoordinator.shared.onGenerationComplete(env: self.env)
+                        } catch {
+                            // Task cancelled, ignore
+                        }
                     }
 
+                    // Cancel any existing handoff task before starting a new one
+                    self.handoffTask?.cancel()
+
                     // Start pre-loading mesh analysis and wait for it before transitioning
-                    Task { @MainActor in
+                    self.handoffTask = Task { @MainActor [weak self] in
+                        guard let self = self else { return }
+
                         print("[Gen] Starting handoff task...")
 
-                        var wasCancelled = false
+                        // Check for cancellation before starting work
+                        var wasCancelled = self.generationStages.values.contains { $0.status == .cancelled }
 
-                        // Use defer to transition to post-process (only if not cancelled)
-                        defer {
-                            // Check if generation was cancelled - don't transition if it was
+                        do {
+                            try Task.checkCancellation()
+
                             if !wasCancelled {
-                                print("[Gen] Calling transitionToPostProcess (defer)...")
+                                // Optimize mesh first (this updates generated3DModelURL)
+                                self.updateHandoffProgress(progress: 0.1, detail: "Optimizing mesh...")
+                                await self.optimizeMesh()
+
+                                // Check cancellation after mesh optimization
+                                try Task.checkCancellation()
+                                wasCancelled = self.generationStages.values.contains { $0.status == .cancelled }
+
+                                if !wasCancelled {
+                                    // Then analyze the optimized mesh
+                                    // Progress updates are handled inside preloadMeshAnalysis
+                                    await self.preloadMeshAnalysis()
+
+                                    // Check cancellation after preload
+                                    try Task.checkCancellation()
+                                    wasCancelled = self.generationStages.values.contains { $0.status == .cancelled }
+
+                                    print("[Gen] Preload complete")
+                                }
+                            }
+
+                            // Only transition if not cancelled
+                            if !wasCancelled {
+                                print("[Gen] Calling transitionToPostProcess...")
 
                                 // Mark handoff complete - set directly without explicit animation
                                 // The sidebar has implicit .animation(value:) that handles this
@@ -74,23 +120,13 @@ extension SimpleEditorViewModel {
 
                                 print("[Gen] transitionToPostProcess returned, currentStep=\(String(describing: self.currentStep))")
                             } else {
-                                print("[Gen] Handoff defer: generation was cancelled, skipping transition")
+                                print("[Gen] Handoff: generation was cancelled, skipping transition")
                             }
-                        }
-
-                        // Check for cancellation before starting work
-                        wasCancelled = self.generationStages.values.contains { $0.status == .cancelled }
-
-                        if !wasCancelled {
-                            // Optimize mesh first (this updates generated3DModelURL)
-                            self.updateHandoffProgress(progress: 0.1, detail: "Optimizing mesh...")
-                            await self.optimizeMesh()
-
-                            // Then analyze the optimized mesh
-                            // Progress updates are handled inside preloadMeshAnalysis
-                            await self.preloadMeshAnalysis()
-
-                            print("[Gen] Preload complete")
+                        } catch is CancellationError {
+                            print("[Gen] Handoff task cancelled")
+                        } catch {
+                            print("[Gen] Handoff error: \(error)")
+                            self.handleError(error)
                         }
                     }
                 case .failed(let projectId, let error):
@@ -100,6 +136,12 @@ extension SimpleEditorViewModel {
                 }
             }
             .store(in: &cancellables)
+    }
+
+    /// Cancel the handoff task (called during cleanup)
+    func cancelHandoffTask() {
+        handoffTask?.cancel()
+        handoffTask = nil
     }
 
     /// Transition to generate settings step (for customizing settings before generation)
@@ -399,6 +441,9 @@ extension SimpleEditorViewModel {
         generationTask?.cancel()
         generationTask = nil
 
+        // Cancel the handoff task
+        cancelHandoffTask()
+
         // Cancel via the coordinator
         ModelLoadingCoordinator.shared.cancelGeneration()
 
@@ -453,11 +498,8 @@ extension SimpleEditorViewModel {
         let stepDetail = ProgressParser.formatStepDetail(status)
 
         if status.contains("Downloading") || status.contains("Fetching") {
-            // Check if the model being used is already downloaded
-            let variant = selectedPreset.modelVariant
-            let isModelDownloaded = variant == "std" ? PathManager.isHunyuan21Downloaded : isSmallModelDownloaded
-
-            if !isModelDownloaded {
+            // Check if the model is already downloaded (only mini model supported)
+            if !isSmallModelDownloaded {
                 let info = ProgressParser.parseDetailedProgress(status)
                 let progress = info.percentComplete / 100.0
                 let detail = info.currentStep > 0 ? "\(info.currentStep)/\(info.totalSteps)" : "Downloading..."
@@ -468,21 +510,10 @@ extension SimpleEditorViewModel {
 
                 // Start download monitoring if not already started
                 if downloadTotalBytes == 0 {
-                    // Determine the correct directory and total bytes for the monitor based on variant
                     let modelrDir = PathManager.appSupportDirectory
                     let hfCacheDir = modelrDir.appendingPathComponent("Cache/hf_cache/hub")
-
-                    let modelCacheName: String
-                    let total: Int64
-
-                    if variant == "std" {
-                        modelCacheName = "models--tencent--Hunyuan3D-2.1"
-                        total = AppConstants.hunyuanStdModelBytes
-                    } else {
-                        modelCacheName = "models--tencent--Hunyuan3D-2mini"
-                        total = AppConstants.hunyuanMiniModelBytes
-                    }
-
+                    let modelCacheName = "models--tencent--Hunyuan3D-2mini"
+                    let total = AppConstants.hunyuanMiniModelBytes
                     let modelCacheDir = hfCacheDir.appendingPathComponent(modelCacheName)
 
                     downloadMonitor.startMonitoring(directory: modelCacheDir, totalBytes: Int64(total)) { [weak self] (monitor: DownloadMonitor) in

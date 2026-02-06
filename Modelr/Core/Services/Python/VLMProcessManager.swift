@@ -25,7 +25,7 @@ class VLMProcessManager {
     /// Start the persistent VLM server
     func startServer(uvPath: String) throws {
         guard !isRunning else {
-            print("[VLM] Server already running")
+            ErrorReporter.debug("Server already running", subsystem: .python)
             return
         }
 
@@ -42,25 +42,7 @@ class VLMProcessManager {
         ]
         process?.currentDirectoryURL = inferenceProjectDir
 
-        var env = ProcessInfo.processInfo.environment
-        env["UV_PROJECT_ENVIRONMENT"] = inferenceVenv.path
-        env["UV_PYTHON_INSTALL_DIR"] = PathManager.pythonRuntimesDirectory.path
-        env["UV_CACHE_DIR"] = PathManager.uvCacheDirectory.path
-        env["UV_PYTHON_PREFERENCE"] = "only-managed"
-        env["UV_LINK_MODE"] = "copy"
-        env["PYTHONUNBUFFERED"] = "1"
-        env["HF_HOME"] = PathManager.modelsDirectory.path
-        env["HUGGINGFACE_HUB_CACHE"] = PathManager.modelsHubDirectory.path
-        env["TRANSFORMERS_CACHE"] = PathManager.modelsHubDirectory.path
-        env["MODELR_CONFIG_PATH"] = PathManager.projectConfigPath.path
-        env["MODELR_OUTPUTS_DIR"] = PathManager.outputsDirectory.path
-        env["MODELR_WORKING_DIR"] = PathManager.workingDirectory.path
-        env["MODELR_LOGS_DIR"] = PathManager.logsDirectory.path
-        env["PYTHONPATH"] = [
-            PathManager.libPythonDirectory.path,
-            PathManager.libPythonDirectory.appendingPathComponent("modelr_core", isDirectory: true).path
-        ].joined(separator: ":")
-        process?.environment = env
+        process?.environment = PythonEnvConfig.inferenceEnvironment(venvPath: inferenceVenv)
 
         stdinPipe = Pipe()
         stdoutPipe = Pipe()
@@ -92,7 +74,7 @@ class VLMProcessManager {
 
         // Set up termination handler to cancel all pending requests
         process?.terminationHandler = { [weak self] terminatedProcess in
-            print("[VLM] Process terminated unexpectedly (exit code: \(terminatedProcess.terminationStatus))")
+            ErrorReporter.warning("Process terminated unexpectedly (exit code: \(terminatedProcess.terminationStatus))", subsystem: .python)
             Task {
                 await self?.bridge.cancelAll(error: PythonError.processTerminated)
             }
@@ -103,10 +85,8 @@ class VLMProcessManager {
         // Register for cleanup on app termination
         if let pid = process?.processIdentifier {
             ProcessCleanup.shared.registerProcess(pid)
+            ErrorReporter.info("VLM server started with PID \(pid)", subsystem: .python)
         }
-
-        let vlmPid = process?.processIdentifier ?? -1
-        print("[VLM] Server started with PID \(vlmPid)")
     }
 
     /// Stop the server asynchronously (non-blocking)
@@ -122,90 +102,20 @@ class VLMProcessManager {
             await bridge.cancelAll(error: PythonError.workerNotRunning)
         }
 
-        // Try graceful exit first
-        if let stdin = stdinPipe?.fileHandleForWriting {
-            let exitCommand = "{\"command\":\"exit\"}\n"
-            try? stdin.write(contentsOf: Data(exitCommand.utf8))
-        }
-
-        // Clear handlers before waiting
+        // Clear handlers before stopping
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
         stderrPipe?.fileHandleForReading.readabilityHandler = nil
-        // Clear termination handler to prevent double-resuming continuations
         proc.terminationHandler = nil
 
-        // Give brief grace period for graceful exit
-        if proc.isRunning {
-            usleep(200_000) // 200ms grace period
-
-            if proc.isRunning {
-                // Find and kill all child processes first
-                let children = Self.findChildProcesses(pid)
-                for childPid in children.reversed() {
-                    print("[VLM] Killing child PID \(childPid)")
-                    kill(childPid, SIGTERM)
-                }
-
-                if !children.isEmpty {
-                    usleep(100_000) // 100ms for SIGTERM
-                    for childPid in children.reversed() {
-                        kill(childPid, SIGKILL)
-                    }
-                }
-
-                // Also try process group
-                let pgid = getpgid(pid)
-                if pgid > 0 {
-                    kill(-pgid, SIGTERM)
-                    usleep(50_000) // 50ms
-                    kill(-pgid, SIGKILL)
-                }
-
-                proc.terminate()
-            }
-
-            proc.waitUntilExit()
-        }
+        // Use shared process utilities for clean shutdown
+        ProcessUtilities.stopProcess(proc, stdinPipe: stdinPipe)
 
         process = nil
         stdinPipe = nil
         stdoutPipe = nil
         stderrPipe = nil
 
-        print("[VLM] Server stopped")
-    }
-
-    /// Recursively find all child processes of a given PID
-    private static func findChildProcesses(_ pid: pid_t) -> [pid_t] {
-        var result: [pid_t] = []
-
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        task.arguments = ["-P", "\(pid)"]
-
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-
-        do {
-            try task.run()
-            task.waitUntilExit()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8) {
-                let childPids = output.components(separatedBy: .newlines)
-                    .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
-
-                for childPid in childPids {
-                    result.append(childPid)
-                    result.append(contentsOf: findChildProcesses(childPid))
-                }
-            }
-        } catch {
-            // Ignore - process may have already exited
-        }
-
-        return result
+        ErrorReporter.info("VLM server stopped", subsystem: .python)
     }
 
     // MARK: - Communication
@@ -217,7 +127,7 @@ class VLMProcessManager {
 
             // Dispatch all parsed responses
             for (messageId, response) in responses {
-                print("[VLM] Received response for \(messageId)")
+                ErrorReporter.debug("Received response for \(messageId)", subsystem: .python)
                 await bridge.dispatchResponse(messageId: messageId, response: response)
             }
         }
@@ -248,7 +158,7 @@ class VLMProcessManager {
             throw PythonError.workerNotRunning
         }
 
-        print("[VLM Request] \(request.command)")
+        ErrorReporter.debug("Request: \(request.command)", subsystem: .python)
 
         return try await bridge.sendRequest(
             request,
@@ -293,18 +203,23 @@ class VLMProcessManager {
 
     deinit {
         // CRITICAL: deinit must be fast and non-blocking
-        // Fire-and-forget termination without waiting
-        let pid = process?.processIdentifier
-        process?.terminate()
+        // Use ProcessCleanup for guaranteed cleanup with proper tracking
+        guard let proc = process else { return }
+        let pid = proc.processIdentifier
 
-        // Forceful cleanup in background (don't block deinit)
-        if let pid = pid {
-            DispatchQueue.global().async {
-                usleep(200_000)  // 200ms grace period
-                kill(pid, SIGKILL)
-            }
-        }
+        // Clear handlers synchronously to prevent callbacks after deallocation
+        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+        stderrPipe?.fileHandleForReading.readabilityHandler = nil
+        proc.terminationHandler = nil
 
-        // Don't call stopServer() - it blocks with waitUntilExit()
+        // Register with ProcessCleanup if not already registered (defensive)
+        // ProcessCleanup.shared handles the actual termination
+        ProcessCleanup.shared.registerProcess(pid)
+
+        // Send terminate signal synchronously (fast, non-blocking)
+        proc.terminate()
+
+        // ProcessCleanup.shared.killAllPythonProcesses() will handle SIGKILL
+        // during app termination if process doesn't exit cleanly
     }
 }

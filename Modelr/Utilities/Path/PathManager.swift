@@ -782,6 +782,30 @@ struct PathManager {
     /// Check if a Hunyuan3D model variant is downloaded
     /// - Parameter variant: "mini" for Hunyuan3D-2mini, "std" for Hunyuan3D-2.1
     static func isHunyuanModelDownloaded(variant: String) -> Bool {
+        let fileManager = FileManager.default
+
+        // Primary check: direct download path used by model_downloader.py
+        // Models are downloaded to: Models/{model_dir}/{subfolder}/model.fp16.safetensors
+        let directPath: URL
+        switch variant {
+        case "std":
+            directPath = modelsDirectory
+                .appendingPathComponent("hunyuan-2.1", isDirectory: true)
+                .appendingPathComponent("hunyuan3d-dit-v2-1", isDirectory: true)
+        default:
+            directPath = modelsDirectory
+                .appendingPathComponent("hunyuan-2mini", isDirectory: true)
+                .appendingPathComponent("hunyuan3d-dit-v2-mini", isDirectory: true)
+        }
+
+        // Check for model weights file
+        let safetensorsPath = directPath.appendingPathComponent("model.fp16.safetensors")
+        let ckptPath = directPath.appendingPathComponent("model.fp16.ckpt")
+        if fileManager.fileExists(atPath: safetensorsPath.path) || fileManager.fileExists(atPath: ckptPath.path) {
+            return true
+        }
+
+        // Fallback: check HuggingFace hub cache structure (legacy)
         let modelDirName: String
         switch variant {
         case "std":
@@ -790,8 +814,6 @@ struct PathManager {
             modelDirName = "models--tencent--Hunyuan3D-2mini"
         }
 
-        // When Swift sets HUGGINGFACE_HUB_CACHE to Models/hub, the models--... dirs are created directly under that folder.
-        // Also allow the HF_HOME default layout (Models/hub/hub) and legacy locations.
         let directHub = modelsHubDirectory
         let hfHomeStyleHub = modelsHubDirectory.appendingPathComponent("hub", isDirectory: true)
         let legacyHub1 = appSupportDirectory.appendingPathComponent("Cache", isDirectory: true).appendingPathComponent("legacy_hf_cache", isDirectory: true)

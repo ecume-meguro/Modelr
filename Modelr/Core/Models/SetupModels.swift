@@ -3,22 +3,20 @@ import Foundation
 /// Defines the deterministic stages of the setup process
 enum SetupStage: String, Codable, CaseIterable {
     case preparing = "Preparing Resources"
-    case syncingSAM = "Configuring Segmentation Environment"
-    case downloadingSAM = "Downloading Segmentation Model"
-    case syncingTools = "Configuring Mesh Tools"
+    case syncingSAM = "Configuring Inference Environment"
+    case downloadingSAM = "Downloading Vision Models"
     case syncingHunyuan = "Configuring 3D Generation Environment"
     case downloadingHunyuan = "Downloading 3D Generation Model"
     case completed = "Setup Complete"
     case failed = "Setup Failed"
-    
+
     var progressWeight: Double {
         switch self {
         case .preparing: return 0.05
         case .syncingSAM: return 0.15
-        case .downloadingSAM: return 0.25
-        case .syncingTools: return 0.10
+        case .downloadingSAM: return 0.30  // Increased: SAM + VLM downloads
         case .syncingHunyuan: return 0.15
-        case .downloadingHunyuan: return 0.30
+        case .downloadingHunyuan: return 0.35  // Increased slightly
         case .completed: return 0.0
         case .failed: return 0.0
         }
@@ -40,41 +38,128 @@ struct SetupProgressUpdate {
     }
 }
 
-// MARK: - Model Download Progress
+// MARK: - Deprecated: Progress tracking is now handled by DownloadMonitor (filesystem polling)
 
-/// Progress information for model downloads
-struct ModelDownloadProgress {
-    let downloadedBytes: Int64
-    let totalBytes: Int64
-    let bytesPerSecond: Double
-    let estimatedTimeRemaining: TimeInterval?
+// MARK: - Setup Task Tracking
 
-    var progress: Double {
+/// Represents a single task in the setup process
+struct SetupTask: Identifiable {
+    let id: String
+    let name: String
+    let estimatedBytes: Int64 // bytes to download for this task
+    var status: TaskStatus = .pending
+    var progress: Double = 0
+    var startTime: Date?
+    var endTime: Date?
+
+    enum TaskStatus {
+        case pending
+        case running
+        case completed
+        case failed
+    }
+
+    var actualDuration: TimeInterval? {
+        guard let start = startTime, let end = endTime else { return nil }
+        return end.timeIntervalSince(start)
+    }
+}
+
+/// Tracks overall setup progress across multiple tasks
+/// Time estimates now come from DownloadMonitor (filesystem polling)
+struct SetupTaskTracker {
+    var tasks: [SetupTask]
+    var currentTaskIndex: Int = 0
+
+    init(modelChoice: String) {
+        let config = ConfigurationService.shared
+        let isUltra = modelChoice == "std"
+        let hunyuanSizeGb = isUltra ? config.hunyuanStdModelSizeGb : config.hunyuanMiniModelSizeGb
+
+        // Define tasks with their estimated download sizes (5 tasks matching setup stages)
+        tasks = [
+            SetupTask(
+                id: "prepare",
+                name: "Preparing environment",
+                estimatedBytes: 0 // No download
+            ),
+            SetupTask(
+                id: "runtime",
+                name: "Initializing AI runtime",
+                estimatedBytes: Int64(config.uvPackagesSizeGb * 0.5 * 1_000_000_000) // Inference env packages
+            ),
+            SetupTask(
+                id: "vision",
+                name: "Installing vision models",
+                estimatedBytes: Int64(config.samModelSizeGb * 1_000_000_000) + Int64(config.vlmModelSizeGb * 1_000_000_000)
+            ),
+            SetupTask(
+                id: "pipeline",
+                name: "Configuring 3D pipeline",
+                estimatedBytes: Int64(config.uvPackagesSizeGb * 0.5 * 1_000_000_000) // Hunyuan env packages
+            ),
+            SetupTask(
+                id: "model",
+                name: "Downloading 3D model",
+                estimatedBytes: Int64(hunyuanSizeGb * 1_000_000_000)
+            )
+        ]
+    }
+
+    var currentTask: SetupTask? {
+        guard currentTaskIndex < tasks.count else { return nil }
+        return tasks[currentTaskIndex]
+    }
+
+    var totalBytes: Int64 {
+        tasks.reduce(0) { $0 + $1.estimatedBytes }
+    }
+
+    var completedBytes: Int64 {
+        var bytes: Int64 = 0
+        for (index, task) in tasks.enumerated() {
+            if index < currentTaskIndex {
+                bytes += task.estimatedBytes
+            } else if index == currentTaskIndex {
+                bytes += Int64(Double(task.estimatedBytes) * task.progress)
+            }
+        }
+        return bytes
+    }
+
+    var overallProgress: Double {
         guard totalBytes > 0 else { return 0 }
-        return Double(downloadedBytes) / Double(totalBytes)
+        return Double(completedBytes) / Double(totalBytes)
     }
 
-    var formattedProgress: String {
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        let downloaded = formatter.string(fromByteCount: downloadedBytes)
-        let total = formatter.string(fromByteCount: totalBytes)
-        return "\(downloaded) / \(total)"
+    /// Time remaining comes from DownloadMonitor, not calculated here
+    var formattedTimeRemaining: String {
+        return ""  // Placeholder - actual value comes from DownloadMonitor
     }
 
-    var formattedSpeed: String {
-        guard bytesPerSecond > 0 else { return "—" }
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        return "\(formatter.string(fromByteCount: Int64(bytesPerSecond)))/s"
+    mutating func startTask(at index: Int) {
+        guard index < tasks.count else { return }
+        currentTaskIndex = index
+        tasks[index].status = .running
+        tasks[index].startTime = Date()
+        tasks[index].progress = 0
     }
 
-    var formattedETA: String {
-        guard let eta = estimatedTimeRemaining, eta > 0 && eta.isFinite else { return "" }
-        let formatter = DateComponentsFormatter()
-        formatter.allowedUnits = [.hour, .minute, .second]
-        formatter.unitsStyle = .abbreviated
-        formatter.maximumUnitCount = 2
-        return formatter.string(from: eta) ?? ""
+    mutating func updateTaskProgress(_ progress: Double) {
+        guard currentTaskIndex < tasks.count else { return }
+        tasks[currentTaskIndex].progress = min(1.0, max(0, progress))
+    }
+
+    mutating func completeCurrentTask() {
+        guard currentTaskIndex < tasks.count else { return }
+        tasks[currentTaskIndex].status = .completed
+        tasks[currentTaskIndex].progress = 1.0
+        tasks[currentTaskIndex].endTime = Date()
+    }
+
+    mutating func failCurrentTask() {
+        guard currentTaskIndex < tasks.count else { return }
+        tasks[currentTaskIndex].status = .failed
+        tasks[currentTaskIndex].endTime = Date()
     }
 }

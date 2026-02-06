@@ -5,6 +5,10 @@ import UniformTypeIdentifiers
 struct PostProcessPanel: View {
     @ObservedObject var viewModel: SimpleEditorViewModel
 
+    /// Track drop target hover states for visual feedback
+    @State private var isKeepListTargeted: Bool = false
+    @State private var isDeleteListTargeted: Bool = false
+
     /// Check if this is a clean mesh (single component, no artifacts)
     private var isCleanMesh: Bool {
         viewModel.meshComponents.count == 1
@@ -94,17 +98,50 @@ struct PostProcessPanel: View {
     @ViewBuilder
     private var twoListView: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p12) {
+            // Drag hint text
+            dragDropHint
+
             // Main Mesh section (clean clay)
             keepListSection
 
             // Artifacts section (red rim indicator)
             deleteListSection
 
+            // Artifact detection explanation
+            artifactDetectionInfo
+
             // Apply button
             if viewModel.hasPendingDeletions {
                 applyButton
             }
         }
+    }
+
+    // MARK: - Drag and Drop Affordances
+
+    @ViewBuilder
+    private var dragDropHint: some View {
+        HStack(spacing: AppDesign.Spacing.p6) {
+            Image(systemName: "hand.draw")
+                .font(.system(size: AppDesign.FontSize.xs))
+                .foregroundStyle(.tertiary)
+            Text("Drag items between lists or click to reclassify")
+                .font(.system(size: AppDesign.FontSize.xs))
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    @ViewBuilder
+    private var artifactDetectionInfo: some View {
+        HStack(spacing: AppDesign.Spacing.p6) {
+            Image(systemName: "info.circle")
+                .font(.system(size: AppDesign.FontSize.xs))
+                .foregroundStyle(.tertiary)
+            Text("Components with fewer than 1,000 faces are classified as potential artifacts")
+                .font(.system(size: AppDesign.FontSize.xs))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.top, AppDesign.Spacing.p4)
     }
 
     @ViewBuilder
@@ -133,12 +170,12 @@ struct PostProcessPanel: View {
             }
         }
         .padding(AppDesign.Spacing.p8)
-        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 10))
+        .background(isKeepListTargeted ? sectionClayColor.opacity(0.15) : Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 10))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(sectionClayColor.opacity(0.3), lineWidth: 1)
+                .strokeBorder(isKeepListTargeted ? sectionClayColor : sectionClayColor.opacity(0.3), lineWidth: isKeepListTargeted ? 2 : 1)
         )
-        .onDrop(of: [.text], delegate: KeepListDropDelegate(viewModel: viewModel))
+        .onDrop(of: [.text], delegate: KeepListDropDelegate(viewModel: viewModel, isTargeted: $isKeepListTargeted))
     }
 
     @ViewBuilder
@@ -167,12 +204,12 @@ struct PostProcessPanel: View {
             }
         }
         .padding(AppDesign.Spacing.p8)
-        .background(sectionArtifactColor.opacity(0.03), in: RoundedRectangle(cornerRadius: 10))
+        .background(isDeleteListTargeted ? sectionArtifactColor.opacity(0.15) : sectionArtifactColor.opacity(0.03), in: RoundedRectangle(cornerRadius: 10))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(sectionArtifactColor.opacity(0.2), lineWidth: 1)
+                .strokeBorder(isDeleteListTargeted ? sectionArtifactColor : sectionArtifactColor.opacity(0.2), lineWidth: isDeleteListTargeted ? 2 : 1)
         )
-        .onDrop(of: [.text], delegate: DeleteListDropDelegate(viewModel: viewModel))
+        .onDrop(of: [.text], delegate: DeleteListDropDelegate(viewModel: viewModel, isTargeted: $isDeleteListTargeted))
     }
 
     @ViewBuilder
@@ -223,6 +260,12 @@ struct PostProcessPanel: View {
         let indicatorColor = isKeep ? (isHovered ? cyanGlow : clayColor) : redRimColor
 
         HStack(spacing: AppDesign.Spacing.p8) {
+            // Drag handle icon
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.tertiary)
+                .frame(width: 16)
+
             // Material indicator (clay for keep, red rim for delete/artifact)
             RoundedRectangle(cornerRadius: 3)
                 .fill(indicatorColor)
@@ -480,8 +523,8 @@ struct PostProcessPanel: View {
                     AppDesign.SectionLabel("Mesh Statistics")
 
                     HStack(spacing: AppDesign.Spacing.p16) {
-                        statItem(icon: "triangle", value: formatNumber(component.faceCount), label: "Faces")
-                        statItem(icon: "circle.dotted", value: formatNumber(component.vertexCount), label: "Vertices")
+                        statItem(value: formatNumber(component.faceCount), label: "Faces")
+                        statItem(value: formatNumber(component.vertexCount), label: "Vertices")
                     }
 
                     HStack(spacing: AppDesign.Spacing.p8) {
@@ -505,18 +548,13 @@ struct PostProcessPanel: View {
     }
 
     @ViewBuilder
-    private func statItem(icon: String, value: String, label: String) -> some View {
-        HStack(spacing: AppDesign.Spacing.p6) {
-            Image(systemName: icon)
-                .font(.system(size: AppDesign.FontSize.caption))
-                .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(value)
-                    .font(.system(size: AppDesign.FontSize.body, weight: .medium, design: .monospaced))
-                Text(label)
-                    .font(.system(size: AppDesign.FontSize.xs))
-                    .foregroundStyle(.tertiary)
-            }
+    private func statItem(value: String, label: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(value)
+                .font(.system(size: AppDesign.FontSize.body, weight: .medium, design: .monospaced))
+            Text(label)
+                .font(.system(size: AppDesign.FontSize.xs))
+                .foregroundStyle(.tertiary)
         }
     }
 
@@ -558,7 +596,21 @@ struct PostProcessPanel: View {
     @ViewBuilder
     private var exportSection: some View {
         VStack(alignment: .leading, spacing: AppDesign.Spacing.p8) {
-            AppDesign.SectionLabel("Export")
+            // Export header with format info button
+            HStack {
+                AppDesign.SectionLabel("Export")
+                Spacer()
+                // Format comparison info button
+                Button {
+                    // Shows tooltip on hover, this is the visual indicator
+                } label: {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: AppDesign.FontSize.caption))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(formatComparisonTooltip)
+            }
 
             FlowLayout(spacing: AppDesign.Spacing.p6) {
                 ForEach(ExportFormat.allCases) { format in
@@ -566,10 +618,41 @@ struct PostProcessPanel: View {
                 }
             }
 
+            // Selected format description
+            Text(formatDescription(for: viewModel.selectedExportFormat))
+                .font(.system(size: AppDesign.FontSize.xs))
+                .foregroundStyle(.tertiary)
+                .padding(.top, AppDesign.Spacing.p2)
+
             AppDesign.GlassButton("Export \(viewModel.selectedExportFormat.rawValue)", icon: "square.and.arrow.up") {
                 exportMesh()
             }
             .disabled(viewModel.isProcessingMesh)
+        }
+    }
+
+    /// Tooltip explaining format differences
+    private var formatComparisonTooltip: String {
+        """
+        Format Comparison:
+
+        OBJ - Universal compatibility, separate texture files. Best for: most 3D software, game engines.
+
+        GLB - Single file with embedded textures, efficient. Best for: web/AR, Unity, Unreal.
+
+        STL - Geometry only, no textures/colors. Best for: 3D printing, CAD software.
+
+        PLY - Point cloud and mesh support. Best for: scientific visualization, photogrammetry.
+        """
+    }
+
+    /// Brief description for selected format
+    private func formatDescription(for format: ExportFormat) -> String {
+        switch format {
+        case .obj: return "Universal format - works with most 3D software"
+        case .glb: return "Single file with textures - great for web/AR"
+        case .stl: return "Geometry only - ideal for 3D printing"
+        case .ply: return "Mesh/point cloud - scientific visualization"
         }
     }
 
@@ -595,6 +678,7 @@ struct PostProcessPanel: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(isSelected ? AppDesign.accent : .primary)
+        .help(formatDescription(for: format))
     }
 
     private func exportMesh() {
@@ -686,8 +770,10 @@ private struct ComponentClassification {
 
 struct KeepListDropDelegate: DropDelegate {
     let viewModel: SimpleEditorViewModel
+    @Binding var isTargeted: Bool
 
     func performDrop(info: DropInfo) -> Bool {
+        isTargeted = false
         guard let item = info.itemProviders(for: [.text]).first else { return false }
 
         item.loadObject(ofClass: NSString.self) { object, _ in
@@ -705,12 +791,26 @@ struct KeepListDropDelegate: DropDelegate {
     func validateDrop(info: DropInfo) -> Bool {
         info.hasItemsConforming(to: [.text])
     }
+
+    func dropEntered(info: DropInfo) {
+        withAnimation(.easeOut(duration: 0.15)) {
+            isTargeted = true
+        }
+    }
+
+    func dropExited(info: DropInfo) {
+        withAnimation(.easeOut(duration: 0.15)) {
+            isTargeted = false
+        }
+    }
 }
 
 struct DeleteListDropDelegate: DropDelegate {
     let viewModel: SimpleEditorViewModel
+    @Binding var isTargeted: Bool
 
     func performDrop(info: DropInfo) -> Bool {
+        isTargeted = false
         guard let item = info.itemProviders(for: [.text]).first else { return false }
 
         item.loadObject(ofClass: NSString.self) { object, _ in
@@ -730,5 +830,17 @@ struct DeleteListDropDelegate: DropDelegate {
 
     func validateDrop(info: DropInfo) -> Bool {
         info.hasItemsConforming(to: [.text])
+    }
+
+    func dropEntered(info: DropInfo) {
+        withAnimation(.easeOut(duration: 0.15)) {
+            isTargeted = true
+        }
+    }
+
+    func dropExited(info: DropInfo) {
+        withAnimation(.easeOut(duration: 0.15)) {
+            isTargeted = false
+        }
     }
 }

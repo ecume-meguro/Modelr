@@ -1,179 +1,107 @@
 import SwiftUI
 
-/// Completion step of the setup wizard
+/// Completion step - clean success state
 struct SetupCompleteView: View {
     @EnvironmentObject var viewModel: SetupWizardViewModel
     var onContinue: () -> Void
+    @State private var hasAppeared = false
 
-    @State private var showConfetti = false
-    @State private var iconScale: CGFloat = 0.5
-    @State private var iconOpacity: CGFloat = 0
+    // MARK: - Constants
+    private enum Constants {
+        static let successCircleSize: CGFloat = 80
+        static let checkmarkSize: CGFloat = 36
+        static let initialScale: CGFloat = 0.6
+        static let animationOffset: CGFloat = 8
+        static let buttonMinWidth: CGFloat = 120
+    }
 
     var body: some View {
-        VStack(spacing: 32) {
+        VStack(spacing: 0) {
             Spacer()
 
-            // Success animation
-            successAnimation
-
-            // Title
-            VStack(spacing: 8) {
-                Text("You're All Set!")
-                    .font(.largeTitle.bold())
-
-                Text("Modelr is ready to transform your images into 3D")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
+            // Success content
+            VStack(spacing: AppDesign.Spacing.p24) {
+                successIcon
+                titleSection
             }
-
-            // What's next section
-            whatNextSection
-                .padding(.horizontal, 60)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Setup complete. Modelr is ready to use.")
 
             Spacer()
 
-            // Continue button
-            Button {
-                onContinue()
-            } label: {
-                HStack(spacing: 8) {
-                    Text("Start Creating")
-                    Image(systemName: "arrow.right")
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .padding(.bottom, 40)
+            continueButton
         }
         .onAppear {
-            // Animate in
-            withAnimation(.spring(response: 0.6, dampingFraction: 0.7).delay(0.1)) {
-                iconScale = 1.0
-                iconOpacity = 1.0
-            }
-            withAnimation(.easeOut(duration: 0.5).delay(0.3)) {
-                showConfetti = true
-            }
+            hasAppeared = true
         }
     }
 
-    // MARK: - Success Animation
+    // MARK: - Success Icon
 
-    @ViewBuilder
-    private var successAnimation: some View {
+    private var successIcon: some View {
         ZStack {
-            // Confetti particles (simplified)
-            if showConfetti {
-                ForEach(0..<12, id: \.self) { index in
-                    confettiParticle(index: index)
-                }
-            }
+            Circle()
+                .fill(AppDesign.success.opacity(AppDesign.Opacity.medium))
+                .frame(width: Constants.successCircleSize, height: Constants.successCircleSize)
+                .scaleEffect(hasAppeared ? 1 : Constants.initialScale)
+                .opacity(hasAppeared ? 1 : 0)
 
-            // Success checkmark
-            ZStack {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [.green, .green.opacity(0.8)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 100, height: 100)
-                    .shadow(color: .green.opacity(0.3), radius: 20, y: 10)
-
-                Image(systemName: "checkmark")
-                    .font(.system(size: 48, weight: .bold))
-                    .foregroundStyle(.white)
-            }
-            .scaleEffect(iconScale)
-            .opacity(iconOpacity)
+            Image(systemName: "checkmark")
+                .font(.system(size: Constants.checkmarkSize, weight: .medium))
+                .foregroundStyle(AppDesign.success)
+                .scaleEffect(hasAppeared ? 1 : Constants.initialScale)
+                .opacity(hasAppeared ? 1 : 0)
         }
-        .frame(width: 200, height: 200)
+        .animation(.spring(response: 0.4, dampingFraction: 0.65).delay(0.1), value: hasAppeared)
+        .accessibilityHidden(true)
     }
 
-    @ViewBuilder
-    private func confettiParticle(index: Int) -> some View {
-        let colors: [Color] = [.blue, .green, .orange, .purple, .pink, .yellow]
-        let angle = Double(index) * (360.0 / 12.0)
-        let distance: CGFloat = 80
+    // MARK: - Title Section
 
-        Circle()
-            .fill(colors[index % colors.count])
-            .frame(width: 8, height: 8)
-            .offset(
-                x: cos(angle * .pi / 180) * distance,
-                y: sin(angle * .pi / 180) * distance
-            )
-            .opacity(showConfetti ? 0 : 1)
-            .scaleEffect(showConfetti ? 0.3 : 1)
-            .animation(
-                .easeOut(duration: 0.8)
-                .delay(Double(index) * 0.05),
-                value: showConfetti
-            )
-    }
+    private var titleSection: some View {
+        VStack(spacing: AppDesign.Spacing.p6) {
+            Text("Ready")
+                .font(.system(size: AppDesign.FontSize.title2, weight: .semibold))
+                .lineLimit(1)
+                .opacity(hasAppeared ? 1 : 0)
+                .offset(y: hasAppeared ? 0 : Constants.animationOffset)
 
-    // MARK: - What's Next Section
-
-    @ViewBuilder
-    private var whatNextSection: some View {
-        VStack(spacing: 16) {
-            Text("What's Next")
-                .font(.headline)
+            Text("Modelr is set up and ready to use")
+                .font(.system(size: AppDesign.FontSize.headline))
                 .foregroundStyle(.secondary)
-
-            HStack(spacing: 24) {
-                nextStepCard(
-                    icon: "photo",
-                    title: "Load an Image",
-                    description: "Drop or select an image to start"
-                )
-
-                nextStepCard(
-                    icon: "wand.and.stars",
-                    title: "Segment Object",
-                    description: "AI will detect your subject"
-                )
-
-                nextStepCard(
-                    icon: "cube",
-                    title: "Generate 3D",
-                    description: "Create your 3D model"
-                )
-            }
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .opacity(hasAppeared ? 1 : 0)
+                .offset(y: hasAppeared ? 0 : Constants.animationOffset)
         }
+        .animation(.easeOut(duration: 0.3).delay(0.25), value: hasAppeared)
     }
 
-    @ViewBuilder
-    private func nextStepCard(icon: String, title: String, description: String) -> some View {
-        VStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.title)
-                .foregroundStyle(.blue)
+    // MARK: - Continue Button
 
-            VStack(spacing: 4) {
-                Text(title)
-                    .font(.callout.weight(.medium))
-                Text(description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
+    private var continueButton: some View {
+        Button {
+            onContinue()
+        } label: {
+            Text("Start Using Modelr")
+                .frame(minWidth: Constants.buttonMinWidth)
         }
-        .frame(maxWidth: .infinity)
-        .padding()
-        .background(Color.primary.opacity(0.03))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .opacity(hasAppeared ? 1 : 0)
+        .animation(.easeOut(duration: 0.25).delay(0.4), value: hasAppeared)
+        .padding(.bottom, AppDesign.Spacing.p32)
+        .accessibilityLabel("Start Using Modelr")
+        .accessibilityHint("Opens the main application")
     }
 }
 
 // MARK: - Preview
 
 #Preview {
-    SetupCompleteView {
-        print("Continue tapped")
-    }
-    .environmentObject(SetupWizardViewModel())
-    .frame(width: 700, height: 550)
+    SetupCompleteView(onContinue: {})
+        .environmentObject(SetupWizardViewModel())
+        .frame(width: 560, height: 420)
+        .background(Color(nsColor: .windowBackgroundColor))
 }

@@ -92,16 +92,21 @@ class SimpleEditorViewModel: BaseEditorViewModel {
             appError = .system(error)
         }
 
-        // Always log the error
-        print("[Error] \(appError.localizedDescription)")
+        // Always log the technical error for debugging
+        ErrorReporter.error(appError.localizedDescription, subsystem: .general)
 
-        // Show alert to user if requested
+        // Show user-friendly alert to user if requested
         if userFacing {
             Task { @MainActor in
                 self.lastError = appError
                 self.showErrorAlert = true
             }
         }
+    }
+
+    /// Get user-friendly error message for display
+    var userFriendlyErrorMessage: String? {
+        lastError?.userFriendlyDescription
     }
 
     // MARK: - Setup State
@@ -323,10 +328,29 @@ class SimpleEditorViewModel: BaseEditorViewModel {
 
             // Save to metadata when user manually changes color
             if let color = customModelColor, let projectId = projectId {
-                let hexColor = ColorExtractionService.shared.toHexString(color)
-                Task {
-                    await saveColorToMetadata(projectId: projectId, hexColor: hexColor)
-                }
+                handleCustomModelColorChange(color: color, projectId: projectId)
+            }
+        }
+    }
+
+    /// Task for saving custom model color (tracked for proper cancellation)
+    private var colorSaveTask: Task<Void, Never>?
+
+    /// Handle custom model color change - saves to metadata asynchronously
+    private func handleCustomModelColorChange(color: NSColor, projectId: UUID) {
+        // Cancel any pending color save task
+        colorSaveTask?.cancel()
+
+        let hexColor = ColorExtractionService.shared.toHexString(color)
+        colorSaveTask = Task { [weak self] in
+            guard let self = self else { return }
+            do {
+                try Task.checkCancellation()
+                await self.saveColorToMetadata(projectId: projectId, hexColor: hexColor)
+            } catch is CancellationError {
+                // Task cancelled, ignore
+            } catch {
+                self.handleError(error, userFacing: false)
             }
         }
     }
@@ -434,13 +458,18 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         return min(progress, 1.0)
     }
 
+    /// Time estimate for current generation settings, shown in sidebar
+    var currentGenerationTimeEstimate: String {
+        return selectedPreset.estimatedTime
+    }
+
     // MARK: - Singleton State Management
 
     /// Clear all global singleton state to prevent cross-project contamination
     /// Call this when explicitly switching projects or on critical transitions
     static func clearGlobalSingletonState() {
         PreloadManager.shared.cancelAll()
-        print("[SimpleEditorViewModel] Cleared all global singleton state")
+        ErrorReporter.debug("Cleared all global singleton state", subsystem: .general)
     }
 
     // MARK: - Initialization
@@ -455,22 +484,22 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         // Clear setup console output from previous projects
         setupConsoleOutput.removeAll()
 
-        print("[Init] Cleared singleton state for new project: \(projectId?.uuidString ?? "nil")")
+        ErrorReporter.debug("Cleared singleton state for new project: \(projectId?.uuidString ?? "nil")", subsystem: .general)
 
         // Log memory management strategy
         let coordinator = ModelLoadingCoordinator.shared
-        print("[Memory] System RAM: \(coordinator.formattedSystemRAM)")
-        print("[Memory] Loading strategy: \(coordinator.strategy.description)")
+        ErrorReporter.info("System RAM: \(coordinator.formattedSystemRAM)", subsystem: .general)
+        ErrorReporter.info("Loading strategy: \(coordinator.strategy.description)", subsystem: .general)
 
         // Check if setup was already completed using marker file ONLY
         // UserDefaults is no longer used - it persists even when app data is deleted
         let wasSetupComplete = PathManager.isSetupComplete
 
         // Debug logging for setup state
-        print("[Setup] Checking setup completion:")
-        print("[Setup]   Marker file path: \(PathManager.setupCompletionMarkerPath.path)")
-        print("[Setup]   Marker file exists: \(FileManager.default.fileExists(atPath: PathManager.setupCompletionMarkerPath.path))")
-        print("[Setup]   isSetupComplete: \(wasSetupComplete)")
+        ErrorReporter.debug("Checking setup completion:", subsystem: .setup)
+        ErrorReporter.debug("  Marker file path: \(PathManager.setupCompletionMarkerPath.path)", subsystem: .setup)
+        ErrorReporter.debug("  Marker file exists: \(FileManager.default.fileExists(atPath: PathManager.setupCompletionMarkerPath.path))", subsystem: .setup)
+        ErrorReporter.debug("  isSetupComplete: \(wasSetupComplete)", subsystem: .setup)
 
         if wasSetupComplete {
             isSetupComplete = true
@@ -478,7 +507,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
 
             // Check if environments need refreshing due to build update
             if PathManager.needsEnvironmentRefresh {
-                print("[Setup] Build changed, need to refresh Python environments")
+                ErrorReporter.info("Build changed, need to refresh Python environments", subsystem: .setup)
                 currentStep = .setup
                 currentSetupSubStep = .configuringSegmentation
                 isRefreshingEnvironments = true
@@ -489,13 +518,13 @@ class SimpleEditorViewModel: BaseEditorViewModel {
                 currentStep = .input
                 // Mark Python environment ready for generation
                 env.markHunyuanReady()
-                print("[Setup] Setup already complete, skipping to input step")
+                ErrorReporter.debug("Setup already complete, skipping to input step", subsystem: .setup)
             }
         } else {
             currentStep = .setup
             // Clear any stale UserDefaults value
             UserDefaults.standard.removeObject(forKey: "SetupComplete")
-            print("[Setup] Setup required, starting setup flow")
+            ErrorReporter.debug("Setup required, starting setup flow", subsystem: .setup)
         }
 
         checkModelsDownloaded()
@@ -510,6 +539,12 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         cleanupTask?.cancel()
         autoDetectionTask?.cancel()
         meshPreloadTask?.cancel()
+        colorSaveTask?.cancel()
+
+        // Cancel associated object tasks (handoffTask, meshProcessorTimeoutTask)
+        // These are stored via objc_setAssociatedObject in extensions
+        // Access them directly using nonisolated helper to avoid MainActor isolation issues in deinit
+        cancelAssociatedTasks()
 
         // Clean up temp directories on background thread
         if let tempDir = meshComponentsTempDirectory {
@@ -521,11 +556,28 @@ class SimpleEditorViewModel: BaseEditorViewModel {
         print("[SimpleEditorViewModel] deinit - cleaned up for project: \(projectId?.uuidString ?? "nil")")
     }
 
+    /// Cancel associated object tasks from deinit (nonisolated for deinit compatibility)
+    /// Note: Task.cancel() is thread-safe so this is safe to call from any context
+    private nonisolated func cancelAssociatedTasks() {
+        // Cancel handoff task (stored in extension via objc_setAssociatedObject)
+        if let handoffTask = objc_getAssociatedObject(self, &Self.handoffTaskKeyStorage) as? Task<Void, Never> {
+            handoffTask.cancel()
+        }
+        // Cancel mesh processor timeout task (stored in extension via objc_setAssociatedObject)
+        if let timeoutTask = objc_getAssociatedObject(self, &Self.meshProcessorTimeoutTaskKeyStorage) as? Task<Void, Never> {
+            timeoutTask.cancel()
+        }
+    }
+
+    // Storage keys for associated objects (accessible from nonisolated context and extensions)
+    nonisolated(unsafe) static var handoffTaskKeyStorage = "handoffTask"
+    nonisolated(unsafe) static var meshProcessorTimeoutTaskKeyStorage = "meshProcessorTimeoutTask"
+
     /// Check if models are downloaded
     func checkModelsDownloaded() {
         isSmallModelDownloaded = PathManager.isHunyuanModelDownloaded(variant: "mini")
         let downloaded = isSmallModelDownloaded
-        print("[Setup] Model status - Mini: \(downloaded)")
+        ErrorReporter.debug("Model status - Mini: \(downloaded)", subsystem: .setup)
     }
 
     // MARK: - Image Loading
@@ -577,17 +629,25 @@ class SimpleEditorViewModel: BaseEditorViewModel {
                 // Extract dominant color from image and set as default model color
                 if let dominantColor = ColorExtractionService.shared.extractDominantColor(from: image) {
                     self.customModelColor = dominantColor
-                    print("[Color] Extracted dominant color from image: \(dominantColor)")
+                    ErrorReporter.debug("Extracted dominant color from image: \(dominantColor)", subsystem: .general)
 
                     // Save to metadata for persistence
                     let hexColor = ColorExtractionService.shared.toHexString(dominantColor)
                     if let projectId = self.projectId {
-                        Task {
-                            await self.saveColorToMetadata(projectId: projectId, hexColor: hexColor)
+                        Task { [weak self] in
+                            guard let self = self else { return }
+                            do {
+                                try Task.checkCancellation()
+                                await self.saveColorToMetadata(projectId: projectId, hexColor: hexColor)
+                            } catch is CancellationError {
+                                // Task cancelled, ignore
+                            } catch {
+                                self.handleError(error, userFacing: false)
+                            }
                         }
                     }
                 } else {
-                    print("[Color] Failed to extract dominant color from image")
+                    ErrorReporter.debug("Failed to extract dominant color from image", subsystem: .general)
                 }
 
                 // Transition to segment step (loading overlay will show in ProjectEditorView)
@@ -639,11 +699,11 @@ class SimpleEditorViewModel: BaseEditorViewModel {
 
             } catch is CancellationError {
                 // Task was cancelled, silently ignore
-                print("[Load] Image load cancelled")
+                ErrorReporter.debug("Image load cancelled", subsystem: .general)
                 self.isInitializingProject = false
                 self.initializationStatus = ""
             } catch {
-                print("[Load] Failed to load image: \(error)")
+                ErrorReporter.logError(error, subsystem: .general, context: "Failed to load image")
                 // Show error to user
                 self.isInitializingProject = false
                 self.initializationStatus = ""
@@ -695,17 +755,25 @@ class SimpleEditorViewModel: BaseEditorViewModel {
                 // Extract dominant color from image and set as default model color
                 if let dominantColor = ColorExtractionService.shared.extractDominantColor(from: image) {
                     self.customModelColor = dominantColor
-                    print("[Color] Extracted dominant color from restored image: \(dominantColor)")
+                    ErrorReporter.debug("Extracted dominant color from restored image: \(dominantColor)", subsystem: .general)
 
                     // Save to metadata for persistence
                     let hexColor = ColorExtractionService.shared.toHexString(dominantColor)
                     if let projectId = self.projectId {
-                        Task {
-                            await self.saveColorToMetadata(projectId: projectId, hexColor: hexColor)
+                        Task { [weak self] in
+                            guard let self = self else { return }
+                            do {
+                                try Task.checkCancellation()
+                                await self.saveColorToMetadata(projectId: projectId, hexColor: hexColor)
+                            } catch is CancellationError {
+                                // Task cancelled, ignore
+                            } catch {
+                                self.handleError(error, userFacing: false)
+                            }
                         }
                     }
                 } else {
-                    print("[Color] Failed to extract dominant color from restored image")
+                    ErrorReporter.debug("Failed to extract dominant color from restored image", subsystem: .general)
                     // Try to load from metadata if extraction fails
                     self.loadDominantColorFromMetadata()
                 }
@@ -732,7 +800,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
                     self.initializationStatus = "Restoring prompt..."
                     label = prompt
                     self.autoDetectedLabel = prompt
-                    print("[Load] Using saved prompt: \(prompt)")
+                    ErrorReporter.debug("Using saved prompt: \(prompt)", subsystem: .general)
                 } else {
                     // No saved prompt - run VLM detection
                     self.initializationStatus = "Analyzing image..."
@@ -758,7 +826,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
                         if self.activeSegmentationIndex < self.segmentations.count {
                             self.segmentations[self.activeSegmentationIndex].isSearchPerformed = true
                         }
-                        print("[Load] Skipping segmentation - mask will be restored from file")
+                        ErrorReporter.debug("Skipping segmentation - mask will be restored from file", subsystem: .segmentation)
                     }
                 }
 
@@ -777,11 +845,11 @@ class SimpleEditorViewModel: BaseEditorViewModel {
                 }
 
             } catch is CancellationError {
-                print("[Load] Project load cancelled")
+                ErrorReporter.debug("Project load cancelled", subsystem: .general)
                 self.isInitializingProject = false
                 self.initializationStatus = ""
             } catch {
-                print("[Load] Failed to load project: \(error)")
+                ErrorReporter.logError(error, subsystem: .general, context: "Failed to load project")
                 self.isInitializingProject = false
                 self.initializationStatus = ""
                 self.lastError = AppError.imageProcessing(error.localizedDescription)
@@ -862,7 +930,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
                     self.activeSegmentationIndex = 0
                 }
 
-                print("[Load] Restored \(savedSegmentations.count) segmentations from saved data")
+                ErrorReporter.debug("Restored \(savedSegmentations.count) segmentations from saved data", subsystem: .segmentation)
 
                 // Transition to segment step
                 withAnimation(.easeOut(duration: 0.25)) {
@@ -893,11 +961,11 @@ class SimpleEditorViewModel: BaseEditorViewModel {
                 self.triggerMaskPreload()
 
             } catch is CancellationError {
-                print("[Load] Project load cancelled")
+                ErrorReporter.debug("Project load cancelled", subsystem: .general)
                 self.isInitializingProject = false
                 self.initializationStatus = ""
             } catch {
-                print("[Load] Failed to load project: \(error)")
+                ErrorReporter.logError(error, subsystem: .general, context: "Failed to load project")
                 self.isInitializingProject = false
                 self.initializationStatus = ""
                 self.lastError = AppError.imageProcessing(error.localizedDescription)
@@ -937,7 +1005,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
                     mergedMask: mergedMask
                 )
             } catch {
-                print("[Save] Failed to save segmentation data: \(error)")
+                ErrorReporter.logError(error, subsystem: .general, context: "Failed to save segmentation data")
             }
         }
     }
@@ -950,7 +1018,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
 
         // Wait for VLM to be ready if it's still starting
         if coordinator.isStartingVLM {
-            print("[VLM] Waiting for VLM server to start...")
+            ErrorReporter.debug("Waiting for VLM server to start...", subsystem: .python)
             while coordinator.isStartingVLM {
                 try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
                 if Task.isCancelled { return nil }
@@ -959,12 +1027,12 @@ class SimpleEditorViewModel: BaseEditorViewModel {
 
         // Ensure VLM is ready
         guard coordinator.isVLMReady else {
-            print("[VLM] VLM server not ready, skipping auto-detection")
+            ErrorReporter.debug("VLM server not ready, skipping auto-detection", subsystem: .python)
             return nil
         }
 
         do {
-            print("[VLM] Starting auto-detection for: \(path)")
+            ErrorReporter.debug("Starting auto-detection for: \(path)", subsystem: .python)
             let description = try await coordinator.describeImage(imagePath: path)
 
             // Update the label for display
@@ -1085,7 +1153,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
 
             // Wait for VLM to be ready if it's still starting
             if coordinator.isStartingVLM {
-                print("[VLM] Waiting for VLM server to start...")
+                ErrorReporter.debug("Waiting for VLM server to start...", subsystem: .python)
                 while coordinator.isStartingVLM {
                     try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
                     if Task.isCancelled { return }
@@ -1094,7 +1162,7 @@ class SimpleEditorViewModel: BaseEditorViewModel {
 
             // Ensure VLM is ready
             guard coordinator.isVLMReady else {
-                print("[VLM] VLM server not ready, skipping auto-detection")
+                ErrorReporter.debug("VLM server not ready, skipping auto-detection", subsystem: .python)
                 await MainActor.run {
                     self.isAutoDetecting = false
                 }
@@ -1204,10 +1272,19 @@ class SimpleEditorViewModel: BaseEditorViewModel {
 
     /// Save the dominant color to project metadata
     private func saveColorToMetadata(projectId: UUID, hexColor: String) async {
-        nonisolated(unsafe) let projectManager = ProjectManager.shared
-        var metadata = await projectManager.loadMetadata(for: projectId) ?? ProjectMetadata(projectId: projectId)
-        metadata.dominantColor = hexColor
-        try? await projectManager.saveMetadata(metadata)
+        // Access ProjectManager on MainActor since it's a shared singleton
+        let metadata = await MainActor.run {
+            ProjectManager.shared.loadMetadata(for: projectId) ?? ProjectMetadata(projectId: projectId)
+        }
+        var mutableMetadata = metadata
+        mutableMetadata.dominantColor = hexColor
+        do {
+            try await MainActor.run {
+                try ProjectManager.shared.saveMetadata(mutableMetadata)
+            }
+        } catch {
+            handleError(error, userFacing: false)
+        }
     }
 
     /// Load dominant color from metadata and set customModelColor

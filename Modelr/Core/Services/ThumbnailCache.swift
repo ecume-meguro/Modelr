@@ -140,6 +140,11 @@ final class ThumbnailCache {
         cache.removeObject(forKey: modelCacheKey)
     }
 
+    /// Invalidate cache for a project (legacy signature for backward compatibility)
+    func invalidate(projectId: UUID) {
+        invalidate(for: projectId)
+    }
+
     /// Generate and save a 3D model preview with custom color
     func updateModelPreview(for projectId: UUID, modelURL: URL, color: NSColor?) async {
         let previewPath = PathManager.projectDirectory(for: projectId).appendingPathComponent("model_preview.png")
@@ -200,14 +205,6 @@ final class ThumbnailCache {
                 }
             }
         }
-    }
-
-    /// Invalidate cache for a specific project
-    func invalidate(projectId: UUID) {
-        let cacheKey = projectId.uuidString as NSString
-        let modelCacheKey = "model_\(projectId.uuidString)" as NSString
-        cache.removeObject(forKey: cacheKey)
-        cache.removeObject(forKey: modelCacheKey)
     }
 
     /// Regenerate 3D model preview in background (call after generation completes)

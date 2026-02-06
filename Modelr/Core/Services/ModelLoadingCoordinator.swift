@@ -54,6 +54,12 @@ class ModelLoadingCoordinator: ObservableObject {
     /// Whether VLM server is running and ready
     @Published private(set) var isVLMReady: Bool = false
 
+    /// Whether a variant switch is in progress
+    @Published private(set) var isSwitchingVariant: Bool = false
+
+    /// Status message for variant switch (for UI feedback)
+    @Published private(set) var variantSwitchStatus: String?
+
     /// System RAM in bytes
     let systemRAM: UInt64
 
@@ -71,6 +77,9 @@ class ModelLoadingCoordinator: ObservableObject {
     private var startupTask: Task<Void, Never>?
     private var vlmStartupTask: Task<Void, Never>?
     private var vlmIdleTask: Task<Void, Never>?
+
+    /// Pending VLM startup continuations (for queuing concurrent requests)
+    private var vlmStartupContinuations: [CheckedContinuation<Bool, Never>] = []
 
     /// Last time VLM was used (for idle timeout)
     private var lastVLMUseTime: Date?
@@ -138,6 +147,150 @@ class ModelLoadingCoordinator: ObservableObject {
 
         print("[ModelLoadingCoordinator] System RAM: \(formattedSystemRAM)")
         print("[ModelLoadingCoordinator] Strategy: \(strategy.description)")
+    }
+
+    // MARK: - Disk Space Validation
+
+    /// Error type for model loading failures
+    enum ModelLoadingError: LocalizedError {
+        case insufficientDiskSpace(required: Int64, available: Int64)
+        case modelCorrupted(variant: String, reason: String)
+        case modelNotFound(variant: String)
+
+        var errorDescription: String? {
+            switch self {
+            case .insufficientDiskSpace(let required, let available):
+                let requiredStr = ByteCountFormatter.string(fromByteCount: required, countStyle: .file)
+                let availableStr = ByteCountFormatter.string(fromByteCount: available, countStyle: .file)
+                return "Insufficient disk space. Required: \(requiredStr), Available: \(availableStr)"
+            case .modelCorrupted(let variant, let reason):
+                return "Model '\(variant)' appears corrupted: \(reason). Consider re-downloading."
+            case .modelNotFound(let variant):
+                return "Model '\(variant)' not found. Please download it first."
+            }
+        }
+    }
+
+    /// Check if there's enough disk space for a model download
+    /// - Parameters:
+    ///   - variant: The model variant ("mini" or "std")
+    ///   - bufferGB: Additional buffer space in GB (default 2GB)
+    /// - Returns: nil if sufficient space, or a ModelLoadingError if not
+    func checkDiskSpaceForModel(variant: String, bufferGB: Double = 2.0) -> ModelLoadingError? {
+        let requiredBytes: Int64
+        switch variant {
+        case "std":
+            requiredBytes = AppConstants.hunyuanStdModelBytes
+        default:
+            requiredBytes = AppConstants.hunyuanMiniModelBytes
+        }
+
+        // Add buffer space
+        let bufferBytes = Int64(bufferGB * 1_000_000_000)
+        let totalRequired = requiredBytes + bufferBytes
+
+        // Get available disk space
+        let fileManager = FileManager.default
+        let modelsDir = PathManager.modelsDirectory
+
+        do {
+            let values = try modelsDir.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+            if let availableBytes = values.volumeAvailableCapacityForImportantUsage {
+                if availableBytes < totalRequired {
+                    return .insufficientDiskSpace(required: totalRequired, available: availableBytes)
+                }
+            }
+        } catch {
+            // If we can't determine disk space, try the old method
+            if let attributes = try? fileManager.attributesOfFileSystem(forPath: modelsDir.path),
+               let freeSpace = attributes[.systemFreeSize] as? Int64 {
+                if freeSpace < totalRequired {
+                    return .insufficientDiskSpace(required: totalRequired, available: freeSpace)
+                }
+            }
+        }
+
+        return nil
+    }
+
+    // MARK: - Model Integrity Check
+
+    /// Verify that a model file exists and has expected size
+    /// - Parameter variant: The model variant to check ("mini" or "std")
+    /// - Returns: nil if model is valid, or a ModelLoadingError if not
+    func verifyModelIntegrity(variant: String) -> ModelLoadingError? {
+        let modelDirName: String
+        let expectedMinSizeBytes: Int64
+
+        switch variant {
+        case "std":
+            modelDirName = "hunyuan-2.1"
+            expectedMinSizeBytes = 8_000_000_000  // ~8 GB minimum for standard model
+        default:
+            modelDirName = "hunyuan-2mini"
+            expectedMinSizeBytes = 3_500_000_000  // ~3.5 GB minimum for mini model
+        }
+
+        let modelsDir = PathManager.modelsDirectory
+        let modelDir = modelsDir.appendingPathComponent(modelDirName)
+
+        // Check for model directory
+        guard FileManager.default.fileExists(atPath: modelDir.path) else {
+            return .modelNotFound(variant: variant)
+        }
+
+        // Look for the main weights file in the subfolder
+        let subfolderName = variant == "std" ? "hunyuan3d-dit-v2-1" : "hunyuan3d-dit-v2-mini"
+        let weightsPath = modelDir.appendingPathComponent(subfolderName).appendingPathComponent("model.fp16.safetensors")
+
+        guard FileManager.default.fileExists(atPath: weightsPath.path) else {
+            // Check root directory as fallback
+            let rootWeightsPath = modelDir.appendingPathComponent("model.fp16.safetensors")
+            if FileManager.default.fileExists(atPath: rootWeightsPath.path) {
+                // Verify size at root
+                if let attributes = try? FileManager.default.attributesOfItem(atPath: rootWeightsPath.path),
+                   let fileSize = attributes[.size] as? Int64 {
+                    if fileSize < expectedMinSizeBytes {
+                        return .modelCorrupted(variant: variant, reason: "File size \(fileSize) is smaller than expected \(expectedMinSizeBytes) bytes")
+                    }
+                    return nil  // Valid
+                }
+            }
+            return .modelNotFound(variant: variant)
+        }
+
+        // Verify file size
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: weightsPath.path)
+            if let fileSize = attributes[.size] as? Int64 {
+                if fileSize < expectedMinSizeBytes {
+                    return .modelCorrupted(variant: variant, reason: "File size \(fileSize) is smaller than expected \(expectedMinSizeBytes) bytes")
+                }
+            }
+        } catch {
+            return .modelCorrupted(variant: variant, reason: "Could not read file attributes: \(error.localizedDescription)")
+        }
+
+        return nil
+    }
+
+    /// Check model integrity before loading, with option to trigger re-download
+    /// - Parameters:
+    ///   - variant: The model variant to verify
+    ///   - allowRedownload: Whether to offer re-download option (for UI)
+    /// - Returns: Tuple of (isValid, errorMessage, canRedownload)
+    func checkModelBeforeLoading(variant: String) -> (isValid: Bool, error: ModelLoadingError?) {
+        // First check disk space
+        if let spaceError = checkDiskSpaceForModel(variant: variant, bufferGB: 0.5) {
+            return (false, spaceError)
+        }
+
+        // Then verify model integrity
+        if let integrityError = verifyModelIntegrity(variant: variant) {
+            return (false, integrityError)
+        }
+
+        return (true, nil)
     }
 
     /// Get the model variant that was selected during setup
@@ -302,25 +455,33 @@ class ModelLoadingCoordinator: ObservableObject {
     }
 
     /// Ensure VLM server is running (starts if needed)
+    /// Uses continuation-based queuing to prevent multiple concurrent startup attempts
     func ensureVLMReady(env: PythonEnvironment) async -> Bool {
         // Already running
         if isVLMReady && vlmProcessManager?.isRunning == true {
             return true
         }
 
-        // Already starting, wait for it with timeout
+        // If already starting, queue this request and wait for result
         if isStartingVLM {
-            let completed = await waitForCondition { self.isStartingVLM }
-            if !completed {
-                print("[ModelLoadingCoordinator] VLM startup wait timed out")
+            print("[ModelLoadingCoordinator] VLM startup in progress, queuing request...")
+            return await withCheckedContinuation { continuation in
+                vlmStartupContinuations.append(continuation)
             }
-            return isVLMReady
         }
 
-        // Need to start
+        // Start the server (we are first in line)
         isStartingVLM = true
         await startVLMServer(env: env)
-        return isVLMReady
+
+        // Notify all queued requests of the result
+        let result = isVLMReady
+        for continuation in vlmStartupContinuations {
+            continuation.resume(returning: result)
+        }
+        vlmStartupContinuations.removeAll()
+
+        return result
     }
 
     /// Describe an image using the VLM server
@@ -411,8 +572,13 @@ class ModelLoadingCoordinator: ObservableObject {
     /// - Parameters:
     ///   - env: Python environment
     ///   - variant: The model variant to load ("mini" or "std")
+    ///   - onProgress: Optional callback for status updates during variant switch
     /// - Returns: Whether the server is ready with the requested variant
-    func ensureHunyuanReady(env: PythonEnvironment, variant: String) async -> Bool {
+    func ensureHunyuanReady(
+        env: PythonEnvironment,
+        variant: String,
+        onProgress: ((String) -> Void)? = nil
+    ) async -> Bool {
         // Check if correct variant is already loaded
         if isHunyuanReady && hunyuanProcessManager?.isRunning == true && hunyuanVariant == variant {
             return true
@@ -420,7 +586,10 @@ class ModelLoadingCoordinator: ObservableObject {
 
         // Already starting, wait for it with timeout
         if isStartingHunyuan {
+            onProgress?("Waiting for model to load...")
+            variantSwitchStatus = "Waiting for model to load..."
             let completed = await waitForCondition { self.isStartingHunyuan }
+            variantSwitchStatus = nil
             if !completed {
                 print("[ModelLoadingCoordinator] Hunyuan startup wait timed out")
             }
@@ -430,18 +599,44 @@ class ModelLoadingCoordinator: ObservableObject {
             }
         }
 
-        // Different variant needed - restart server
+        // Different variant needed - restart server with progress feedback
         if hunyuanProcessManager?.isRunning == true && hunyuanVariant != variant {
+            isSwitchingVariant = true
+            let variantName = variant == "std" ? "Standard" : "Mini"
+            let status = "Switching to \(variantName) model..."
+            variantSwitchStatus = status
+            onProgress?(status)
+
             print("[ModelLoadingCoordinator] Switching Hunyuan variant from \(hunyuanVariant ?? "nil") to \(variant)")
             hunyuanProcessManager?.stopServer()
             hunyuanProcessManager = nil
             isHunyuanReady = false
             hunyuanVariant = nil
+
+            // Small delay to ensure resources are released
+            try? await Task.sleep(nanoseconds: 300_000_000)  // 0.3 seconds
+        }
+
+        // Check model integrity before loading
+        let (isValid, loadError) = checkModelBeforeLoading(variant: variant)
+        if !isValid {
+            print("[ModelLoadingCoordinator] Model validation failed: \(loadError?.localizedDescription ?? "unknown")")
+            isSwitchingVariant = false
+            variantSwitchStatus = nil
+            return false
         }
 
         // Start with requested variant
+        let loadingStatus = "Loading \(variant == "std" ? "Standard" : "Mini") model..."
+        variantSwitchStatus = loadingStatus
+        onProgress?(loadingStatus)
+
         isStartingHunyuan = true
         await startHunyuanServer(env: env, variant: variant)
+
+        isSwitchingVariant = false
+        variantSwitchStatus = nil
+
         return isHunyuanReady && hunyuanVariant == variant
     }
 
@@ -627,8 +822,14 @@ class ModelLoadingCoordinator: ObservableObject {
     /// - Parameters:
     ///   - env: Python environment
     ///   - variant: The model variant to load ("mini" or "std")
-    func prepareForGeneration(env: PythonEnvironment, variant: String = "mini") async -> Bool {
+    ///   - onProgress: Optional callback for status updates during model loading/switching
+    func prepareForGeneration(
+        env: PythonEnvironment,
+        variant: String = "mini",
+        onProgress: ((String) -> Void)? = nil
+    ) async -> Bool {
         if strategy == .conservative {
+            onProgress?("Preparing for generation...")
             print("[ModelLoadingCoordinator] Conservative strategy: Offloading SAM model before generation...")
             env.stopPersistentWorker()
 
@@ -638,11 +839,11 @@ class ModelLoadingCoordinator: ObservableObject {
             print("[ModelLoadingCoordinator] SAM model offloaded, starting Hunyuan server (variant: \(variant))...")
 
             // Start Hunyuan server for generation with the requested variant
-            return await ensureHunyuanReady(env: env, variant: variant)
+            return await ensureHunyuanReady(env: env, variant: variant, onProgress: onProgress)
         }
 
         // For aggressive strategy, ensure correct variant is running
-        return await ensureHunyuanReady(env: env, variant: variant)
+        return await ensureHunyuanReady(env: env, variant: variant, onProgress: onProgress)
     }
 
     /// Called after generation completes
@@ -685,13 +886,37 @@ class ModelLoadingCoordinator: ObservableObject {
         startupTask = nil
         vlmStartupTask?.cancel()
         vlmStartupTask = nil
+
+        // Resume any waiting VLM continuations with failure
+        for continuation in vlmStartupContinuations {
+            continuation.resume(returning: false)
+        }
+        vlmStartupContinuations.removeAll()
+
         isStartingHunyuan = false
         isStartingVLM = false
+        isSwitchingVariant = false
+        variantSwitchStatus = nil
         stopHunyuanServer()
         stopVLMServer()
     }
 
     deinit {
+        // CRITICAL: deinit must be fast and non-blocking
+        // The process managers have their own non-blocking deinit that handles
+        // fire-and-forget termination with background SIGKILL fallback
+
+        // Cancel all pending tasks
+        startupTask?.cancel()
+        vlmStartupTask?.cancel()
+        vlmIdleTask?.cancel()
+
+        // Resume any waiting continuations with failure
+        for continuation in vlmStartupContinuations {
+            continuation.resume(returning: false)
+        }
+
+        // Stop servers (non-blocking - process managers handle cleanup)
         hunyuanProcessManager?.stopServer()
         vlmProcessManager?.stopServer()
     }

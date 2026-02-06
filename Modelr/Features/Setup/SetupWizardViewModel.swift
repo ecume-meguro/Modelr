@@ -1,19 +1,15 @@
-import os.log
 import Foundation
 import SwiftUI
-import Combine
 
 /// Wizard step identifiers
 enum SetupWizardStep: Int, CaseIterable {
     case welcome = 0
-    case modelSelection = 1
-    case download = 2
-    case complete = 3
+    case download = 1
+    case complete = 2
 
     var title: String {
         switch self {
         case .welcome: return "Welcome"
-        case .modelSelection: return "Choose Model"
         case .download: return "Download"
         case .complete: return "Ready"
         }
@@ -36,7 +32,6 @@ class SetupWizardViewModel: ObservableObject {
     @Published var currentStep: SetupWizardStep = .welcome
     @Published var selectedModelChoice: SetupModelChoice = .fast
     @Published var isDownloading = false
-    @Published var downloadProgress: ModelDownloadProgress?
     @Published var downloadError: Error?
     @Published var isComplete = false
 
@@ -46,6 +41,15 @@ class SetupWizardViewModel: ObservableObject {
     @Published var environmentSetupProgress: Double = 0
     @Published var environmentSetupLogs: [String] = []
 
+    // Enhanced progress tracking
+    @Published var taskTracker: SetupTaskTracker?
+    @Published var currentTaskName: String = ""
+    @Published var currentTaskProgress: Double = 0
+    @Published var overallProgress: Double = 0
+    @Published var overallTimeRemaining: String = ""
+    @Published var currentTaskTimeRemaining: String = ""
+    @Published var downloadSpeed: String = ""
+
     // System info
     let systemRAM: UInt64
     let availableSpace: Int64
@@ -53,12 +57,18 @@ class SetupWizardViewModel: ObservableObject {
     // MARK: - Dependencies
 
     private let dependencyService = PythonDependencyService()
-    private var cancellables = Set<AnyCancellable>()
     private var downloadTask: Task<Void, Never>?
     private let processTracker = ProcessTracker()
     private let stateManager = SetupStateManager.shared
     private var setupState: SetupStateManager.SetupState?
     private var sleepPreventionActivity: NSObjectProtocol?
+
+    // Filesystem-based progress monitor (replaces complex JSON parsing)
+    private let downloadMonitor = DownloadMonitor()
+
+    // Granular file tracking for resume support
+    private var downloadedFiles: Set<String> = []
+    private let downloadedFilesKey = "SetupDownloadedFiles"
 
     // MARK: - Initialization
 
@@ -78,6 +88,23 @@ class SetupWizardViewModel: ObservableObject {
 
         // Wire up process tracker to dependency service
         dependencyService.processTracker = processTracker
+
+        // Load previously downloaded files for resume support
+        loadDownloadedFilesState()
+    }
+
+    deinit {
+        // Ensure cleanup if view is dismissed during setup
+        downloadTask?.cancel()
+        processTracker.killAll()
+
+        // Stop download monitor synchronously - it's safe to call from any thread
+        // since it only cancels a timer and doesn't access UI state
+        downloadMonitor.stopMonitoringSync()
+
+        if let activity = sleepPreventionActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+        }
     }
 
     // MARK: - Navigation
@@ -85,8 +112,8 @@ class SetupWizardViewModel: ObservableObject {
     func goToNext() {
         guard let next = currentStep.next else { return }
 
-        if currentStep == .modelSelection {
-            // Start download when moving from selection to download step
+        if currentStep == .welcome {
+            // Start download when moving from welcome to download step
             startSetup()
         }
 
@@ -137,6 +164,13 @@ class SetupWizardViewModel: ObservableObject {
         environmentSetupProgress = 0
         environmentSetupLogs = []
 
+        // Initialize task tracker immediately to show initial time estimate
+        taskTracker = SetupTaskTracker(modelChoice: selectedModelChoice.modelVariant)
+        updateProgressFromTracker()
+
+        // Start filesystem-based download monitor
+        startDownloadMonitor()
+
         // Prevent system sleep during setup
         sleepPreventionActivity = ProcessInfo.processInfo.beginActivity(
             options: [.idleSystemSleepDisabled, .userInitiated],
@@ -172,6 +206,7 @@ class SetupWizardViewModel: ObservableObject {
             if downloadError == nil, let state = setupState {
                 try stateManager.markSetupFullyComplete(modelVariant: state.modelVariant)
                 markSetupComplete()
+                stopDownloadMonitor()
                 withAnimation {
                     currentStep = .complete
                     isComplete = true
@@ -180,6 +215,7 @@ class SetupWizardViewModel: ObservableObject {
         } catch {
             downloadError = error
             isSettingUpEnvironment = false
+            stopDownloadMonitor()
 
             // Save failed state for potential retry
             if var state = setupState, let currentStage = state.currentStage {
@@ -206,6 +242,9 @@ class SetupWizardViewModel: ObservableObject {
         // Kill all spawned processes
         processTracker.killAll()
 
+        // Stop download monitoring
+        stopDownloadMonitor()
+
         // End sleep prevention
         if let activity = sleepPreventionActivity {
             ProcessInfo.processInfo.endActivity(activity)
@@ -214,7 +253,6 @@ class SetupWizardViewModel: ObservableObject {
 
         // Reset UI state
         isDownloading = false
-        downloadProgress = nil
         isSettingUpEnvironment = false
 
         print("[Setup] Setup cancelled successfully")
@@ -225,43 +263,114 @@ class SetupWizardViewModel: ObservableObject {
             Task { @MainActor in
                 guard let self = self else { return }
 
+                // Map stage to task index and update tracker
+                let taskIndex: Int
+                let taskName: String
+
                 switch update.stage {
                 case .preparing:
-                    self.environmentSetupStatus = "Preparing resources..."
-                    self.environmentSetupProgress = 0.05
+                    taskIndex = 0
+                    taskName = "Preparing environment"
                 case .syncingSAM:
-                    self.environmentSetupStatus = "Setting up segmentation environment..."
-                    self.environmentSetupProgress = 0.2
+                    taskIndex = 1
+                    taskName = "Initializing AI runtime"
                 case .downloadingSAM:
-                    self.environmentSetupStatus = "Downloading segmentation model..."
-                    self.environmentSetupProgress = 0.35
+                    taskIndex = 2
+                    taskName = "Installing vision models"
                 case .syncingHunyuan:
-                    self.environmentSetupStatus = "Setting up 3D generation environment..."
-                    self.environmentSetupProgress = 0.5
+                    taskIndex = 3
+                    taskName = "Configuring 3D pipeline"
                 case .downloadingHunyuan:
-                    self.environmentSetupStatus = "Downloading 3D model..."
-                    self.environmentSetupProgress = 0.6
-                case .syncingTools:
-                    self.environmentSetupStatus = "Setting up mesh tools..."
-                    self.environmentSetupProgress = 0.8
+                    taskIndex = 4
+                    taskName = "Downloading 3D generation model"
                 case .completed:
-                    self.environmentSetupStatus = "Environment ready"
-                    self.environmentSetupProgress = 1.0
+                    taskIndex = -1
+                    taskName = "Ready"
+                    self.taskTracker?.completeCurrentTask()
                 case .failed:
-                    self.environmentSetupStatus = "Setup failed"
+                    taskIndex = -1
+                    taskName = "Setup failed"
+                    self.taskTracker?.failCurrentTask()
                 }
 
-                if let logLine = update.logLine {
-                    self.environmentSetupLogs.append(logLine)
-                    // Keep only last 50 lines
-                    if self.environmentSetupLogs.count > 50 {
-                        self.environmentSetupLogs.removeFirst()
+                // Update current task if changed
+                if taskIndex >= 0 && self.taskTracker?.currentTaskIndex != taskIndex {
+                    if let tracker = self.taskTracker, tracker.currentTaskIndex < taskIndex {
+                        self.taskTracker?.completeCurrentTask()
                     }
+                    self.taskTracker?.startTask(at: taskIndex)
                 }
+
+                self.environmentSetupStatus = taskName
+                self.currentTaskName = taskName
+
+                // Try to parse JSON progress from log line
+                if let logLine = update.logLine {
+                    self.processLogLine(logLine)
+                }
+
+                // Update overall progress from tracker
+                self.updateProgressFromTracker()
             }
         }
 
         return success
+    }
+
+    /// Process a log line - just add to logs, progress comes from filesystem monitor
+    private func processLogLine(_ line: String) {
+        // Skip JSON lines (they were for the old broken progress system)
+        if line.hasPrefix("{") && line.hasSuffix("}") {
+            return
+        }
+
+        // Add to log display
+        environmentSetupLogs.append(line)
+        if environmentSetupLogs.count > AppConstants.maxConsoleOutputLines {
+            environmentSetupLogs.removeFirst()
+        }
+    }
+
+    /// Update published progress properties from tracker
+    private func updateProgressFromTracker() {
+        guard let tracker = taskTracker else { return }
+
+        overallProgress = tracker.overallProgress
+        overallTimeRemaining = tracker.formattedTimeRemaining
+        currentTaskProgress = tracker.currentTask?.progress ?? 0
+        environmentSetupProgress = overallProgress
+    }
+
+    /// Start filesystem-based download monitoring
+    private func startDownloadMonitor() {
+        // Calculate total expected bytes (only mini model supported)
+        let config = ConfigurationService.shared
+        let samBytes = Int64(config.samModelSizeGb * 1_000_000_000)
+        let vlmBytes = Int64(config.vlmModelSizeGb * 1_000_000_000)
+        let hunyuanBytes = Int64(config.hunyuanMiniModelSizeGb * 1_000_000_000)
+        let totalBytes = samBytes + vlmBytes + hunyuanBytes
+
+        downloadMonitor.startMonitoring(
+            directory: PathManager.modelsDirectory,
+            totalBytes: totalBytes
+        ) { [weak self] monitor in
+            Task { @MainActor in
+                guard let self = self else { return }
+
+                // Update progress from filesystem monitor
+                self.currentTaskProgress = monitor.progress
+                self.downloadSpeed = monitor.formattedSpeed
+                self.currentTaskTimeRemaining = monitor.formattedTimeRemaining
+
+                // Also update task tracker with real progress
+                self.taskTracker?.updateTaskProgress(monitor.progress)
+            }
+        }
+    }
+
+    /// Stop download monitoring
+    private func stopDownloadMonitor() {
+        downloadMonitor.stopMonitoring()
     }
 
     private func markSetupComplete() {
@@ -285,5 +394,86 @@ class SetupWizardViewModel: ObservableObject {
 
     var hasEnoughSpace: Bool {
         return availableSpace > selectedModelChoice.sizeBytes + (5 * 1024 * 1024 * 1024) // Model size + 5GB buffer
+    }
+
+    // MARK: - Granular Resume Support
+
+    /// Load the set of already downloaded files from persistent storage
+    private func loadDownloadedFilesState() {
+        if let savedFiles = UserDefaults.standard.array(forKey: downloadedFilesKey) as? [String] {
+            downloadedFiles = Set(savedFiles)
+            print("[Setup] Loaded \(downloadedFiles.count) previously downloaded files")
+        }
+
+        // Also scan models directory for existing complete files
+        scanExistingModelFiles()
+    }
+
+    /// Scan the models directory and mark existing complete files as downloaded
+    private func scanExistingModelFiles() {
+        let modelsDir = PathManager.modelsDirectory
+        let fileManager = FileManager.default
+
+        // Key model files and their expected minimum sizes (in bytes)
+        let expectedFiles: [(path: String, minSize: Int64)] = [
+            ("sam3/model.safetensors", 100_000_000),  // SAM model ~300MB
+            ("SmolVLM-256M-Instruct", 100_000_000),   // VLM directory
+            ("hunyuan/hunyuan-mini", 500_000_000),    // Hunyuan mini
+            ("hunyuan/hunyuan-std", 1_000_000_000)    // Hunyuan standard
+        ]
+
+        for (relativePath, minSize) in expectedFiles {
+            let fullPath = modelsDir.appendingPathComponent(relativePath)
+            var isDirectory: ObjCBool = false
+
+            if fileManager.fileExists(atPath: fullPath.path, isDirectory: &isDirectory) {
+                if isDirectory.boolValue {
+                    // For directories, check if they contain significant files
+                    if let contents = try? fileManager.contentsOfDirectory(atPath: fullPath.path),
+                       !contents.isEmpty {
+                        downloadedFiles.insert(relativePath)
+                    }
+                } else {
+                    // For files, check size
+                    if let attrs = try? fileManager.attributesOfItem(atPath: fullPath.path),
+                       let fileSize = attrs[.size] as? Int64,
+                       fileSize >= minSize {
+                        downloadedFiles.insert(relativePath)
+                    }
+                }
+            }
+        }
+
+        saveDownloadedFilesState()
+    }
+
+    /// Save the set of downloaded files to persistent storage
+    private func saveDownloadedFilesState() {
+        UserDefaults.standard.set(Array(downloadedFiles), forKey: downloadedFilesKey)
+    }
+
+    /// Mark a file or model as successfully downloaded
+    func markFileDownloaded(_ identifier: String) {
+        downloadedFiles.insert(identifier)
+        saveDownloadedFilesState()
+        print("[Setup] Marked '\(identifier)' as downloaded")
+    }
+
+    /// Check if a file or model has already been downloaded
+    func isFileDownloaded(_ identifier: String) -> Bool {
+        return downloadedFiles.contains(identifier)
+    }
+
+    /// Clear downloaded files state (for full reset)
+    func clearDownloadedFilesState() {
+        downloadedFiles.removeAll()
+        UserDefaults.standard.removeObject(forKey: downloadedFilesKey)
+        print("[Setup] Cleared downloaded files state")
+    }
+
+    /// Get the list of files that still need to be downloaded
+    func getPendingDownloads() -> [String] {
+        let allFiles = ["sam3", "vlm", "hunyuan"]
+        return allFiles.filter { !isFileDownloaded($0) }
     }
 }

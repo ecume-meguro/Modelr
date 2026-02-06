@@ -232,9 +232,15 @@ extension SimpleEditorViewModel {
     func transitionToPostProcess() {
         print("[PostProcess] transitionToPostProcess called - currentStep was: \(currentStep)")
 
+        // CRITICAL: Restore custom color if not set (back then forward navigation)
+        if customModelColor == nil {
+            loadDominantColorFromMetadata()
+        }
+
         // Set step directly - views have implicit animations via .animation(value: currentStep)
         // Using explicit withAnimation here conflicts with those implicit animations, causing glitches
         currentStep = .postProcess
+        visitedSteps.insert(.postProcess)
 
         print("[PostProcess] transitionToPostProcess - currentStep is now: \(currentStep)")
         print("[PostProcess] Data check: componentFiles=\(componentFiles.count), preloadedNodes=\(preloadedComponentNodes.count), meshComponents=\(meshComponents.count)")
@@ -513,6 +519,23 @@ extension SimpleEditorViewModel {
         }
     }
 
+    /// Get or set the mesh processor timeout task (stored via objc_setAssociatedObject for extension compatibility)
+    /// Uses the key from the main class to ensure deinit can access and cancel it
+    private var meshProcessorTimeoutTask: Task<Void, Never>? {
+        get {
+            objc_getAssociatedObject(self, &Self.meshProcessorTimeoutTaskKeyStorage) as? Task<Void, Never>
+        }
+        set {
+            objc_setAssociatedObject(self, &Self.meshProcessorTimeoutTaskKeyStorage, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        }
+    }
+
+    /// Cancel any pending mesh processor timeout task
+    func cancelMeshProcessorTimeout() {
+        meshProcessorTimeoutTask?.cancel()
+        meshProcessorTimeoutTask = nil
+    }
+
     func runMeshProcessor(
         command: String,
         inputPath: String,
@@ -566,9 +589,17 @@ extension SimpleEditorViewModel {
         process.standardOutput = stdout
         process.standardError = stderr
 
-        return await withCheckedContinuation { continuation in
+        // Cancel any existing timeout task
+        cancelMeshProcessorTimeout()
+
+        return await withCheckedContinuation { [weak self] continuation in
             // Use termination handler for non-blocking wait
-            process.terminationHandler = { [stdout, stderr] terminatedProcess in
+            process.terminationHandler = { [stdout, stderr, weak self] terminatedProcess in
+                // Cancel timeout task when process completes
+                Task { @MainActor in
+                    self?.cancelMeshProcessorTimeout()
+                }
+
                 let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
                 let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
 
@@ -590,12 +621,16 @@ extension SimpleEditorViewModel {
             do {
                 try process.run()
 
-                // Set up timeout using Task
-                Task {
-                    try? await Task.sleep(for: .seconds(AppConstants.meshProcessorTimeout))
-                    if process.isRunning {
-                        print("[MeshProcessor] Timeout after \(AppConstants.meshProcessorTimeout)s, terminating process")
-                        process.terminate()
+                // Set up timeout using tracked Task
+                self?.meshProcessorTimeoutTask = Task { [weak process] in
+                    do {
+                        try await Task.sleep(for: .seconds(AppConstants.meshProcessorTimeout))
+                        if let process = process, process.isRunning {
+                            print("[MeshProcessor] Timeout after \(AppConstants.meshProcessorTimeout)s, terminating process")
+                            process.terminate()
+                        }
+                    } catch {
+                        // Task was cancelled, which is expected when process completes normally
                     }
                 }
             } catch {

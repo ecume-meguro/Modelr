@@ -398,7 +398,26 @@ struct SegmentationEntryView: View {
                 regionRow(maskIndex: maskIndex, score: maskData.score)
             }
 
-            AppDesign.HintText("Shift-click to select multiple regions")
+            // Multi-select hint with keyboard icon
+            HStack(spacing: AppDesign.Spacing.p4) {
+                // Keyboard shortcut badge
+                HStack(spacing: 2) {
+                    Image(systemName: "shift")
+                        .font(.system(size: 8, weight: .medium))
+                    Text("+")
+                        .font(.system(size: 8, weight: .medium))
+                    Image(systemName: "cursorarrow.click")
+                        .font(.system(size: 8, weight: .medium))
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 3)
+                .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+
+                Text("to select multiple regions")
+                    .font(.system(size: AppDesign.FontSize.caption))
+                    .foregroundStyle(.tertiary)
+            }
         }
     }
 

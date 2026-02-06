@@ -24,7 +24,7 @@ class PythonBridge {
             throw PythonError.workerNotRunning
         }
 
-        print("[Python Request] \(request.command)")
+        ErrorReporter.debug("Request: \(request.command)", subsystem: .python)
 
         // Use unified bridge - FIFO mode (SAM responses don't have messageId)
         return try await bridge.sendRequestFIFO(
@@ -36,18 +36,25 @@ class PythonBridge {
         )
     }
     
+    /// Wait for the ready signal from the SAM server
+    /// This waits for the server's broadcast ready message without sending a request
+    /// The ready message uses messageId "READY" by convention
     func waitForResponse(timeout: TimeInterval) async throws -> SAMResponse {
-        // Use unified bridge with timeout
-        let request = SAMRequest(command: "ready")  // Dummy request for waiting
         guard processManager?.stdinPipe?.fileHandleForWriting != nil else {
             throw PythonError.workerNotRunning
         }
 
-        return try await bridge.sendRequestFIFO(
-            request,
+        // Use a dedicated "READY" messageId for the ready signal
+        // This avoids creating dummy requests that confuse FIFO tracking
+        let readyMessageId = "READY"
+
+        return try await bridge.sendRequest(
+            SAMRequest(command: "ready"),
+            messageId: readyMessageId,
             timeout: .seconds(Int64(timeout)),
-            write: { data in
-                // Don't actually write for waiting - just wait for next response
+            write: { _ in
+                // Don't write anything - we're waiting for the server's ready broadcast
+                // The server will send a response with messageId "READY" when it's ready
             }
         )
     }
@@ -57,8 +64,16 @@ class PythonBridge {
         let responses = await bridge.handleStdout(data)
 
         // Dispatch all parsed responses
-        for (_, response) in responses {
-            await bridge.dispatchResponseFIFO(response)
+        // Use messageId-based dispatch for known messageIds (like READY)
+        // Fall back to FIFO dispatch for SAM protocol (responses without messageId correlation)
+        for (messageId, response) in responses {
+            if messageId == "READY" {
+                // READY signal has explicit messageId - use direct dispatch
+                await bridge.dispatchResponse(messageId: messageId, response: response)
+            } else {
+                // Regular SAM responses use FIFO ordering
+                await bridge.dispatchResponseFIFO(response)
+            }
         }
     }
     
@@ -111,7 +126,7 @@ class PythonBridge {
         }
         
         if let inferenceTime = response.inferenceTimeMs {
-            print("Inference completed in \(inferenceTime)ms")
+            ErrorReporter.debug("Inference completed in \(inferenceTime)ms", subsystem: .segmentation)
         }
         
         let urls = maskPaths.map { URL(fileURLWithPath: $0) }

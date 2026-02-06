@@ -1,322 +1,400 @@
 import SwiftUI
+import AppKit
 
-/// Download progress step of the setup wizard
+/// Download progress step - functional design with dock integration
 struct SetupDownloadView: View {
     @EnvironmentObject var viewModel: SetupWizardViewModel
-    @State private var showLogs = false
+    var onCancel: () -> Void
 
     var body: some View {
-        VStack(spacing: 24) {
-            // Header
-            VStack(spacing: 8) {
-                Text("Setting Up")
-                    .font(.title.bold())
-                Text("Please wait while we prepare everything")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            if let error = viewModel.downloadError {
+                errorView(error)
+            } else {
+                progressContent
             }
-            .padding(.top, 32)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: progressValue) { _, newValue in
+            updateDockProgress(newValue)
+        }
+        .onDisappear {
+            clearDockProgress()
+        }
+    }
 
+    // MARK: - Progress Content
+
+    private var progressContent: some View {
+        VStack(spacing: 0) {
             Spacer()
 
-            // Progress content
-            VStack(spacing: 32) {
-                // Animated download icon
-                downloadAnimation
+            // Progress visualization
+            VStack(spacing: AppDesign.Spacing.p24) {
+                // Circular progress with percentage
+                ZStack {
+                    // Background track
+                    Circle()
+                        .stroke(Color.primary.opacity(0.08), lineWidth: 8)
+                        .frame(width: 80, height: 80)
 
-                // Status text
-                VStack(spacing: 8) {
+                    // Progress arc
+                    Circle()
+                        .trim(from: 0, to: viewModel.overallProgress)
+                        .stroke(
+                            Color.accentColor,
+                            style: StrokeStyle(lineWidth: 8, lineCap: .round)
+                        )
+                        .frame(width: 80, height: 80)
+                        .rotationEffect(.degrees(-90))
+                        .animation(.linear(duration: 0.3), value: viewModel.overallProgress)
+
+                    // Percentage
+                    Text("\(Int(viewModel.overallProgress * 100))%")
+                        .font(.system(size: 18, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.primary)
+                        .accessibilityLabel("Setup progress: \(Int(viewModel.overallProgress * 100)) percent")
+                }
+
+                // Status section
+                VStack(spacing: AppDesign.Spacing.p6) {
+                    // Current task name - primary text with more prominence
                     Text(viewModel.environmentSetupStatus)
-                        .font(.headline)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.primary)
 
-                    if let progress = viewModel.downloadProgress {
-                        progressDetails(progress)
-                    } else if viewModel.isSettingUpEnvironment {
-                        environmentProgressDetails
+                    // Time remaining - secondary text
+                    if !viewModel.overallTimeRemaining.isEmpty {
+                        Text("About \(viewModel.overallTimeRemaining) remaining")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("One-time setup")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.tertiary)
                     }
                 }
 
-                // Progress bar
-                progressBar
+                // Download stats (when actively downloading)
+                if !viewModel.downloadSpeed.isEmpty {
+                    downloadStatsView
+                }
             }
-            .padding(.horizontal, 80)
 
             Spacer()
 
-            // Error display
-            if let error = viewModel.downloadError {
-                errorView(error)
-                    .padding(.horizontal, 60)
-            }
-
-            // Expandable logs
-            logsSection
-                .padding(.horizontal, 60)
-        }
-    }
-
-    // MARK: - Download Animation
-
-    @ViewBuilder
-    private var downloadAnimation: some View {
-        ZStack {
-            // Background circles
-            ForEach(0..<3, id: \.self) { index in
-                Circle()
-                    .stroke(Color.accentColor.opacity(0.1 * Double(3 - index)), lineWidth: 2)
-                    .frame(width: CGFloat(80 + index * 30), height: CGFloat(80 + index * 30))
-            }
-
-            // Center icon
-            ZStack {
-                Circle()
-                    .fill(Color.accentColor)
-                    .frame(width: 60, height: 60)
-
-                if viewModel.isDownloading {
-                    Image(systemName: "arrow.down")
-                        .font(.title2.bold())
-                        .foregroundStyle(.white)
-                        .offset(y: downloadIconOffset)
-                        .animation(
-                            .easeInOut(duration: 1.0)
-                            .repeatForever(autoreverses: true),
-                            value: downloadIconOffset
-                        )
-                } else {
-                    Image(systemName: "checkmark")
-                        .font(.title2.bold())
-                        .foregroundStyle(.white)
-                }
-            }
-        }
-    }
-
-    @State private var downloadIconOffset: CGFloat = -5
-
-    // MARK: - Progress Details
-
-    @ViewBuilder
-    private func progressDetails(_ progress: ModelDownloadProgress) -> some View {
-        VStack(spacing: 4) {
-            Text(progress.formattedProgress)
-                .font(.system(.body, design: .monospaced))
-                .foregroundStyle(.secondary)
-
-            HStack(spacing: 12) {
-                if !progress.formattedSpeed.isEmpty && progress.formattedSpeed != "—" {
-                    Text(progress.formattedSpeed)
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.tertiary)
-                }
-
-                if !progress.formattedETA.isEmpty {
-                    Text(progress.formattedETA)
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.tertiary)
-                }
-            }
-        }
-        .animation(.easeInOut(duration: 0.2), value: progress.downloadedBytes)
-    }
-
-    @ViewBuilder
-    private var environmentProgressDetails: some View {
-        Text("\(Int(viewModel.environmentSetupProgress * 100))%")
-            .font(.system(.body, design: .monospaced))
-            .foregroundStyle(.secondary)
-    }
-
-    // MARK: - Progress Bar
-
-    @ViewBuilder
-    private var progressBar: some View {
-        VStack(spacing: 8) {
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    // Background
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.primary.opacity(0.1))
-
-                    // Progress fill
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(
-                            LinearGradient(
-                                colors: [.accentColor, .accentColor.opacity(0.8)],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .frame(width: geo.size.width * progressValue)
-                        .animation(.easeInOut(duration: 0.3), value: progressValue)
-                }
-            }
-            .frame(height: 12)
-
-            // Stage labels
+            // Bottom section: cancel button
             HStack {
-                Text(viewModel.isSettingUpEnvironment ? "Environment Setup" : "Downloading \(viewModel.selectedModelChoice.modelName)")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
                 Spacer()
+
+                Button(role: .destructive) {
+                    onCancel()
+                } label: {
+                    Text("Cancel")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
             }
+            .padding(.horizontal, AppDesign.Spacing.p32)
+            .padding(.bottom, AppDesign.Spacing.p24)
         }
     }
 
     private var progressValue: Double {
-        if viewModel.isSettingUpEnvironment {
-            // Environment setup is 0-60% of total
-            return viewModel.environmentSetupProgress * 0.6
-        } else if let progress = viewModel.downloadProgress {
-            // Download is 60-100% of total
-            return 0.6 + (progress.progress * 0.4)
+        // Progress now comes from filesystem monitoring
+        return viewModel.overallProgress
+    }
+
+    // MARK: - Download Stats View
+
+    private var downloadStatsView: some View {
+        VStack(spacing: AppDesign.Spacing.p8) {
+            // Speed and time remaining
+            HStack(spacing: AppDesign.Spacing.p12) {
+                // Download speed
+                HStack(spacing: AppDesign.Spacing.p4) {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Download speed")
+                    Text(viewModel.downloadSpeed)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.primary)
+                }
+
+                Spacer()
+
+                // Time remaining
+                if !viewModel.currentTaskTimeRemaining.isEmpty {
+                    Text(viewModel.currentTaskTimeRemaining)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: 280)
+
+            // Linear progress bar
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    // Background track
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.primary.opacity(0.08))
+
+                    // Progress fill
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.accentColor)
+                        .frame(width: geometry.size.width * viewModel.currentTaskProgress)
+                        .animation(.linear(duration: 0.3), value: viewModel.currentTaskProgress)
+                }
+            }
+            .frame(maxWidth: 280, maxHeight: 4)
         }
-        return 0
+        .padding(.top, AppDesign.Spacing.p8)
     }
 
     // MARK: - Error View
 
     @ViewBuilder
     private func errorView(_ error: Error) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.title2)
-                    .foregroundStyle(.red)
+        let errorInfo = categorizeError(error)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Setup Failed")
-                        .font(.headline)
-                    Text(error.localizedDescription)
-                        .font(.subheadline)
+        VStack(spacing: 0) {
+            Spacer()
+
+            VStack(spacing: AppDesign.Spacing.p24) {
+                Image(systemName: errorInfo.icon)
+                    .font(.system(size: 40, weight: .light))
+                    .foregroundStyle(errorInfo.color)
+
+                VStack(spacing: AppDesign.Spacing.p6) {
+                    Text(errorInfo.title)
+                        .font(.system(size: 20, weight: .semibold))
+
+                    Text(errorInfo.message)
+                        .font(.system(size: 13))
                         .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(nil)
+                        .frame(maxWidth: 300)
+
+                    if !errorInfo.suggestion.isEmpty {
+                        Text(errorInfo.suggestion)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.primary.opacity(0.7))
+                            .multilineTextAlignment(.center)
+                            .lineLimit(nil)
+                            .frame(maxWidth: 300)
+                            .padding(.top, AppDesign.Spacing.p4)
+                    }
                 }
+
+                HStack(spacing: AppDesign.Spacing.p12) {
+                    Button("Try Again") {
+                        viewModel.startSetup()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+
+                    Button("View Logs") {
+                        NSWorkspace.shared.open(PathManager.logsDirectory)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                }
+            }
+
+            Spacer()
+
+            // Back button
+            HStack {
+                Button("Back") {
+                    onCancel()
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
 
                 Spacer()
             }
-
-            // Show recovery suggestion if available
-            if let nsError = error as NSError?,
-               let suggestion = nsError.userInfo[NSLocalizedRecoverySuggestionErrorKey] as? String {
-                HStack(spacing: 8) {
-                    Image(systemName: "lightbulb.fill")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                    Text(suggestion)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.top, 4)
-            }
-
-            // Action buttons
-            HStack(spacing: 12) {
-                Button {
-                    viewModel.startSetup()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.clockwise")
-                        Text("Retry")
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button {
-                    // Open logs for troubleshooting
-                    NSWorkspace.shared.open(PathManager.logsDirectory)
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "doc.text")
-                        Text("View Logs")
-                    }
-                }
-                .buttonStyle(.bordered)
-
-                // Check connectivity button for network errors
-                if error.localizedDescription.contains("connection") ||
-                   error.localizedDescription.contains("network") ||
-                   error.localizedDescription.contains("internet") {
-                    Button {
-                        Task {
-                            let canReach = await NetworkMonitor.canReachHuggingFace()
-                            let message = canReach ? "Connection to HuggingFace successful!" : "Cannot reach HuggingFace. Check your network."
-                            let alert = NSAlert()
-                            alert.messageText = "Network Check"
-                            alert.informativeText = message
-                            alert.alertStyle = canReach ? .informational : .warning
-                            alert.runModal()
-                        }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "network")
-                            Text("Test Connection")
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                }
-            }
-            .padding(.top, 8)
+            .padding(.horizontal, AppDesign.Spacing.p32)
+            .padding(.bottom, AppDesign.Spacing.p24)
         }
-        .padding()
-        .background(Color.red.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    // MARK: - Logs Section
+    // MARK: - Error Categorization
 
-    @ViewBuilder
-    private var logsSection: some View {
-        VStack(spacing: 8) {
-            Button {
-                withAnimation {
-                    showLogs.toggle()
-                }
-            } label: {
-                HStack {
-                    Text("Show Details")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Image(systemName: showLogs ? "chevron.up" : "chevron.down")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .buttonStyle(.plain)
+    private struct ErrorInfo {
+        let title: String
+        let message: String
+        let suggestion: String
+        let icon: String
+        let color: Color
+    }
 
-            if showLogs {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 2) {
-                            ForEach(Array(viewModel.environmentSetupLogs.enumerated()), id: \.offset) { index, line in
-                                Text(line)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .id(index)
-                            }
-                        }
-                        .padding(8)
-                    }
-                    .frame(height: 120)
-                    .background(Color.black.opacity(0.05))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .onChange(of: viewModel.environmentSetupLogs.count) { _, _ in
-                        withAnimation {
-                            proxy.scrollTo(viewModel.environmentSetupLogs.count - 1, anchor: .bottom)
-                        }
-                    }
-                }
-                .transition(.opacity.combined(with: .move(edge: .top)))
-            }
+    private func categorizeError(_ error: Error) -> ErrorInfo {
+        let nsError = error as NSError
+        let errorMessage = error.localizedDescription.lowercased()
+
+        // Network errors
+        if nsError.domain == NSURLErrorDomain ||
+           errorMessage.contains("network") ||
+           errorMessage.contains("internet") ||
+           errorMessage.contains("connection") ||
+           errorMessage.contains("offline") ||
+           errorMessage.contains("timed out") ||
+           errorMessage.contains("could not connect") {
+            return ErrorInfo(
+                title: "Network Error",
+                message: "Unable to download required files. Please check your internet connection.",
+                suggestion: "Try connecting to a different network or disable VPN if active.",
+                icon: "wifi.exclamationmark",
+                color: .orange
+            )
         }
-        .padding(.bottom)
+
+        // Timeout errors
+        if errorMessage.contains("timeout") ||
+           errorMessage.contains("timed out") ||
+           nsError.code == NSURLErrorTimedOut {
+            return ErrorInfo(
+                title: "Download Timed Out",
+                message: "The download took too long to complete.",
+                suggestion: "This may be due to slow network. Try again when you have a faster connection.",
+                icon: "clock.badge.exclamationmark",
+                color: .orange
+            )
+        }
+
+        // Storage/disk errors
+        if errorMessage.contains("disk") ||
+           errorMessage.contains("space") ||
+           errorMessage.contains("storage") ||
+           errorMessage.contains("no space left") ||
+           errorMessage.contains("quota") ||
+           nsError.code == NSFileWriteOutOfSpaceError {
+            return ErrorInfo(
+                title: "Insufficient Storage",
+                message: "Not enough disk space to complete the download.",
+                suggestion: "Free up at least 20GB of disk space and try again.",
+                icon: "externaldrive.badge.exclamationmark",
+                color: .red
+            )
+        }
+
+        // Permission errors
+        if errorMessage.contains("permission") ||
+           errorMessage.contains("access denied") ||
+           errorMessage.contains("not permitted") ||
+           errorMessage.contains("operation not allowed") ||
+           nsError.code == NSFileWriteNoPermissionError ||
+           nsError.code == NSFileReadNoPermissionError {
+            return ErrorInfo(
+                title: "Permission Denied",
+                message: "Unable to write files to the application directory.",
+                suggestion: "Check that Modelr has permission to access the Application Support folder in System Settings > Privacy & Security.",
+                icon: "lock.shield",
+                color: .red
+            )
+        }
+
+        // Process/execution errors
+        if errorMessage.contains("process") ||
+           errorMessage.contains("exit code") ||
+           errorMessage.contains("terminated") {
+            return ErrorInfo(
+                title: "Setup Process Failed",
+                message: "A required setup process encountered an error.",
+                suggestion: "View logs for technical details. Retry usually resolves temporary issues.",
+                icon: "gearshape.2",
+                color: .orange
+            )
+        }
+
+        // Default/unknown error
+        return ErrorInfo(
+            title: "Setup Failed",
+            message: error.localizedDescription,
+            suggestion: "If this persists, try restarting the app or check the logs for details.",
+            icon: "exclamationmark.triangle",
+            color: .orange
+        )
+    }
+
+    // MARK: - Dock Progress
+
+    private func updateDockProgress(_ progress: Double) {
+        let dockTile = NSApp.dockTile
+
+        if dockTile.contentView == nil {
+            let progressView = DockProgressView()
+            dockTile.contentView = progressView
+        }
+
+        if let progressView = dockTile.contentView as? DockProgressView {
+            progressView.progress = progress
+        }
+
+        dockTile.display()
+    }
+
+    private func clearDockProgress() {
+        let dockTile = NSApp.dockTile
+        dockTile.contentView = nil
+        dockTile.display()
+    }
+}
+
+// MARK: - Dock Progress View
+
+private class DockProgressView: NSView {
+    var progress: Double = 0 {
+        didSet { needsDisplay = true }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        // Draw app icon
+        if let appIcon = NSApp.applicationIconImage {
+            appIcon.draw(in: bounds)
+        }
+
+        // Draw progress bar at bottom
+        let barHeight: CGFloat = 8
+        let barInset: CGFloat = 8
+        let barY: CGFloat = 4
+
+        let barRect = NSRect(
+            x: barInset,
+            y: barY,
+            width: bounds.width - (barInset * 2),
+            height: barHeight
+        )
+
+        // Background
+        NSColor.black.withAlphaComponent(0.5).setFill()
+        let bgPath = NSBezierPath(roundedRect: barRect, xRadius: barHeight / 2, yRadius: barHeight / 2)
+        bgPath.fill()
+
+        // Progress
+        let progressWidth = barRect.width * CGFloat(progress)
+        let progressRect = NSRect(
+            x: barRect.origin.x,
+            y: barRect.origin.y,
+            width: progressWidth,
+            height: barHeight
+        )
+
+        NSColor.systemBlue.setFill()
+        let progressPath = NSBezierPath(roundedRect: progressRect, xRadius: barHeight / 2, yRadius: barHeight / 2)
+        progressPath.fill()
     }
 }
 
 // MARK: - Preview
 
 #Preview {
-    SetupDownloadView()
+    SetupDownloadView(onCancel: {})
         .environmentObject(SetupWizardViewModel())
-        .frame(width: 700, height: 550)
+        .frame(width: 560, height: 420)
+        .background(Color(nsColor: .windowBackgroundColor))
 }

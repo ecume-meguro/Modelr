@@ -94,13 +94,22 @@ class ImageService {
             let colorSpace = CGColorSpaceCreateDeviceRGB()
             let totalPixels = width * height
 
+            // Create all contexts upfront to ensure proper cleanup on any error path
             guard let (sourceContext, sourceData) = self.createRGBAContext(width: width, height: height, colorSpace: colorSpace) else { return nil }
+
+            guard let (maskContext, maskData) = self.createRGBAContext(width: width, height: height, colorSpace: colorSpace) else {
+                // sourceContext will be released when it goes out of scope via autoreleasepool
+                return nil
+            }
+
+            guard let (outputContext, outputData) = self.createRGBAContext(width: width, height: height, colorSpace: colorSpace) else {
+                // sourceContext and maskContext will be released when they go out of scope via autoreleasepool
+                return nil
+            }
+
+            // Draw source and mask images into their respective contexts
             sourceContext.draw(sourceCG, in: CGRect(x: 0, y: 0, width: width, height: height))
-
-            guard let (maskContext, maskData) = self.createRGBAContext(width: width, height: height, colorSpace: colorSpace) else { return nil }
             maskContext.draw(maskCG, in: CGRect(x: 0, y: 0, width: width, height: height))
-
-            guard let (outputContext, outputData) = self.createRGBAContext(width: width, height: height, colorSpace: colorSpace) else { return nil }
 
             let sourcePixels = sourceData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
             let maskPixels = maskData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
@@ -413,6 +422,7 @@ class ColorExtractionService {
 
         // Sample pixels and find dominant color
         var pixels: [(r: CGFloat, g: CGFloat, b: CGFloat)] = []
+        var fallbackPixels: [(r: CGFloat, g: CGFloat, b: CGFloat)] = []  // Less strict filter
         let sampleStride = 4
         for y in stride(from: 0, to: height, by: sampleStride) {
             for x in stride(from: 0, to: width, by: sampleStride) {
@@ -427,18 +437,25 @@ class ColorExtractionService {
                 let minChannel = min(r, min(g, b))
                 let saturation = maxChannel - minChannel
 
+                // Strict filter for colorful images
                 if brightness > 0.15 && brightness < 0.95 && saturation > 0.1 {
                     pixels.append((r, g, b))
+                }
+                // Relaxed filter for grayscale/dark/bright images
+                else if brightness > 0.05 && brightness < 0.98 {
+                    fallbackPixels.append((r, g, b))
                 }
             }
         }
 
-        guard !pixels.isEmpty else { return nil }
+        // Use strict pixels if available, otherwise fall back to relaxed filter
+        let selectedPixels = pixels.isEmpty ? fallbackPixels : pixels
+        guard !selectedPixels.isEmpty else { return nil }
 
         // Simple averaging to find dominant color
-        let avgR = pixels.map { $0.r }.reduce(0, +) / CGFloat(pixels.count)
-        let avgG = pixels.map { $0.g }.reduce(0, +) / CGFloat(pixels.count)
-        let avgB = pixels.map { $0.b }.reduce(0, +) / CGFloat(pixels.count)
+        let avgR = selectedPixels.map { $0.r }.reduce(0, +) / CGFloat(selectedPixels.count)
+        let avgG = selectedPixels.map { $0.g }.reduce(0, +) / CGFloat(selectedPixels.count)
+        let avgB = selectedPixels.map { $0.b }.reduce(0, +) / CGFloat(selectedPixels.count)
 
         return NSColor(red: avgR, green: avgG, blue: avgB, alpha: 1.0)
     }
