@@ -5,6 +5,12 @@ options:
     macOS: "14.0"
   createIntermediateGroups: true
 
+packages:
+  Hy3DMLX:
+    path: Packages/Hy3DMLX
+  HunyuanPaintMLX:
+    path: Packages/HunyuanPaintMLX
+
 settings:
   base:
     SWIFT_VERSION: "5.0"
@@ -23,6 +29,9 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - Sources
+    dependencies:
+      - package: Hy3DMLX
+        product: Hy3DMLX
     settings:
       base:
         PRODUCT_NAME: Modelr

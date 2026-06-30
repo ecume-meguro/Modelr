@@ -3,3 +3,8 @@ build/
 DerivedData/
 .DS_Store
 *.xcuserstate
+
+# vendored package build artifacts
+Packages/*/.build/
+vendor/*/.build/
+*.safetensors
