@@ -59,26 +59,33 @@ public final class ShapeGenerator {
     public struct Progress: Sendable { public let stage: String; public let fraction: Float }
 
     /// Full on-device pipeline: photo -> watertight mesh.
+    /// `isCancelled` is polled per denoise step and at each stage boundary; returns nil if it fires.
     public func generate(image: CGImage, steps: Int = 30, guidance: Float = 5.0,
                          seed: UInt64 = 0, resolution: Int = 256, octree: Bool = true,
+                         isCancelled: () -> Bool = { false },
                          onProgress: ((Progress) -> Void)? = nil) -> Mesh? {
         guard let pix = Preprocess.dinoPixels(cgImage: image) else { return nil }
+        if isCancelled() { return nil }
         onProgress?(.init(stage: "Conditioning image", fraction: 0.05))
         let cond = concatenated([dino(pix), dino.unconditional(1)], axis: 0)
         eval(cond)
+        if isCancelled() { return nil }
 
         let pipe = Pipeline(dit: dit, vae: vae)
         let noise = Sampler.noise(numLatents: numLatents, seed: seed)
         let sigmas = Sampler.flowMatchSigmas(steps)
-        let lat = pipe.denoise(cond: cond, noise: noise, sigmas: sigmas, guidance: guidance) { i, n in
+        let lat = pipe.denoise(cond: cond, noise: noise, sigmas: sigmas, guidance: guidance,
+                               isCancelled: isCancelled) { i, n in
             onProgress?(.init(stage: "Denoising (\(i)/\(n))", fraction: 0.1 + 0.6 * Float(i) / Float(n)))
         }
         eval(lat); MLX.GPU.clearCache()           // release the 30-step denoise buffers before decode
+        if isCancelled() { return nil }
 
         onProgress?(.init(stage: "Decoding shape", fraction: 0.72))
         let grid = octree ? pipe.gridSDFOctree(latents: lat, resolution: resolution)
                           : pipe.gridSDF(latents: lat, resolution: resolution)
         eval(grid); MLX.GPU.clearCache()          // release decode buffers before marching cubes
+        if isCancelled() { return nil }
 
         onProgress?(.init(stage: "Building mesh", fraction: 0.9))
         let mesh = MarchingCubes.extract(grid: grid, level: 0.0)

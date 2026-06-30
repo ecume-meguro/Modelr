@@ -14,6 +14,11 @@ enum PipelineConfig {
         repoRoot.appendingPathComponent(model.weightsSubpath)
     }
 
+    /// The single safetensors checkpoint the in-process `ShapeGenerator` loads.
+    static func weightsFile(for model: ModelChoice) -> URL {
+        weightsDir(for: model).appendingPathComponent("model.fp16.safetensors")
+    }
+
     // Fixed generation parameters (steps are per-model — see ModelChoice.steps).
     static let guidance = 5.0
     static let octree = 256
@@ -23,9 +28,9 @@ enum PipelineConfig {
         FileManager.default.isExecutableFile(atPath: pythonExecutable.path)
     }
 
-    /// True when the model's weights are actually present on disk.
+    /// True when the model's weights are present on disk. Shape now runs in-process
+    /// (vendored Hy3DMLX) so the Python venv is no longer required.
     static func isAvailable(_ model: ModelChoice) -> Bool {
-        let weights = weightsDir(for: model).appendingPathComponent("model.fp16.safetensors")
-        return pythonReady && FileManager.default.fileExists(atPath: weights.path)
+        FileManager.default.fileExists(atPath: weightsFile(for: model).path)
     }
 }

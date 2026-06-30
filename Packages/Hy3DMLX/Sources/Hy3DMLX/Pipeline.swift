@@ -10,11 +10,13 @@ public struct Pipeline {
 
     /// cond [2,Lc,Cc] (cond, uncond), noise [1,N,64], sigmas [S] -> latents [1,N,64]
     public func denoise(cond: MLXArray, noise: MLXArray, sigmas: MLXArray,
-                        guidance: Float = 5.0, progress: ((Int, Int) -> Void)? = nil) -> MLXArray {
+                        guidance: Float = 5.0, isCancelled: () -> Bool = { false },
+                        progress: ((Int, Int) -> Void)? = nil) -> MLXArray {
         let S = sigmas.dim(0)
         let sig = sigmas.asArray(Float.self)               // pull the fixed schedule once (not per step)
         var lat = noise
         for i in 0 ..< S {
+            if isCancelled() { break }                     // cooperative per-step cancellation
             let dt = (i + 1 < S ? sig[i + 1] : 1.0) - sig[i]
             if dt == 0 { continue }
             let si = sig[i]

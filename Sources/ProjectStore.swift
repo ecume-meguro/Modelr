@@ -19,7 +19,8 @@ final class ProjectStore {
     private var inputVersions: [Project.ID: Int] = [:]
 
     private let service = GenerationService()
-    private var runningJobs: [Project.ID: GenerationService.Job] = [:]
+    private let shapeEngine = ShapeEngine()
+    private var runningJobs: [Project.ID: any CancellableRun] = [:]
     /// Monotonic per-project run token: callbacks from a superseded run are ignored.
     private var runTokens: [Project.ID: UInt64] = [:]
     private var tokenCounter: UInt64 = 0
@@ -522,30 +523,19 @@ final class ProjectStore {
         pointsURLs[id] = nil
         statuses[id] = .running(stage: "Loading model…", detail: nil, fraction: nil)
 
-        let job = service.run(
-            image: image,
+        let run = shapeEngine.generate(
+            imageURL: image,
             output: output,
-            weights: PipelineConfig.weightsDir(for: settings.model),
+            weightsURL: PipelineConfig.weightsFile(for: settings.model),
             quantize: settings.quant.flag,
             steps: settings.steps,
-            guidance: settings.guidance,
-            octree: settings.octree,
+            guidance: Float(settings.guidance),
+            resolution: settings.octree,
+            seed: 0,
             onProgress: { [weak self] stage, detail, fraction in
                 Task { @MainActor in
                     guard let self, self.runTokens[id] == token else { return }
                     self.statuses[id] = .running(stage: stage, detail: detail, fraction: fraction)
-                }
-            },
-            onPreview: { [weak self] url in
-                Task { @MainActor in
-                    guard let self, self.runTokens[id] == token else { return }
-                    self.previewURLs[id] = url
-                }
-            },
-            onPoints: { [weak self] url in
-                Task { @MainActor in
-                    guard let self, self.runTokens[id] == token else { return }
-                    self.pointsURLs[id] = url
                 }
             },
             onFinish: { [weak self] outcome in
@@ -556,21 +546,12 @@ final class ProjectStore {
                     case .success:
                         if self.commitGeneration(for: id) {
                             self.statuses[id] = .done
-                            // Hold the now-complete point cloud on screen for a beat so it's
-                            // seen finished (the final flush has to render), then reveal the mesh.
-                            Task { @MainActor [weak self] in
-                                try? await Task.sleep(for: .seconds(1.3))
-                                guard let self, self.runTokens[id] == token else { return }
-                                self.previewURLs[id] = nil
-                                self.pointsURLs[id] = nil
-                                self.clearStreamFiles(in: self.folder(for: id))
-                            }
                         } else {
-                            self.previewURLs[id] = nil
-                            self.pointsURLs[id] = nil
-                            self.clearStreamFiles(in: self.folder(for: id))
                             self.statuses[id] = .failed("The model didn't produce a valid mesh.")
                         }
+                        self.previewURLs[id] = nil
+                        self.pointsURLs[id] = nil
+                        self.clearStreamFiles(in: self.folder(for: id))
                     case .failure(let message):
                         self.discardPendingGen(for: id)
                         self.previewURLs[id] = nil
@@ -580,7 +561,7 @@ final class ProjectStore {
                     }
                 }
             })
-        runningJobs[id] = job
+        runningJobs[id] = run
     }
 
     /// Turn the just-finished run into a saved generation, selected for viewing.
