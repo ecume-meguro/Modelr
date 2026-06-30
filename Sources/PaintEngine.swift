@@ -24,7 +24,7 @@ final class PaintEngine {
                res: Int, steps: Int, tex: Int, superres: Bool, viewsDir: URL,
                onProgress: @escaping (String, Double?) -> Void,
                onViews: @escaping (URL) -> Void,
-               onFinish: @escaping (GenerationService.Outcome) -> Void) -> Run {
+               onFinish: @escaping (GenerationOutcome) -> Void) -> Run {
         let run = Run()
         queue.async { [weak self] in
             guard let self else { return }

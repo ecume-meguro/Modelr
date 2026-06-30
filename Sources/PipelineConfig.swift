@@ -3,11 +3,9 @@ import Foundation
 /// The single place that knows where the local Hunyuan3D-Shape-MLX model lives
 /// and the fixed generation parameters. Model + quantization are chosen per project.
 enum PipelineConfig {
-    /// Local checkout of the MLX shape pipeline.
+    /// Local checkout of the MLX shape pipeline (the weights source until model
+    /// download lands; see ModelStore).
     static let repoRoot = URL(fileURLWithPath: "/Users/xzm/Projects/Hunyuan3D-Shape-MLX")
-
-    /// The repo's uv-managed virtualenv interpreter (pure-MLX, no PyTorch).
-    static var pythonExecutable: URL { repoRoot.appendingPathComponent(".venv/bin/python3.12") }
 
     /// Weights directory for a given model.
     static func weightsDir(for model: ModelChoice) -> URL {
@@ -23,10 +21,6 @@ enum PipelineConfig {
     static let guidance = 5.0
     static let octree = 256
     static let dtype = "float16"
-
-    static var pythonReady: Bool {
-        FileManager.default.isExecutableFile(atPath: pythonExecutable.path)
-    }
 
     /// True when the model's weights are present on disk. Shape now runs in-process
     /// (vendored Hy3DMLX) so the Python venv is no longer required.

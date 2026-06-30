@@ -4,7 +4,6 @@ import Foundation
 /// the shape repo). Paint consumes a mesh + the input image and produces a textured mesh.
 enum PaintConfig {
     static let repoRoot = URL(fileURLWithPath: "/Users/xzm/Projects/Hunyuan-3D-Paint-MLX")
-    static var pythonExecutable: URL { repoRoot.appendingPathComponent(".venv/bin/python3.12") }
 
     /// Directory that contains the per-model weight subdirs (hunyuan3d-paint-v2-0,
     /// realesrgan, …); the in-process `PaintPipeline` resolves subpaths under it.

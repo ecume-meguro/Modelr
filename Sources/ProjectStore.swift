@@ -18,7 +18,6 @@ final class ProjectStore {
     /// Bumped whenever input.png is rewritten, so the preview reloads from disk.
     private var inputVersions: [Project.ID: Int] = [:]
 
-    private let service = GenerationService()
     private let shapeEngine = ShapeEngine()
     private let paintEngine = PaintEngine()
     private var runningJobs: [Project.ID: any CancellableRun] = [:]

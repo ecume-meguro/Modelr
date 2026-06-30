@@ -42,17 +42,9 @@ struct ModelrApp: App {
     }
 }
 
-/// Handles process hygiene: sweep crash-orphaned workers at launch, kill live
-/// ones on quit.
+/// Generation now runs in-process (vendored MLX), so there are no worker
+/// subprocesses to reap — the delegate only governs app lifecycle.
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        JobReaper.sweepStale()
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        JobReaper.killAll()
-    }
-
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }

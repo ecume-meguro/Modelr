@@ -4,13 +4,16 @@ import ImageIO
 import simd
 import Hy3DMLX
 
-/// A cancellable handle to an in-flight generation (in-process or out-of-process).
+/// A cancellable handle to an in-flight generation.
 protocol CancellableRun: AnyObject {
     func cancel()
 }
 
-// The legacy out-of-process paint worker handle is cancellable too.
-extension GenerationService.Job: CancellableRun {}
+/// Result of a generation (shape or paint).
+enum GenerationOutcome {
+    case success
+    case failure(String)
+}
 
 /// In-process MLX shape generation — the native-Swift replacement for the Python
 /// shape worker. Loads a `ShapeGenerator` (the vendored Hy3DMLX pipeline) once and
@@ -37,7 +40,7 @@ final class ShapeEngine {
     func generate(imageURL: URL, output: URL, weightsURL: URL, quantize: Int,
                   steps: Int, guidance: Float, resolution: Int, seed: UInt64,
                   onProgress: @escaping (String, String?, Double?) -> Void,
-                  onFinish: @escaping (GenerationService.Outcome) -> Void) -> Run {
+                  onFinish: @escaping (GenerationOutcome) -> Void) -> Run {
         let run = Run()
         queue.async { [weak self] in
             guard let self else { return }
