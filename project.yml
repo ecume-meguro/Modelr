@@ -1,0 +1,45 @@
+name: Modelr
+options:
+  bundleIdPrefix: com.zimeng
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: "W9C2P3N7Q2"
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "FDD0A087336FAF382EAC9341D63AC269B4F29C99"
+    PROVISIONING_PROFILE_SPECIFIER: ""
+    ENABLE_HARDENED_RUNTIME: "NO"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  Modelr:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - Sources
+    settings:
+      base:
+        PRODUCT_NAME: Modelr
+        PRODUCT_BUNDLE_IDENTIFIER: com.zimeng.Modelr
+        GENERATE_INFOPLIST_FILE: "YES"
+        INFOPLIST_KEY_CFBundleDisplayName: Modelr
+        INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.graphics-design"
+        INFOPLIST_KEY_NSHumanReadableCopyright: "Copyright © 2026 Zimeng"
+        INFOPLIST_KEY_NSHighResolutionCapable: "YES"
+        COMBINE_HIDPI_IMAGES: "YES"
+
+schemes:
+  Modelr:
+    build:
+      targets:
+        Modelr: all
+    run:
+      config: Debug
+    archive:
+      config: Release

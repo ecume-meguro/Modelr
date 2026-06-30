@@ -1,0 +1,161 @@
+:root {
+  --ink: #1a1a1a;
+  --gray: #6b6b6b;
+  --line: #dcdcdc;
+  --font: "Geist", -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: #fff;
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--ink); }
+h1, h2 { font-weight: 600; letter-spacing: -0.02em; }
+.muted { color: var(--gray); }
+.small { font-size: 13px; }
+
+/* Split layout: content left, particle field pinned right */
+.layout { display: flex; align-items: stretch; }
+.content {
+  flex: 1 1 54%;
+  min-width: 0;
+  max-width: 720px;
+  padding: 56px 56px 96px;
+}
+.viz {
+  flex: 1 1 46%;
+  min-width: 0;
+  border-left: 1px solid var(--line);
+}
+.viz__inner {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow: hidden;
+}
+/* vertical slide track: [image] above [3D model], translated up on scroll */
+.viz__track {
+  position: absolute;
+  inset: 0;
+  height: 200%;
+  will-change: transform;
+}
+.viz__slide { position: relative; height: 50%; }
+.viz__slide canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.viz__img {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: min(58%, 58vh);
+  height: min(58%, 58vh);
+  object-fit: contain;
+  pointer-events: none;
+}
+.viz__steps {
+  position: absolute;
+  left: 24px;
+  bottom: 22px;
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: #c2c2c2;
+  z-index: 3;
+}
+.viz__steps .on { color: var(--ink); }
+.viz__hint {
+  position: absolute;
+  right: 24px;
+  bottom: 22px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: #c2c2c2;
+  opacity: 0;
+  transition: opacity 200ms ease;
+  z-index: 3;
+}
+.viz__hint.on { opacity: 1; }
+
+/* Header */
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 18px;
+  margin-bottom: 72px;
+}
+.brand { font-weight: 600; text-decoration: none; }
+header nav { display: flex; gap: 18px; }
+header nav a { font-size: 14px; color: var(--gray); text-decoration: none; }
+header nav a:hover { color: var(--ink); text-decoration: underline; }
+
+/* Hero */
+.hero h1 { font-size: 40px; line-height: 1.1; margin: 0; }
+.hero > p { margin: 16px 0 0; }
+.hero > p:first-of-type { color: var(--gray); font-size: 18px; max-width: 40ch; }
+.cta { font-weight: 500; }
+.req { color: var(--gray); font-size: 13px; margin-left: 6px; }
+
+/* Sections */
+section { margin-top: 80px; }
+h2 { font-size: 20px; margin: 0 0 20px; }
+
+/* Table */
+table { border-collapse: collapse; width: 100%; font-size: 15px; }
+th, td { text-align: left; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--line); }
+th { font-weight: 500; color: var(--gray); font-size: 13px; }
+td { color: var(--ink); }
+td .muted { font-size: 13px; }
+#models .small { margin-top: 14px; }
+
+/* Pricing comparison */
+.compare th { color: var(--ink); font-weight: 500; font-size: 14px; }
+.compare td:first-child, .compare th:first-child { color: var(--gray); }
+.compare th, .compare td { width: 33%; }
+.dl-row { display: flex; flex-wrap: wrap; gap: 28px; margin: 22px 0 0; }
+.pricing-line { margin: 20px 0 0; max-width: 56ch; }
+#pricing .small { margin-top: 10px; }
+
+/* FAQ */
+#faq details { border-bottom: 1px solid var(--line); }
+#faq summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 14px 0;
+  font-weight: 500;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+#faq summary::-webkit-details-marker { display: none; }
+#faq summary::after { content: "+"; color: var(--gray); }
+#faq details[open] summary::after { content: "–"; }
+#faq details p { margin: 0 0 16px; color: var(--gray); font-size: 15px; }
+
+/* Footer */
+footer {
+  margin-top: 88px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  color: var(--gray);
+  font-size: 13px;
+}
+
+/* Stack on narrow screens; drop the particle panel */
+@media (max-width: 860px) {
+  .viz { display: none; }
+  .content { flex-basis: 100%; max-width: 680px; padding: 44px 28px 80px; }
+}
+@media (max-width: 560px) {
+  .content { padding: 40px 20px 72px; }
+  .hero h1 { font-size: 32px; }
+}

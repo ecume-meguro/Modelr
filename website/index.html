@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Modelr</title>
+  <meta name="description" content="Generate a 3D mesh from a single image. On-device, offline, private." />
+  <meta name="theme-color" content="#ffffff" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3l11 6v14l-11 6L5 23V9z' fill='none' stroke='%231a1a1a' stroke-width='2' stroke-linejoin='round'/%3E%3Cpath d='M16 3v26M5 9l11 6 11-6' fill='none' stroke='%231a1a1a' stroke-width='2' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css?v=5" />
+  <script type="importmap">
+  {"imports":{
+    "three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }}
+  </script>
+</head>
+<body>
+  <div class="layout">
+    <div class="content">
+      <header id="top">
+        <a class="brand" href="#top">Modelr</a>
+        <nav>
+          <a href="#models">Models</a>
+          <a href="#pricing">Pricing</a>
+          <a href="#faq">FAQ</a>
+          <a href="#download">Download</a>
+        </nav>
+      </header>
+
+      <main>
+        <section class="hero">
+          <h1>Image to 3D, on your Mac</h1>
+          <p>Generate a 3D mesh from a single image. On-device, offline, private.</p>
+          <p><a class="cta" href="#download">Download for macOS →</a> <span class="req">Apple Silicon · macOS 14+</span></p>
+        </section>
+
+        <section id="models">
+          <h2>Models</h2>
+          <table>
+            <thead>
+              <tr><th>Model</th><th>Speed</th><th>Memory</th><th>Recommended</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Mini Turbo</td><td>~40s</td><td>5–6 GB</td><td>8 GB</td></tr>
+              <tr><td>Mini <span class="muted">(free)</span></td><td>~1 min</td><td>6–8 GB</td><td>8–16 GB</td></tr>
+              <tr><td>Standard Turbo</td><td>~2 min</td><td>10–12 GB</td><td>16 GB</td></tr>
+              <tr><td>Standard</td><td>~3–4 min</td><td>12–16 GB</td><td>16 GB+</td></tr>
+            </tbody>
+          </table>
+          <p class="muted small">Estimates, depending on your Mac. The free Mini Turbo at 4-bit runs in under 5 GB on any Apple Silicon Mac; 8-bit and 4-bit cut memory on the larger models.</p>
+        </section>
+
+        <section id="pricing">
+          <h2>Pricing</h2>
+          <table class="compare">
+            <thead>
+              <tr><th></th><th>Free</th><th>Pro</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Price</td><td>$0</td><td>$49 <span class="muted">once</span></td></tr>
+              <tr><td>Generations</td><td>Unlimited</td><td>Unlimited</td></tr>
+              <tr><td>Models</td><td>Mini Turbo</td><td>All models</td></tr>
+              <tr><td>Quality</td><td>4-bit</td><td>All levels</td></tr>
+              <tr><td>Texture</td><td>Shape only</td><td>Full color</td></tr>
+              <tr><td>Offline</td><td>Fully offline</td><td>Fully offline</td></tr>
+            </tbody>
+          </table>
+          <p class="dl-row"><a class="cta" href="#download">Download for macOS →</a></p>
+          <p class="pricing-line">One app. Free forever. Unlock Pro in Settings, no ads or nags.</p>
+          <p class="muted small">One-time purchase. Free updates. No subscription.</p>
+        </section>
+
+        <section id="faq">
+          <h2>FAQ</h2>
+          <details>
+            <summary>Is Modelr a wrapper?</summary>
+            <p>No. Generation always runs on your Mac, and your images are never uploaded. It works fully offline.</p>
+          </details>
+          <details>
+            <summary>Do my images get uploaded?</summary>
+            <p>No. Inputs and outputs stay in a local folder on your disk.</p>
+          </details>
+          <details>
+            <summary>Does it work offline?</summary>
+            <p>Yes. Modelr works fully offline, on both Free and Pro. Nothing leaves your Mac.</p>
+          </details>
+          <details>
+            <summary>What do I need?</summary>
+            <p>An Apple Silicon Mac (M1 or newer) on macOS 14 or later. More memory allows larger models.</p>
+          </details>
+          <details>
+            <summary>What can I export?</summary>
+            <p>A standard 3D mesh for Blender, Unreal, Unity, or a slicer.</p>
+          </details>
+          <details>
+            <summary>Does it generate textures?</summary>
+            <p>Yes, on Pro. Pro paints a full color texture from your image. Free generates the shape (geometry) only.</p>
+          </details>
+          <details>
+            <summary>What models does it use?</summary>
+            <p>Modelr is built on Hunyuan3D 2 for shape and Hunyuan3D 2.1 Paint for texturing, all running on your Mac.</p>
+          </details>
+          <details>
+            <summary>Will Free nag me to upgrade?</summary>
+            <p>No. No ads or pop-ups, just an Unlock Pro button in Settings. Free stays free forever.</p>
+          </details>
+          <details>
+            <summary>Is Pro a subscription?</summary>
+            <p>No. One-time purchase, free updates.</p>
+          </details>
+        </section>
+
+        <section id="download">
+          <h2>Download</h2>
+          <p><a class="cta" href="#">Download for macOS →</a> <span class="req">Apple Silicon · macOS 14+</span></p>
+        </section>
+      </main>
+
+      <footer>Modelr · © 2026</footer>
+    </div>
+
+    <aside class="viz" aria-hidden="true">
+      <div class="viz__inner">
+        <div class="viz__track" id="track">
+          <div class="viz__slide"><img id="seed" class="viz__img" src="assets/penguin.png" alt="" /></div>
+          <div class="viz__slide"><canvas id="view"></canvas></div>
+        </div>
+        <div class="viz__steps">
+          <span data-i="0">Image</span>
+          <span data-i="1">Model</span>
+          <span data-i="2">Texture</span>
+        </div>
+        <span class="viz__hint" id="hint">Drag to orbit</span>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    /* FAQ: one open at a time (kept out of the module so it works regardless) */
+    (function () {
+      var f = [].slice.call(document.querySelectorAll('#faq details'));
+      f.forEach(function (d) {
+        d.addEventListener('toggle', function () {
+          if (d.open) f.forEach(function (o) { if (o !== d) o.open = false; });
+        });
+      });
+    })();
+  </script>
+  <script type="module" src="app.js?v=12"></script>
+</body>
+</html>

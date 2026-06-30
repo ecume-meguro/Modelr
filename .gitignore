@@ -1,0 +1,5 @@
+Modelr.xcodeproj/
+build/
+DerivedData/
+.DS_Store
+*.xcuserstate
