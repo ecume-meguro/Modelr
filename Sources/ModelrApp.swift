@@ -28,7 +28,7 @@ struct ModelrApp: App {
                     if let id = store.selection { store.paint(id) }
                 }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
-                .disabled(store.selection == nil || !PaintConfig.isAvailable)
+                .disabled(store.selection == nil || !ModelStore.isPaintAvailable)
 
                 Divider()
 

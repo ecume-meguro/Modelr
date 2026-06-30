@@ -25,6 +25,5 @@ let package = Package(
                 .product(name: "MLXFast", package: "mlx-swift"),
             ]
         ),
-        .executableTarget(name: "painttest", dependencies: ["HunyuanPaintMLX"]),
     ]
 )

@@ -477,8 +477,8 @@ final class ProjectStore {
               let image = imageURL(for: project) else { return }
         let settings = project.resolvedSettings
 
-        guard PipelineConfig.isAvailable(settings.model) else {
-            statuses[id] = .failed("\(settings.model.label) model weights not found in \(PipelineConfig.repoRoot.lastPathComponent).")
+        guard let weightsURL = ModelStore.shapeWeightsFile(for: settings.model) else {
+            statuses[id] = .failed("\(settings.model.label) weights aren't available yet — download the model first.")
             return
         }
 
@@ -526,7 +526,7 @@ final class ProjectStore {
         let run = shapeEngine.generate(
             imageURL: image,
             output: output,
-            weightsURL: PipelineConfig.weightsFile(for: settings.model),
+            weightsURL: weightsURL,
             quantize: settings.quant.flag,
             steps: settings.steps,
             guidance: Float(settings.guidance),
@@ -635,8 +635,8 @@ final class ProjectStore {
         else if let sid = current.sourceShapeID,
                 let s = project.generations.first(where: { $0.id == sid }) { shape = s }
         else { return }
-        guard PaintConfig.isAvailable else {
-            paintStatuses[id] = .failed("Paint model weights not found in \(PaintConfig.repoRoot.lastPathComponent)."); return
+        guard let paintWeightsRoot = ModelStore.paintWeightsRoot else {
+            paintStatuses[id] = .failed("Paint weights aren't available yet — download the paint model first."); return
         }
         let dir = folder(for: id)
         let meshURL = dir.appendingPathComponent(shape.meshFileName)
@@ -659,7 +659,7 @@ final class ProjectStore {
 
         let job = paintEngine.paint(
             meshURL: meshURL, imageURL: image, output: outMesh, texture: outTex,
-            weightsRoot: PaintConfig.weightsRoot,
+            weightsRoot: paintWeightsRoot,
             res: settings.res, steps: settings.steps, tex: settings.tex,
             superres: settings.superres, viewsDir: dir,
             onProgress: { [weak self] stage, fraction in

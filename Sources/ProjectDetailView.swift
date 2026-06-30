@@ -315,11 +315,11 @@ struct ProjectDetailView: View {
         if store.isPainting(project.id) {
             actionPill("Stop", "stop.fill", fill: .red) { store.cancelPaint(project.id) }
         } else {
-            let off = !PaintConfig.isAvailable || store.isRunning(project.id)
+            let off = !ModelStore.isPaintAvailable || store.isRunning(project.id)
             actionPill("Paint", "paintbrush.fill", fill: paintPink) { store.paint(project.id) }
                 .disabled(off)
                 .opacity(off ? 0.45 : 1)
-                .help(PaintConfig.isAvailable ? "Generate a texture" : "Paint model not found")
+                .help(ModelStore.isPaintAvailable ? "Generate a texture" : "Paint model not found")
         }
     }
 
