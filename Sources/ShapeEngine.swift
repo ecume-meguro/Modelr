@@ -2,6 +2,7 @@ import Foundation
 import CoreGraphics
 import ImageIO
 import simd
+import MLX
 import Hy3DMLX
 
 /// A cancellable handle to an in-flight generation.
@@ -79,12 +80,26 @@ final class ShapeEngine {
             guard let mesh else { onFinish(.failure("The model didn't produce a mesh.")); return }
             do {
                 try ShapeMeshWriter.writeMesh(mesh, to: output)
+                if run.cancelled {                                 // close the post-write cancel window
+                    try? FileManager.default.removeItem(at: output)
+                    onFinish(.failure("Cancelled")); return
+                }
                 onFinish(.success)
             } catch {
                 onFinish(.failure("Couldn't write the mesh: \(error.localizedDescription)"))
             }
         }
         return run
+    }
+
+    /// Drop the resident model and free GPU buffers. Called when the paint engine
+    /// starts, so shape + paint weights aren't both resident on a constrained machine.
+    func evict() {
+        queue.async {
+            self.cachedKey = nil
+            self.cachedGen = nil
+            MLX.GPU.clearCache()
+        }
     }
 
     private static func loadCGImage(_ url: URL) -> CGImage? {

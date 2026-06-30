@@ -530,8 +530,9 @@ final class ProjectStore {
         pointsURLs[id] = nil
         statuses[id] = .running(stage: "Loading model…", detail: nil, fraction: nil)
 
+        paintEngine.evict()            // free the paint model — shape & paint run sequentially
         let run = shapeEngine.generate(
-            imageURL: image,
+            imageURL: genInput,        // the immutable per-run snapshot, not the live input.png
             output: output,
             weightsURL: weightsURL,
             quantize: settings.quant.flag,
@@ -689,8 +690,17 @@ final class ProjectStore {
                                         settings: settings, startedAt: Date())
         paintStatuses[id] = .running(stage: "Loading paint model…", detail: nil, fraction: nil)
 
+        // Prefer the shape's immutable input snapshot; if it's missing, snapshot the
+        // live image so a mid-paint input change can't corrupt this run.
+        var paintInput = image
+        if inputURL(for: shape, in: id) == nil {
+            let copy = FileManager.default.temporaryDirectory
+                .appendingPathComponent("paint_input_\(paintID.uuidString).png")
+            if (try? FileManager.default.copyItem(at: image, to: copy)) != nil { paintInput = copy }
+        }
+        shapeEngine.evict()            // free the shape model — paint runs after shape
         let job = paintEngine.paint(
-            meshURL: meshURL, imageURL: image, output: outMesh, texture: outTex,
+            meshURL: meshURL, imageURL: paintInput, output: outMesh, texture: outTex,
             weightsRoot: paintWeightsRoot,
             res: settings.res, steps: settings.steps, tex: settings.tex,
             superres: settings.superres, viewsDir: dir,

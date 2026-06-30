@@ -4,8 +4,8 @@ import MLXRandom
 
 /// Weight loading from the original torch safetensors (NCHW conv → NHWC transpose + substring renames).
 public enum Weights {
-    public static func loadTorch(_ path: String, renames: [(String, String)] = []) -> [String: MLXArray] {
-        let sd = try! loadArrays(url: URL(fileURLWithPath: path))
+    public static func loadTorch(_ path: String, renames: [(String, String)] = []) throws -> [String: MLXArray] {
+        let sd = try loadArrays(url: URL(fileURLWithPath: path))
         var out = [String: MLXArray]()
         for (k0, v0) in sd {
             var k = k0
@@ -37,7 +37,7 @@ public struct PaintResult {
 /// A class so loaded model weights stay resident across runs.
 public final class PaintPipeline {
     let weightsRoot: String
-    let res: Int, steps: Int, tex: Int
+    public var res: Int, steps: Int, tex: Int    // per-run knobs; do not affect which weights load
     let guidance: Float = 3.0
     let sf: Float = 0.18215
     let superRes: Bool
@@ -52,11 +52,11 @@ public final class PaintPipeline {
         self.weightsRoot = weightsRoot; self.res = res; self.steps = steps; self.tex = tex; self.superRes = superRes
     }
 
-    private func loadRGB() -> (vae: PaintVAE, wrap: Paint20Wrapper, sr: RealESRGAN?, gen: MLXArray) {
+    private func loadRGB() throws -> (vae: PaintVAE, wrap: Paint20Wrapper, sr: RealESRGAN?, gen: MLXArray) {
         if let r = rgb { return r }
-        let vae = PaintVAE(W(Weights.loadTorch("\(weightsRoot)/hunyuan3d-paint-v2-0/vae/diffusion_pytorch_model.safetensors",
+        let vae = PaintVAE(W(try Weights.loadTorch("\(weightsRoot)/hunyuan3d-paint-v2-0/vae/diffusion_pytorch_model.safetensors",
                                                renames: [(".to_out.0.", ".to_out.")])))
-        let (mainW, dualW) = Weights.splitPBR(Weights.loadTorch("\(weightsRoot)/hunyuan3d-paint-v2-0/unet/diffusion_pytorch_model.safetensors",
+        let (mainW, dualW) = Weights.splitPBR(try Weights.loadTorch("\(weightsRoot)/hunyuan3d-paint-v2-0/unet/diffusion_pytorch_model.safetensors",
                                                                 renames: [("transformer_blocks.0.transformer.", "transformer_blocks.0.")]))
         let wrap = Paint20Wrapper(main: mainW, dual: dualW)
         // Super-res weights are a converted (non-HF) file; if absent, paint still works
@@ -71,16 +71,16 @@ public final class PaintPipeline {
         return r
     }
 
-    public func run(meshPath: String, imagePath: String, outGLB: String, fixturesDir: String) {
+    public func run(meshPath: String, imagePath: String, outGLB: String, fixturesDir: String) throws {
         let t0 = Date()
         func log(_ s: String) { print("[pipeline] \(s)  (\(Int(-t0.timeIntervalSinceNow))s)") }
 
         // ---- models ----
-        let vae = PaintVAE(W(Weights.loadTorch("\(weightsRoot)/hunyuan3d-paint-v2-0/vae/diffusion_pytorch_model.safetensors",
+        let vae = PaintVAE(W(try Weights.loadTorch("\(weightsRoot)/hunyuan3d-paint-v2-0/vae/diffusion_pytorch_model.safetensors",
                                                renames: [(".to_out.0.", ".to_out.")])))
-        let (mainW, dualW) = Weights.splitPBR(Weights.loadTorch("\(weightsRoot)/hunyuan3d-paintpbr-v2-1/unet/diffusion_pytorch_model.safetensors"))
+        let (mainW, dualW) = Weights.splitPBR(try Weights.loadTorch("\(weightsRoot)/hunyuan3d-paintpbr-v2-1/unet/diffusion_pytorch_model.safetensors"))
         let wrap = PBRWrapper(main: mainW, dual: dualW, nPbr: 2)
-        let dino = Dinov2(W(Weights.loadTorch("\(weightsRoot)/dinov2-giant/model.safetensors")))
+        let dino = Dinov2(W(try Weights.loadTorch("\(weightsRoot)/dinov2-giant/model.safetensors")))
         let srModel: RealESRGAN? = superRes
             ? RealESRGAN(W((try! loadArrays(url: URL(fileURLWithPath: "\(weightsRoot)/realesrgan/rrdbnet_mlx.safetensors"))).mapValues { $0.asType(.float32) }))
             : nil
@@ -88,7 +88,7 @@ public final class PaintPipeline {
 
         // ---- mesh + unwrap ----
         let mesh = loadMesh(meshPath)
-        let uw = xatlasUnwrap(vertices: mesh.vertices, vertexCount: mesh.vertexCount, faces: mesh.faces, faceCount: mesh.faceCount)
+        guard let uw = xatlasUnwrap(vertices: mesh.vertices, vertexCount: mesh.vertexCount, faces: mesh.faces, faceCount: mesh.faceCount) else { return }
         var V = [Float](repeating: 0, count: uw.vertexCount * 3)               // original geometry gathered by vmapping
         for i in 0..<uw.vertexCount { let o = Int(uw.vmapping[i]) * 3; V[i*3] = mesh.vertices[o]; V[i*3+1] = mesh.vertices[o+1]; V[i*3+2] = mesh.vertices[o+2] }
         let R = MeshRender(); R.loadMesh(V, uw.indices); R.setUV(uw.uvs, flipV: true)
@@ -161,13 +161,14 @@ public final class PaintPipeline {
     public func paintRGB(mesh: LoadedMesh, imagePath: String,
                          onProgress: ((String, Float) -> Void)? = nil,
                          isCancelled: () -> Bool = { false },
-                         onViews: ((Data) -> Void)? = nil) -> PaintResult? {
+                         onViews: ((Data) -> Void)? = nil) throws -> PaintResult? {
         onProgress?("Loading paint model", 0.02)
-        let (vae, wrap, srModel, gen) = loadRGB()
+        let (vae, wrap, srModel, gen) = try loadRGB()
         if isCancelled() { return nil }
 
         onProgress?("Unwrapping UVs", 0.05)
-        let uw = xatlasUnwrap(vertices: mesh.vertices, vertexCount: mesh.vertexCount, faces: mesh.faces, faceCount: mesh.faceCount)
+        guard let uw = xatlasUnwrap(vertices: mesh.vertices, vertexCount: mesh.vertexCount,
+                                    faces: mesh.faces, faceCount: mesh.faceCount) else { return nil }
         var V = [Float](repeating: 0, count: uw.vertexCount * 3)
         for i in 0..<uw.vertexCount { let o = Int(uw.vmapping[i]) * 3; V[i*3] = mesh.vertices[o]; V[i*3+1] = mesh.vertices[o+1]; V[i*3+2] = mesh.vertices[o+2] }
         let R = MeshRender(); R.loadMesh(V, uw.indices); R.setUV(uw.uvs, flipV: true)
@@ -202,6 +203,7 @@ public final class PaintPipeline {
                 let grid = concatenated((0..<N).map { prev[$0] }, axis: 1)
                 if let d = pngData(grid) { onViews(d) }
             }
+            MLX.GPU.clearCache()                       // release per-step UNet/decode buffers
         }
         if isCancelled() { return nil }
 

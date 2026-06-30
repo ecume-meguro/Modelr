@@ -1,5 +1,6 @@
 import Foundation
 import simd
+import MLX
 import HunyuanPaintMLX
 
 /// In-process MLX paint/texture generation — the native-Swift replacement for the
@@ -33,7 +34,10 @@ final class PaintEngine {
                 onFinish(.failure("Couldn't read the shape mesh.")); return
             }
 
-            let key = "\(weightsRoot.path)#\(res)#\(steps)#\(tex)#\(superres)"
+            // Key only on what changes the LOADED WEIGHTS (root + whether super-res loads).
+            // res/steps/tex are per-run knobs, set on the cached pipe so changing quality
+            // doesn't reload multiple GB of weights.
+            let key = "\(weightsRoot.path)#\(superres)"
             let pipe: PaintPipeline
             if self.cachedKey == key, let p = self.cachedPipe {
                 pipe = p
@@ -41,36 +45,60 @@ final class PaintEngine {
                 onProgress("Loading paint model…", nil)
                 self.cachedKey = nil
                 self.cachedPipe = nil
+                MLX.GPU.clearCache()
                 pipe = PaintPipeline(weightsRoot: weightsRoot.path, res: res, steps: steps,
                                      tex: tex, superRes: superres)
                 self.cachedKey = key
                 self.cachedPipe = pipe
             }
+            pipe.res = res; pipe.steps = steps; pipe.tex = tex
             if run.cancelled { onFinish(.failure("Cancelled")); return }
 
             var viewIdx = 0
-            let result = pipe.paintRGB(
-                mesh: loaded, imagePath: imageURL.path,
-                onProgress: { stage, frac in onProgress(stage, Double(frac)) },
-                isCancelled: { run.cancelled },
-                onViews: { data in
-                    let u = viewsDir.appendingPathComponent("paint_views_\(viewIdx).png")
-                    viewIdx += 1
-                    try? data.write(to: u)
-                    onViews(u)
-                })
+            let result: PaintResult?
+            do {
+                result = try pipe.paintRGB(
+                    mesh: loaded, imagePath: imageURL.path,
+                    onProgress: { stage, frac in onProgress(stage, Double(frac)) },
+                    isCancelled: { run.cancelled },
+                    onViews: { data in
+                        let u = viewsDir.appendingPathComponent("paint_views_\(viewIdx).png")
+                        viewIdx += 1
+                        try? data.write(to: u)
+                        onViews(u)
+                    })
+            } catch {
+                self.cachedKey = nil; self.cachedPipe = nil      // failed load → retry fresh next time
+                onFinish(.failure("Couldn't load the paint model: \(error.localizedDescription)"))
+                return
+            }
 
             if run.cancelled { onFinish(.failure("Cancelled")); return }
-            guard let result else { onFinish(.failure("Paint didn't produce a texture.")); return }
+            guard let result else { onFinish(.failure("Couldn't unwrap or paint this mesh.")); return }
             do {
                 try PaintMeshWriter.write(result, to: output)
                 try result.albedoPNG.write(to: texture)
+                if run.cancelled {                                // closed the post-write cancel window
+                    try? FileManager.default.removeItem(at: output)
+                    try? FileManager.default.removeItem(at: texture)
+                    onFinish(.failure("Cancelled")); return
+                }
                 onFinish(.success)
             } catch {
                 onFinish(.failure("Couldn't write the painted mesh: \(error.localizedDescription)"))
             }
         }
         return run
+    }
+
+    /// Drop the resident paint pipeline and free GPU buffers (called when the shape
+    /// engine starts, so both model sets aren't resident at once).
+    func evict() {
+        queue.async {
+            self.cachedKey = nil
+            self.cachedPipe = nil
+            MLX.GPU.clearCache()
+        }
     }
 
     /// Parse Modelr's `.mesh` (verts + normals + faces) into the paint package's
