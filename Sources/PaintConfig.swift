@@ -6,11 +6,16 @@ enum PaintConfig {
     static let repoRoot = URL(fileURLWithPath: "/Users/xzm/Projects/Hunyuan-3D-Paint-MLX")
     static var pythonExecutable: URL { repoRoot.appendingPathComponent(".venv/bin/python3.12") }
 
-    /// Small (2.0) RGB texture model.
-    static var weightsDir: URL { repoRoot.appendingPathComponent("weights/hunyuan3d-paint-v2-0") }
+    /// Directory that contains the per-model weight subdirs (hunyuan3d-paint-v2-0,
+    /// realesrgan, …); the in-process `PaintPipeline` resolves subpaths under it.
+    static var weightsRoot: URL { repoRoot.appendingPathComponent("weights") }
 
+    /// Small (2.0) RGB texture model.
+    static var weightsDir: URL { weightsRoot.appendingPathComponent("hunyuan3d-paint-v2-0") }
+
+    /// Paint now runs in-process (vendored HunyuanPaintMLX); only the weights need to exist.
     static var isAvailable: Bool {
-        FileManager.default.isExecutableFile(atPath: pythonExecutable.path)
-            && FileManager.default.fileExists(atPath: weightsDir.appendingPathComponent("unet/config.json").path)
+        FileManager.default.fileExists(
+            atPath: weightsDir.appendingPathComponent("unet/diffusion_pytorch_model.safetensors").path)
     }
 }

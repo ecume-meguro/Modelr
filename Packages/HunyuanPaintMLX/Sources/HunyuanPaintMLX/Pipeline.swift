@@ -24,8 +24,18 @@ public enum Weights {
     }
 }
 
-/// Full 2.1 PBR paint pipeline in Swift: mesh + image → textured GLB. Port of run_paint_pbr.py.
-public struct PaintPipeline {
+/// Result geometry + baked texture from a paint run. Format-agnostic — the caller
+/// serializes to whatever mesh format it uses (Modelr writes a `.tmesh` + PNG).
+public struct PaintResult {
+    public let vertices: [Float]   // flat xyz, unwrapped geometry
+    public let faces: [UInt32]     // flat triangle indices
+    public let uvs: [Float]        // flat uv, viewer convention (v-flipped to top-left)
+    public let albedoPNG: Data     // baked base-color texture as PNG bytes
+}
+
+/// Paint pipeline in Swift: mesh + image → textured geometry. Port of run_paint*.py.
+/// A class so loaded model weights stay resident across runs.
+public final class PaintPipeline {
     let weightsRoot: String
     let res: Int, steps: Int, tex: Int
     let guidance: Float = 3.0
@@ -35,8 +45,26 @@ public struct PaintPipeline {
     let azims: [Float] = [0, 90, 180, 270, 0, 180]
     let vw: [Float] = [1, 0.1, 0.5, 0.1, 0.05, 0.05]
 
+    // Resident RGB (2.0) models, loaded once on first paintRGB.
+    private var rgb: (vae: PaintVAE, wrap: Paint20Wrapper, sr: RealESRGAN?, gen: MLXArray)?
+
     public init(weightsRoot: String, res: Int = 512, steps: Int = 15, tex: Int = 4096, superRes: Bool = true) {
         self.weightsRoot = weightsRoot; self.res = res; self.steps = steps; self.tex = tex; self.superRes = superRes
+    }
+
+    private func loadRGB() -> (vae: PaintVAE, wrap: Paint20Wrapper, sr: RealESRGAN?, gen: MLXArray) {
+        if let r = rgb { return r }
+        let vae = PaintVAE(W(Weights.loadTorch("\(weightsRoot)/hunyuan3d-paint-v2-0/vae/diffusion_pytorch_model.safetensors",
+                                               renames: [(".to_out.0.", ".to_out.")])))
+        let (mainW, dualW) = Weights.splitPBR(Weights.loadTorch("\(weightsRoot)/hunyuan3d-paint-v2-0/unet/diffusion_pytorch_model.safetensors",
+                                                                renames: [("transformer_blocks.0.transformer.", "transformer_blocks.0.")]))
+        let wrap = Paint20Wrapper(main: mainW, dual: dualW)
+        let sr: RealESRGAN? = superRes
+            ? RealESRGAN(W((try! loadArrays(url: URL(fileURLWithPath: "\(weightsRoot)/realesrgan/rrdbnet_mlx.safetensors"))).mapValues { $0.asType(.float32) }))
+            : nil
+        let r = (vae, wrap, sr, mainW.a("learned_text_clip_gen"))
+        rgb = r
+        return r
     }
 
     public func run(meshPath: String, imagePath: String, outGLB: String, fixturesDir: String) {
@@ -124,26 +152,24 @@ public struct PaintPipeline {
         log("DONE → \(outGLB)")
     }
 
-    /// 2.0 small (RGB) pipeline: single baseColor texture, camera class-embedding, no DINO/material/RoPE.
-    public func runRGB(meshPath: String, imagePath: String, outGLB: String, fixturesDir: String) {
-        let t0 = Date()
-        func log(_ s: String) { print("[pipeline-2.0] \(s)  (\(Int(-t0.timeIntervalSinceNow))s)") }
-        let vae = PaintVAE(W(Weights.loadTorch("\(weightsRoot)/hunyuan3d-paint-v2-0/vae/diffusion_pytorch_model.safetensors",
-                                               renames: [(".to_out.0.", ".to_out.")])))
-        let (mainW, dualW) = Weights.splitPBR(Weights.loadTorch("\(weightsRoot)/hunyuan3d-paint-v2-0/unet/diffusion_pytorch_model.safetensors",
-                                                                renames: [("transformer_blocks.0.transformer.", "transformer_blocks.0.")]))
-        let wrap = Paint20Wrapper(main: mainW, dual: dualW)
-        let srModel: RealESRGAN? = superRes
-            ? RealESRGAN(W((try! loadArrays(url: URL(fileURLWithPath: "\(weightsRoot)/realesrgan/rrdbnet_mlx.safetensors"))).mapValues { $0.asType(.float32) }))
-            : nil
-        log("models loaded")
+    /// 2.0 RGB paint: geometry + reference image → unwrapped geometry + baked base-color texture.
+    /// Polls `isCancelled` (returns nil if it fires); streams decoded view grids via `onViews`.
+    public func paintRGB(mesh: LoadedMesh, imagePath: String,
+                         onProgress: ((String, Float) -> Void)? = nil,
+                         isCancelled: () -> Bool = { false },
+                         onViews: ((Data) -> Void)? = nil) -> PaintResult? {
+        onProgress?("Loading paint model", 0.02)
+        let (vae, wrap, srModel, gen) = loadRGB()
+        if isCancelled() { return nil }
 
-        let mesh = loadMesh(meshPath)
+        onProgress?("Unwrapping UVs", 0.05)
         let uw = xatlasUnwrap(vertices: mesh.vertices, vertexCount: mesh.vertexCount, faces: mesh.faces, faceCount: mesh.faceCount)
         var V = [Float](repeating: 0, count: uw.vertexCount * 3)
         for i in 0..<uw.vertexCount { let o = Int(uw.vmapping[i]) * 3; V[i*3] = mesh.vertices[o]; V[i*3+1] = mesh.vertices[o+1]; V[i*3+2] = mesh.vertices[o+2] }
         let R = MeshRender(); R.loadMesh(V, uw.indices); R.setUV(uw.uvs, flipV: true)
+        if isCancelled() { return nil }
 
+        onProgress?("Rendering control maps", 0.1)
         let ctrl = zip(elevs, azims).map { R.renderControl($0.0, $0.1, res) }
         let normals = ctrl.map { $0.0 }, positions = ctrl.map { $0.1 }
         func enc(_ imgs: [MLXArray]) -> MLXArray { vae.encodeMean(stacked(imgs) * 2 - 1) * sf }
@@ -151,32 +177,46 @@ public struct PaintPipeline {
         let positionLat = enc(positions).expandedDimensions(axis: 0)
         let refLat = enc([prepRGB(imagePath, res)]).expandedDimensions(axis: 0)   // [1,1,h,w,4]
         let N = elevs.count, h = res / 8
-        log("controls + ref ready")
+        if isCancelled() { return nil }
 
         let (sig, ts) = uniPCSchedule(steps)
         let sched = UniPCScheduler(sigmas: sig, timesteps: ts)
         MLXRandom.seed(0)
         var latents = MLXRandom.normal([1, N, h, h, 4])
         let ced = wrap.prepare(refLat: refLat)
-        let gen = mainW.a("learned_text_clip_gen"), neg = zeros(gen.shape)
+        let neg = zeros(gen.shape)
         let camGen = (0..<N).map { Int32($0) }
         for (i, t) in ts.enumerated() {
+            if isCancelled() { return nil }
             let tArr = MLXArray(Array(repeating: Float(t), count: N))
             let vc = wrap.predict(latents, tArr, text: gen, normalLat: normalLat, positionLat: positionLat, camGen: camGen, ced: ced, mvaScale: 1, refScale: 1)
             let vu = wrap.predict(latents, tArr, text: neg, normalLat: normalLat, positionLat: positionLat, camGen: camGen, ced: nil, mvaScale: 1, refScale: 0)
             latents = sched.step(vu + guidance * (vc - vu), t, latents); eval(latents)
-            log("step \(i+1)/\(steps)")
+            onProgress?("Painting (\(i+1)/\(steps))", 0.15 + 0.6 * Float(i + 1) / Float(steps))
+            if let onViews, i % 3 == 2 || i == steps - 1 {
+                let prev = clip((vae.decode(latents[0] / sf) + 1) / 2, min: 0, max: 1)   // [N,H,W,3]
+                let grid = concatenated((0..<N).map { prev[$0] }, axis: 1)
+                if let d = pngData(grid) { onViews(d) }
+            }
         }
+        if isCancelled() { return nil }
 
+        onProgress?("Decoding views", 0.8)
         let dd = clip((vae.decode(latents[0] / sf) + 1) / 2, min: 0, max: 1)       // [N,H,W,3]
         var views = (0..<N).map { dd[$0] }
-        if let sr = srModel { views = views.map { clip(sr($0.expandedDimensions(axis: 0))[0], min: 0, max: 1) }; eval(views[0]); log("super-res") }
+        if let sr = srModel {
+            onProgress?("Super-resolving", 0.88)
+            views = views.map { clip(sr($0.expandedDimensions(axis: 0))[0], min: 0, max: 1) }; eval(views[0])
+        }
+        if isCancelled() { return nil }
+
+        onProgress?("Baking texture", 0.93)
         let (texs, covered) = R.bakeMulti([views], elevs, azims, textureSize: tex, weights: vw)
-        let texC = MeshRender.inpaint(texs[0], covered); eval(texC); log("baked")
-        let pngPath = "\(outGLB).color.png"; saveRGB(texC, pngPath)
-        var uvExport = uw.uvs; for i in 0..<(uvExport.count/2) { uvExport[i*2+1] = 1 - uvExport[i*2+1] }
-        try! writeGLB(path: outGLB, vertices: V, faces: uw.indices, uvs: uvExport,
-                      baseColorPNG: try! Data(contentsOf: URL(fileURLWithPath: pngPath)), metallicRoughnessPNG: nil)
-        log("DONE → \(outGLB)")
+        let texC = MeshRender.inpaint(texs[0], covered); eval(texC)
+        guard let albedoPNG = pngData(texC) else { return nil }
+        var uvOut = uw.uvs
+        for i in 0..<(uvOut.count / 2) { uvOut[i*2+1] = 1 - uvOut[i*2+1] }          // v-flip → viewer top-left
+        onProgress?("Done", 1.0)
+        return PaintResult(vertices: V, faces: uw.indices, uvs: uvOut, albedoPNG: albedoPNG)
     }
 }

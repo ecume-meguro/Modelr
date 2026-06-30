@@ -319,42 +319,46 @@ public func imagenetNorm(_ img: MLXArray) -> MLXArray {
 }
 
 /// Save `[H, W, 3]` float in [0,1] as an 8-bit RGB PNG at `path`.
-public func saveRGB(_ img: MLXArray, _ path: String) {
+/// Build a CGImage from an `[H,W,3]` float array in [0,1].
+public func cgImageRGB(_ img: MLXArray) -> CGImage? {
     let shp = img.shape
-    precondition(shp.count == 3 && shp[2] == 3, "saveRGB expects [H,W,3], got \(shp)")
-    let h = shp[0]
-    let w = shp[1]
-
+    precondition(shp.count == 3 && shp[2] == 3, "cgImageRGB expects [H,W,3], got \(shp)")
+    let h = shp[0], w = shp[1]
     let flat = img.asType(.float32).asArray(Float.self)   // row-major H*W*3
-
-    // Pack into 8-bit RGBA (alpha = 255), round-to-nearest, clamp 0..255.
     var bytes = [UInt8](repeating: 255, count: h * w * 4)
     for i in 0 ..< (h * w) {
-        let s = i * 3
-        let d = i * 4
+        let s = i * 3, d = i * 4
         for ch in 0 ..< 3 {
             let v = (flat[s + ch] * 255.0).rounded()
             bytes[d + ch] = UInt8(min(max(v, 0.0), 255.0))
         }
         bytes[d + 3] = 255
     }
-
     let colorSpace = CGColorSpaceCreateDeviceRGB()
     let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
-    let provider = CGDataProvider(data: Data(bytes) as CFData)
-    guard let provider,
-          let cg = CGImage(
-              width: w, height: h,
-              bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
-              space: colorSpace, bitmapInfo: bitmapInfo,
-              provider: provider, decode: nil, shouldInterpolate: false,
-              intent: .defaultIntent)
-    else { return }
+    guard let provider = CGDataProvider(data: Data(bytes) as CFData) else { return nil }
+    return CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
+                   space: colorSpace, bitmapInfo: bitmapInfo, provider: provider,
+                   decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+}
 
+public func saveRGB(_ img: MLXArray, _ path: String) {
+    guard let cg = cgImageRGB(img) else { return }
     let url = URL(fileURLWithPath: path) as CFURL
-    guard let dest = CGImageDestinationCreateWithURL(
-        url, UTType.png.identifier as CFString, 1, nil)
+    guard let dest = CGImageDestinationCreateWithURL(url, UTType.png.identifier as CFString, 1, nil)
     else { return }
     CGImageDestinationAddImage(dest, cg, nil)
     CGImageDestinationFinalize(dest)
+}
+
+/// Encode an `[H,W,3]` float image to PNG bytes (for returning textures without a temp file).
+public func pngData(_ img: MLXArray) -> Data? {
+    guard let cg = cgImageRGB(img) else { return nil }
+    let data = NSMutableData()
+    guard let dest = CGImageDestinationCreateWithData(data as CFMutableData,
+                                                      UTType.png.identifier as CFString, 1, nil)
+    else { return nil }
+    CGImageDestinationAddImage(dest, cg, nil)
+    guard CGImageDestinationFinalize(dest) else { return nil }
+    return data as Data
 }

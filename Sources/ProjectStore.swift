@@ -20,6 +20,7 @@ final class ProjectStore {
 
     private let service = GenerationService()
     private let shapeEngine = ShapeEngine()
+    private let paintEngine = PaintEngine()
     private var runningJobs: [Project.ID: any CancellableRun] = [:]
     /// Monotonic per-project run token: callbacks from a superseded run are ignored.
     private var runTokens: [Project.ID: UInt64] = [:]
@@ -42,7 +43,7 @@ final class ProjectStore {
     // Paint (texture) state — independent of shape generation.
     private var paintStatuses: [Project.ID: GenerationStatus] = [:]
     private var paintViewsURLs: [Project.ID: URL] = [:]
-    private var paintJobs: [Project.ID: GenerationService.Job] = [:]
+    private var paintJobs: [Project.ID: any CancellableRun] = [:]
     private var paintTokens: [Project.ID: UInt64] = [:]
     private struct PendingPaint {
         let id: UUID
@@ -657,10 +658,11 @@ final class ProjectStore {
                                         settings: settings, startedAt: Date())
         paintStatuses[id] = .running(stage: "Loading paint model…", detail: nil, fraction: nil)
 
-        let job = service.paint(
-            mesh: meshURL, image: image, output: outMesh, weights: PaintConfig.weightsDir,
+        let job = paintEngine.paint(
+            meshURL: meshURL, imageURL: image, output: outMesh, texture: outTex,
+            weightsRoot: PaintConfig.weightsRoot,
             res: settings.res, steps: settings.steps, tex: settings.tex,
-            superres: settings.superres, faces: settings.faces,
+            superres: settings.superres, viewsDir: dir,
             onProgress: { [weak self] stage, fraction in
                 Task { @MainActor in
                     guard let self, self.paintTokens[id] == token else { return }

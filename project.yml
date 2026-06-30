@@ -32,6 +32,8 @@ targets:
     dependencies:
       - package: Hy3DMLX
         product: Hy3DMLX
+      - package: HunyuanPaintMLX
+        product: HunyuanPaintMLX
     settings:
       base:
         PRODUCT_NAME: Modelr
