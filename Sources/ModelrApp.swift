@@ -37,6 +37,15 @@ struct ModelrApp: App {
                 }
                 .keyboardShortcut(".", modifiers: .command)
                 .disabled(store.selection == nil)
+
+                Divider()
+
+                Button(store.downloadProgress == nil
+                       ? "Download Missing Model Weights…"
+                       : "Downloading… \(Int((store.downloadProgress?.fraction ?? 0) * 100))%") {
+                    if let id = store.selection { store.downloadModels(for: id) }
+                }
+                .disabled(store.selection == nil || store.downloadProgress != nil)
             }
         }
     }

@@ -20,6 +20,13 @@ final class ProjectStore {
 
     private let shapeEngine = ShapeEngine()
     private let paintEngine = PaintEngine()
+    private let downloader = ModelDownloader()
+
+    /// Non-nil while model weights are downloading (overall fraction + current file).
+    var downloadProgress: (fraction: Double, file: String)?
+    var downloadError: String?
+    /// Bumped when a download completes so availability-dependent UI re-evaluates.
+    var modelsVersion = 0
     private var runningJobs: [Project.ID: any CancellableRun] = [:]
     /// Monotonic per-project run token: callbacks from a superseded run are ignored.
     private var runTokens: [Project.ID: UInt64] = [:]
@@ -562,6 +569,31 @@ final class ProjectStore {
                 }
             })
         runningJobs[id] = run
+    }
+
+    /// Download any missing weights for the project's shape model (+ the paint model)
+    /// into the app container from HuggingFace, reporting progress for the UI.
+    func downloadModels(for id: Project.ID) {
+        guard downloadProgress == nil,
+              let project = projects.first(where: { $0.id == id }) else { return }
+        let model = project.resolvedSettings.model
+        var files = ModelStore.isShapeAvailable(model) ? [] : downloader.shapeFiles(for: model)
+        if !ModelStore.isPaintAvailable { files += downloader.paintFiles() }
+        guard !files.isEmpty else { return }
+        downloadError = nil
+        downloadProgress = (0, "Starting…")
+        Task { @MainActor in
+            do {
+                try await downloader.download(files) { frac, file in
+                    Task { @MainActor in self.downloadProgress = (frac, file) }
+                }
+                self.downloadProgress = nil
+                self.modelsVersion += 1            // nudge availability-dependent UI
+            } catch {
+                self.downloadProgress = nil
+                self.downloadError = error.localizedDescription
+            }
+        }
     }
 
     /// Turn the just-finished run into a saved generation, selected for viewing.

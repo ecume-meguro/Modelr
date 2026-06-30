@@ -59,9 +59,13 @@ public final class PaintPipeline {
         let (mainW, dualW) = Weights.splitPBR(Weights.loadTorch("\(weightsRoot)/hunyuan3d-paint-v2-0/unet/diffusion_pytorch_model.safetensors",
                                                                 renames: [("transformer_blocks.0.transformer.", "transformer_blocks.0.")]))
         let wrap = Paint20Wrapper(main: mainW, dual: dualW)
-        let sr: RealESRGAN? = superRes
-            ? RealESRGAN(W((try! loadArrays(url: URL(fileURLWithPath: "\(weightsRoot)/realesrgan/rrdbnet_mlx.safetensors"))).mapValues { $0.asType(.float32) }))
-            : nil
+        // Super-res weights are a converted (non-HF) file; if absent, paint still works
+        // without the x4 upscale rather than crashing.
+        var sr: RealESRGAN? = nil
+        if superRes,
+           let arrs = try? loadArrays(url: URL(fileURLWithPath: "\(weightsRoot)/realesrgan/rrdbnet_mlx.safetensors")) {
+            sr = RealESRGAN(W(arrs.mapValues { $0.asType(.float32) }))
+        }
         let r = (vae, wrap, sr, mainW.a("learned_text_clip_gen"))
         rgb = r
         return r
