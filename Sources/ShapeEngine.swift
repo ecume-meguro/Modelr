@@ -41,6 +41,7 @@ final class ShapeEngine {
     func generate(imageURL: URL, output: URL, weightsURL: URL, quantize: Int,
                   steps: Int, guidance: Float, resolution: Int, seed: UInt64,
                   onProgress: @escaping (String, String?, Double?) -> Void,
+                  onPreview: @escaping (URL) -> Void,
                   onFinish: @escaping (GenerationOutcome) -> Void) -> Run {
         let run = Run()
         queue.async { [weak self] in
@@ -70,9 +71,17 @@ final class ShapeEngine {
             }
             if run.cancelled { onFinish(.failure("Cancelled")); return }
 
+            let dir = output.deletingLastPathComponent()
+            var previewIdx = 0
             let mesh = gen.generate(image: cg, steps: steps, guidance: guidance, seed: seed,
                                     resolution: resolution, octree: true,
-                                    isCancelled: { run.cancelled }) { p in
+                                    isCancelled: { run.cancelled },
+                                    onPreview: { m in
+                                        let u = dir.appendingPathComponent("preview_\(previewIdx).mesh")
+                                        previewIdx += 1
+                                        try? ShapeMeshWriter.writeMesh(m, to: u)
+                                        onPreview(u)
+                                    }) { p in
                 onProgress(p.stage, nil, Double(p.fraction))
             }
 

@@ -16,7 +16,7 @@ public struct Pipeline {
     public func denoise(cond: MLXArray, noise: MLXArray, sigmas: MLXArray,
                         guidance: Float = 5.0, guidanceEmbed: Bool = false,
                         isCancelled: () -> Bool = { false },
-                        progress: ((Int, Int) -> Void)? = nil) -> MLXArray {
+                        progress: ((Int, Int, MLXArray) -> Void)? = nil) -> MLXArray {
         let S = sigmas.dim(0)
         let sig = sigmas.asArray(Float.self)               // pull the fixed schedule once (not per step)
         var lat = noise
@@ -36,7 +36,7 @@ public struct Pipeline {
             }
             lat = lat + dt * v
             eval(lat)
-            progress?(i + 1, S)
+            progress?(i + 1, S, lat)
         }
         return lat
     }

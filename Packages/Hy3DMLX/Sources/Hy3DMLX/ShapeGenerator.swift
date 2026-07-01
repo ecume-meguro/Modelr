@@ -88,6 +88,7 @@ public final class ShapeGenerator {
     public func generate(image: CGImage, steps: Int = 30, guidance: Float = 5.0,
                          seed: UInt64 = 0, resolution: Int = 256, octree: Bool = true,
                          isCancelled: () -> Bool = { false },
+                         onPreview: ((Mesh) -> Void)? = nil,
                          onProgress: ((Progress) -> Void)? = nil) -> Mesh? {
         guard let pix = Preprocess.dinoPixels(cgImage: image) else { return nil }
         if isCancelled() { return nil }
@@ -101,9 +102,19 @@ public final class ShapeGenerator {
         let pipe = Pipeline(dit: dit, vae: vae)
         let noise = Sampler.noise(numLatents: numLatents, seed: seed)
         let sigmas = dit.guidanceEmbed ? Sampler.consistencySigmas(steps) : Sampler.flowMatchSigmas(steps)
+        // Decode a coarse preview from the in-progress latent at a few steps (a meshable
+        // surface emerges partway through denoising; earlier steps are skipped when empty).
+        let previewSteps: Set<Int> = onPreview == nil ? []
+            : Set([0.4, 0.55, 0.7, 0.85].map { Int((Float(steps) * Float($0)).rounded()) })
         let lat = pipe.denoise(cond: cond, noise: noise, sigmas: sigmas, guidance: guidance,
-                               guidanceEmbed: dit.guidanceEmbed, isCancelled: isCancelled) { i, n in
+                               guidanceEmbed: dit.guidanceEmbed, isCancelled: isCancelled) { i, n, curLat in
             onProgress?(.init(stage: "Denoising (\(i)/\(n))", fraction: 0.1 + 0.6 * Float(i) / Float(n)))
+            if previewSteps.contains(i), let onPreview {
+                let g = pipe.gridSDFOctree(latents: curLat, resolution: 48)
+                let m = MarchingCubes.extract(grid: g, level: 0.0)
+                MLX.GPU.clearCache()
+                if !m.vertices.isEmpty && !m.faces.isEmpty { onPreview(m) }
+            }
         }
         eval(lat); MLX.GPU.clearCache()           // release the 30-step denoise buffers before decode
         if isCancelled() { return nil }

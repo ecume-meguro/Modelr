@@ -546,6 +546,12 @@ final class ProjectStore {
                     self.statuses[id] = .running(stage: stage, detail: detail, fraction: fraction)
                 }
             },
+            onPreview: { [weak self] url in
+                Task { @MainActor in
+                    guard let self, self.runTokens[id] == token else { return }
+                    self.previewURLs[id] = url
+                }
+            },
             onFinish: { [weak self] outcome in
                 Task { @MainActor in
                     guard let self, self.runTokens[id] == token else { return }
