@@ -8,21 +8,33 @@ public struct Pipeline {
     let vae: VAE
     public init(dit: DiT, vae: VAE) { self.dit = dit; self.vae = vae }
 
-    /// cond [2,Lc,Cc] (cond, uncond), noise [1,N,64], sigmas [S] -> latents [1,N,64]
+    /// Flow-match Euler loop. Two modes:
+    ///  - CFG (guidanceEmbed=false): `cond` is [2,Lc,Cc] (cond, uncond); one forward over a
+    ///    duplicated batch, combined as v_uncond + guidance·(v_cond − v_uncond).
+    ///  - guidance-embed (turbo/distilled): `cond` is [1,Lc,Cc] (conditional only); a single
+    ///    forward per step with the guidance value embedded as a token (no CFG).
     public func denoise(cond: MLXArray, noise: MLXArray, sigmas: MLXArray,
-                        guidance: Float = 5.0, isCancelled: () -> Bool = { false },
+                        guidance: Float = 5.0, guidanceEmbed: Bool = false,
+                        isCancelled: () -> Bool = { false },
                         progress: ((Int, Int) -> Void)? = nil) -> MLXArray {
         let S = sigmas.dim(0)
         let sig = sigmas.asArray(Float.self)               // pull the fixed schedule once (not per step)
         var lat = noise
+        let gvec = guidanceEmbed ? MLXArray([guidance]) : nil
         for i in 0 ..< S {
             if isCancelled() { break }                     // cooperative per-step cancellation
             let dt = (i + 1 < S ? sig[i + 1] : 1.0) - sig[i]
             if dt == 0 { continue }
             let si = sig[i]
-            let v = dit(concatenated([lat, lat], axis: 0), MLXArray([si, si]), cond)
-            let vp = split(v, parts: 2, axis: 0)            // v_cond, v_uncond
-            lat = lat + dt * (vp[1] + guidance * (vp[0] - vp[1]))
+            let v: MLXArray
+            if guidanceEmbed {
+                v = dit(lat, MLXArray([si]), cond, guidance: gvec)   // single forward, guidance token
+            } else {
+                let vv = dit(concatenated([lat, lat], axis: 0), MLXArray([si, si]), cond)
+                let vp = split(vv, parts: 2, axis: 0)                // v_cond, v_uncond
+                v = vp[1] + guidance * (vp[0] - vp[1])
+            }
+            lat = lat + dt * v
             eval(lat)
             progress?(i + 1, S)
         }

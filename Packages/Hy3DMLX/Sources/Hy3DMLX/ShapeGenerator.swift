@@ -19,6 +19,7 @@ public final class ShapeGenerator {
     public init(weightsURL: URL, dtype: DType = .float16, quantize: Int = 0,
                 numLatents: Int = 512, cacheLimitMB: Int = 256) throws {
         MLX.GPU.set(cacheLimit: cacheLimitMB * 1024 * 1024)   // keep the buffer cache off the jetsam limit
+        let cfg = Self.readConfig(weightsURL)                 // per-model DiT shape (mini / 2.0 / turbo)
         let weights = try loadArrays(url: weightsURL)
         let condPrefix = "conditioner.main_image_encoder.model."
         var dw: [String: MLXArray] = [:], vw: [String: MLXArray] = [:], nw: [String: MLXArray] = [:]
@@ -35,10 +36,34 @@ public final class ShapeGenerator {
             nw = Self.quantizeWeights(nw, bits: quantize, group: group, skip: ["embeddings"])
             eval(Array(dw.values)); eval(Array(nw.values))   // materialize the packed 4-bit, drop fp16
         }
-        self.dit = DiT(weights: dw, bits: bits, groupSize: group)
+        self.dit = DiT(weights: dw, depth: cfg?.depth ?? 8, depthSingle: cfg?.depthSingle ?? 16,
+                       guidanceEmbed: cfg?.guidanceEmbed ?? false, bits: bits, groupSize: group)
         self.vae = VAE(weights: vw)
         self.dino = DINOv2(weights: nw, bits: bits, groupSize: group)
-        self.numLatents = numLatents
+        self.numLatents = cfg?.numLatents ?? numLatents
+    }
+
+    struct ModelConfig { let depth: Int; let depthSingle: Int; let guidanceEmbed: Bool; let numLatents: Int }
+
+    /// Parse the four per-model shape params from the checkpoint's sibling `config.yaml`
+    /// (so mini / 2.0 / turbo variants all load correctly). Minimal key-scan — no YAML lib.
+    static func readConfig(_ weightsURL: URL) -> ModelConfig? {
+        let url = weightsURL.deletingLastPathComponent().appendingPathComponent("config.yaml")
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        func value(_ key: String) -> String? {
+            for raw in text.split(separator: "\n") {
+                let line = raw.trimmingCharacters(in: .whitespaces)
+                if line.hasPrefix("\(key):") {
+                    return line.dropFirst(key.count + 1).trimmingCharacters(in: .whitespaces)
+                }
+            }
+            return nil
+        }
+        guard let d = value("depth").flatMap({ Int($0) }),
+              let ds = value("depth_single_blocks").flatMap({ Int($0) }),
+              let nl = value("num_latents").flatMap({ Int($0) }) else { return nil }
+        return ModelConfig(depth: d, depthSingle: ds,
+                           guidanceEmbed: value("guidance_embed")?.lowercased() == "true", numLatents: nl)
     }
 
     /// Quantize the 2-D linear weights of a sub-model in place, skipping any path in `skip` and any
@@ -67,15 +92,17 @@ public final class ShapeGenerator {
         guard let pix = Preprocess.dinoPixels(cgImage: image) else { return nil }
         if isCancelled() { return nil }
         onProgress?(.init(stage: "Conditioning image", fraction: 0.05))
-        let cond = concatenated([dino(pix), dino.unconditional(1)], axis: 0)
+        // Turbo/distilled models embed guidance and skip CFG → conditional embedding only.
+        let embed = dino(pix)
+        let cond = dit.guidanceEmbed ? embed : concatenated([embed, dino.unconditional(1)], axis: 0)
         eval(cond)
         if isCancelled() { return nil }
 
         let pipe = Pipeline(dit: dit, vae: vae)
         let noise = Sampler.noise(numLatents: numLatents, seed: seed)
-        let sigmas = Sampler.flowMatchSigmas(steps)
+        let sigmas = dit.guidanceEmbed ? Sampler.consistencySigmas(steps) : Sampler.flowMatchSigmas(steps)
         let lat = pipe.denoise(cond: cond, noise: noise, sigmas: sigmas, guidance: guidance,
-                               isCancelled: isCancelled) { i, n in
+                               guidanceEmbed: dit.guidanceEmbed, isCancelled: isCancelled) { i, n in
             onProgress?(.init(stage: "Denoising (\(i)/\(n))", fraction: 0.1 + 0.6 * Float(i) / Float(n)))
         }
         eval(lat); MLX.GPU.clearCache()           // release the 30-step denoise buffers before decode
