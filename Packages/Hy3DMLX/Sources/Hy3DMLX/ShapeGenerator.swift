@@ -18,7 +18,7 @@ public final class ShapeGenerator {
     /// resident weights ~2.5× (≈3.6 GB -> ≈1.4 GB).
     public init(weightsURL: URL, dtype: DType = .float16, quantize: Int = 0,
                 numLatents: Int = 512, cacheLimitMB: Int = 256) throws {
-        MLX.GPU.set(cacheLimit: cacheLimitMB * 1024 * 1024)   // keep the buffer cache off the jetsam limit
+        MLX.Memory.cacheLimit = cacheLimitMB * 1024 * 1024    // keep the buffer cache off the jetsam limit
         let cfg = Self.readConfig(weightsURL)                 // per-model DiT shape (mini / 2.0 / turbo)
         let weights = try loadArrays(url: weightsURL)
         let condPrefix = "conditioner.main_image_encoder.model."
@@ -38,14 +38,18 @@ public final class ShapeGenerator {
         }
         self.dit = DiT(weights: dw, depth: cfg?.depth ?? 8, depthSingle: cfg?.depthSingle ?? 16,
                        guidanceEmbed: cfg?.guidanceEmbed ?? false, bits: bits, groupSize: group)
-        self.vae = VAE(weights: vw)
+        // Audit fix (a): the ShapeVAE scale_factor is per-checkpoint (2mini 1.0188…, the whole 2.0
+        // family 0.99909…, 2.1 1.00395…). It was previously hardcoded to the 2mini value, giving a
+        // silent ~2% SDF-scale error on every non-mini model. Read it from config.yaml and pass it
+        // through; fall back to the 2mini value when the config is absent.
+        self.vae = VAE(weights: vw, scaleFactor: cfg?.scaleFactor ?? 1.0188137)
         self.dino = DINOv2(weights: nw, bits: bits, groupSize: group)
         self.numLatents = cfg?.numLatents ?? numLatents
     }
 
-    struct ModelConfig { let depth: Int; let depthSingle: Int; let guidanceEmbed: Bool; let numLatents: Int }
+    struct ModelConfig { let depth: Int; let depthSingle: Int; let guidanceEmbed: Bool; let numLatents: Int; let scaleFactor: Float }
 
-    /// Parse the four per-model shape params from the checkpoint's sibling `config.yaml`
+    /// Parse the per-model shape params from the checkpoint's sibling `config.yaml`
     /// (so mini / 2.0 / turbo variants all load correctly). Minimal key-scan — no YAML lib.
     static func readConfig(_ weightsURL: URL) -> ModelConfig? {
         let url = weightsURL.deletingLastPathComponent().appendingPathComponent("config.yaml")
@@ -62,8 +66,11 @@ public final class ShapeGenerator {
         guard let d = value("depth").flatMap({ Int($0) }),
               let ds = value("depth_single_blocks").flatMap({ Int($0) }),
               let nl = value("num_latents").flatMap({ Int($0) }) else { return nil }
+        // Audit fix (a): parse scale_factor; default to the 2mini value if the key is absent.
+        let sf = value("scale_factor").flatMap { Float($0) } ?? 1.0188137142395404
         return ModelConfig(depth: d, depthSingle: ds,
-                           guidanceEmbed: value("guidance_embed")?.lowercased() == "true", numLatents: nl)
+                           guidanceEmbed: value("guidance_embed")?.lowercased() == "true",
+                           numLatents: nl, scaleFactor: sf)
     }
 
     /// Quantize the 2-D linear weights of a sub-model in place, skipping any path in `skip` and any
@@ -112,17 +119,17 @@ public final class ShapeGenerator {
             if previewSteps.contains(i), let onPreview {
                 let g = pipe.gridSDFOctree(latents: curLat, resolution: 48)
                 let m = MarchingCubes.extract(grid: g, level: 0.0)
-                MLX.GPU.clearCache()
+                MLX.Memory.clearCache()
                 if !m.vertices.isEmpty && !m.faces.isEmpty { onPreview(m) }
             }
         }
-        eval(lat); MLX.GPU.clearCache()           // release the 30-step denoise buffers before decode
+        eval(lat); MLX.Memory.clearCache()        // release the 30-step denoise buffers before decode
         if isCancelled() { return nil }
 
         onProgress?(.init(stage: "Decoding shape", fraction: 0.72))
         let grid = octree ? pipe.gridSDFOctree(latents: lat, resolution: resolution)
                           : pipe.gridSDF(latents: lat, resolution: resolution)
-        eval(grid); MLX.GPU.clearCache()          // release decode buffers before marching cubes
+        eval(grid); MLX.Memory.clearCache()       // release decode buffers before marching cubes
         if isCancelled() { return nil }
 
         onProgress?(.init(stage: "Building mesh", fraction: 0.9))

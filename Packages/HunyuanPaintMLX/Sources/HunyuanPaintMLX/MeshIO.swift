@@ -211,7 +211,10 @@ private func loadModelIO(_ path: String) -> LoadedMesh {
     // submeshes for us; ignore failures and proceed with whatever we have.
     if let submeshes = mesh.submeshes as? [MDLSubmesh] {
         for submesh in submeshes where submesh.geometryType != .triangles {
-            _ = mesh.makeVerticesUnique
+            // Audit fix (e): `makeVerticesUnique` is deprecated (macOS 10.13); its supported
+            // replacement is the throwing `makeVerticesUniqueAndReturnError()`. (The original also
+            // dropped the call's parentheses, making it a no-op; this actually runs it.)
+            _ = try? mesh.makeVerticesUniqueAndReturnError()
             break
         }
     }
