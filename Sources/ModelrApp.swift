@@ -11,7 +11,10 @@ struct ModelrApp: App {
                 .environment(runtime)
                 .environment(runtime.store)
                 .frame(minWidth: 480, minHeight: 480)
-                .task { runtime.bootIfNeeded() }
+                .task {
+                    runtime.bootIfNeeded()
+                    SmokeRunner.startIfRequested(runtime: runtime)
+                }
         }
         .defaultSize(width: 1180, height: 760)
         .commands {
