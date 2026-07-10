@@ -377,11 +377,17 @@ enum AppReducer {
                     && state.paintState(key.project) == .waitingForEngine
             }
             guard valid else {
-                // Job was cancelled while the grant was in flight — hand back.
-                effects += releaseEngine(&state, key)
+                // Job was cancelled while the grant was in flight. The arbiter
+                // physically performed this grant, so it must always be told to
+                // release the stale key (idempotent there); reducer-side
+                // ownership may already have moved on.
+                effects.append(.releaseEngine(key))
+                if state.engine.owner == .held(key) {
+                    state.engine.owner = .free
+                    effects += grantNextIfFree(&state)
+                }
                 break
             }
-            state.engine.queue.removeAll { $0 == key }
             switch key.kind {
             case .shape:
                 state.shape[key.project]!.state = .loadingModel
@@ -508,6 +514,7 @@ enum AppReducer {
                 state.engine.queue.removeFirst()         // defensively skip stale entries
                 continue
             }
+            state.engine.queue.removeFirst()             // granted jobs leave the queue
             state.engine.owner = .held(next)
             return [.grantEngine(next)]
         }

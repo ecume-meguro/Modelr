@@ -51,6 +51,20 @@ targets:
         INFOPLIST_KEY_NSHighResolutionCapable: "YES"
         COMBINE_HIDPI_IMAGES: "YES"
 
+  # Pure-logic tests: the deterministic core compiles directly into the bundle
+  # (no TEST_HOST), so `xcodebuild test` runs headless — no app launch, no GPU.
+  ModelrTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - Tests
+      - Sources/Core
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zimeng.ModelrTests
+        GENERATE_INFOPLIST_FILE: "YES"
+
 schemes:
   Modelr:
     build:
@@ -58,5 +72,10 @@ schemes:
         Modelr: all
     run:
       config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - ModelrTests
     archive:
       config: Release

@@ -243,8 +243,8 @@ final class DownloadManager: @unchecked Sendable {
         try sink.finalize()                                 // fsync
         try? fm.removeItem(at: final)
         try fm.moveItem(at: partial, to: final)             // atomic rename
+        report()                                            // written == file.bytes here
         completedBytes += file.bytes
-        report()
     }
 
     /// Read an existing partial through the hasher; returns its byte count.
@@ -427,6 +427,9 @@ private final class ChunkStreamer: NSObject, URLSessionDataDelegate, @unchecked 
         let owned = URLSession(configuration: session.configuration, delegate: self, delegateQueue: nil)
         let task = owned.dataTask(with: request)
         self.task = task
+        // When the consuming task is cancelled (pause), the stream terminates —
+        // stop the transfer immediately rather than letting it drain unseen.
+        chunkContinuation.onTermination = { _ in task.cancel() }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { cont in
                 lock.lock(); responseContinuation = cont; lock.unlock()
