@@ -1,64 +1,170 @@
 # Modelr
 
-A native macOS app for local **image → 3D shape** generation. Sidebar of projects;
-drag an image into the left panel, watch the mesh form in the right panel. Built on
-the local **Hunyuan3D-Shape-MLX** pipeline (pure MLX, no PyTorch in the path),
-driven out-of-process and rendered with SceneKit.
+A native macOS app for local **image → 3D**: drop in a picture, get a shape mesh, then paint
+it with a full color or PBR texture — entirely on your Mac. Both the shape and texture
+pipelines run **in-process on [MLX Swift](https://github.com/ml-explore/mlx-swift)** (no
+Python, no PyTorch, nothing leaves the machine) and render live in SceneKit as they generate.
 
-## Using it
+<p align="center">
+  <img src="docs/images/painted-pbr.png" width="100%" alt="Modelr: input image, shape mesh, and PBR-painted result">
+</p>
 
-1. **+ New Project**, then **drag an image** onto the left panel — generation starts
-   automatically.
-2. The right panel shows the live reveal: a rotating point-cloud while denoising,
-   then an accent-coloured **point cloud that materialises the surface** as the
-   octree decode sweeps it, then the final mesh (orbit with the mouse).
-3. **Model** and **Quality** are per-project, in the toolbar:
+One window, project-based: each project is one input image → one shape mesh (with version
+history) → optionally one painted mesh. The toolbar splits into three islands — **history**,
+**shape**, and **paint** — and every completed generation is kept as an immutable version you
+can restore or export.
 
-   | Model | | Quality |
-   |---|---|---|
-   | **Mini** — 2mini, 0.6B, fastest | | **Full** — fp16, best |
-   | **Standard** — 2.0, 1.1B, best detail | | **8-bit** — near-lossless |
-   | **Large** — 2.1, 3.3B MoE, largest | | **4-bit** — smallest, faster |
+## Requirements
 
-   Mini is the fast default (~15–20s). 2.0/2.1 are much heavier (minutes); 4-bit
-   speeds them up a lot (e.g. 2.0: 254s → 79s, near-lossless).
+- Apple silicon Mac (M1 or newer)
+- macOS 14 or later
+- Disk for the models you choose (~7.7 GB for the small pair, up to ~21 GB for all four)
+
+## Models
+
+Modelr ships four models — one small and one large per stage — downloaded on first run from
+curated, public Hugging Face repos under
+[`zimengxiong`](https://huggingface.co/zimengxiong). Times below are measured in-app on an
+M4 Max (with mesh decimation before paint).
+
+| Slot | Checkpoint | Notes | Time |
+|---|---|---|---|
+| **Shape · Small** | `hunyuan3d-dit-v2-mini` (0.6B) | fastest, low RAM | ~52 s |
+| **Shape · Large** | `hunyuan3d-dit-v2-0-turbo` (1.1B) | 8-step consistency | ~57 s |
+| **Paint · Small** | `hunyuan3d-paint-v2-0` | RGB color, 2048 atlas | ~94 s |
+| **Paint · Large** | `hunyuan3d-paintpbr-v2-1` | PBR (albedo + metallic-roughness), 4096 atlas | ~139 s |
+
+The four weight repos:
+[`hunyuan3d-mlx-shape-small`](https://huggingface.co/zimengxiong/hunyuan3d-mlx-shape-small) ·
+[`hunyuan3d-mlx-shape-large`](https://huggingface.co/zimengxiong/hunyuan3d-mlx-shape-large) ·
+[`hunyuan3d-mlx-paint-small`](https://huggingface.co/zimengxiong/hunyuan3d-mlx-paint-small) ·
+[`hunyuan3d-mlx-paint-large`](https://huggingface.co/zimengxiong/hunyuan3d-mlx-paint-large).
+Each is self-contained, and the exact revisions + per-file sizes and sha256 hashes are pinned
+in [`model_manifest.json`](model_manifest.json) (baked into `ModelCatalog.swift`).
+
+### Onboarding & downloads
+
+<p align="center">
+  <img src="docs/images/onboarding.png" width="49%" alt="Onboarding: choose which models to download">
+  <img src="docs/images/generating.png" width="49%" alt="Live shape preview during generation">
+</p>
+
+First run offers three presets — **Fast start** (small pair), **Best quality** (large pair),
+or **Everything** — with a live free-disk check; skipping is always allowed. Downloads are
+resumable: each file is fetched to a `.partial`, verified by size + sha256, then atomically
+renamed. Quitting mid-download and relaunching resumes from the byte offset (HTTP Range
+against the Hugging Face CDN). Models can be added or removed any time from **Settings →
+Models**.
+
+## Architecture
+
+Modelr is built around a single pure reducer — `reduce(state, event) -> (state', [Effect])` —
+so the entire transition table (onboarding, downloads, shape, paint, cancel/fail edges,
+stale-token protection) is unit-testable with no UI, network, or GPU. The full product
+surface, state machines, weights contract, and verification plan live in
+**[`DESIGN.md`](DESIGN.md)**; the map below is the short version.
+
+```
+MainActor
+  AppState (reducer + state)          Sources/Core/AppReducer.swift, AppState.swift,
+    - AppPhase (onboarding/ready)                  AppEvent.swift, AppEffect.swift
+    - ModelInstallStore [4 models]
+    - ProjectStore [shape/paint jobs, versions]    Sources/ProjectStore.swift
+        │ effects
+   ┌────┴─────────────┬───────────────────┐
+   DownloadManager    EngineArbiter        (SwiftUI views = pure f(state))
+   URLSession +       actor: exclusive     Sources/ContentView.swift,
+   Range resume +     GPU owner, single    OnboardingView, ModelManagerView,
+   sha256 verify      model residency      ProjectDetailView, MeshViewer, …
+   (Core/)            (Core/)
+                         │
+                ┌────────┴────────┐
+                ShapeEngine        PaintEngine        (serial, off-main)
+                → Hy3DMLX          → HunyuanPaintMLX   (vendored in Packages/)
+```
+
+- **Reducer & state** — `Sources/Core/{AppReducer,AppState,AppEvent,AppEffect}.swift`. Every
+  job carries a monotonic token; events with a stale token are dropped.
+- **DownloadManager** (`Sources/Core/DownloadManager.swift`) — resumable, hash-verified
+  downloads; install state is re-derived from disk at every boot.
+- **EngineArbiter** (`Sources/Core/EngineArbiter.swift`) — an actor that grants the GPU to one
+  job at a time; shape and paint never run concurrently, and switching stages evicts the other
+  model's weights (single residency, bounded RAM).
+- **Engines** — `Sources/{ShapeEngine,PaintEngine}.swift` drive the vendored `Hy3DMLX` and
+  `HunyuanPaintMLX` packages in `Packages/`. Paint decimates meshes above a face budget (QEM)
+  before xatlas unwrap, falling back to the original mesh if unwrap rejects it.
+- **Catalog & migration** — `Sources/Core/{ModelCatalog,LegacyMigration}.swift`; mesh export
+  and decimation in `Sources/Core/{MeshExporter,MeshDecimator}.swift`.
 
 ## Build
 
 ```bash
-brew install xcodegen        # if needed
-xcodegen generate            # creates Modelr.xcodeproj from project.yml
-open Modelr.xcodeproj         # ⌘R, or:
-xcodebuild -scheme Modelr -configuration Debug build
+brew install xcodegen                 # if needed
+xcodegen generate                     # creates Modelr.xcodeproj from project.yml
+open Modelr.xcodeproj                  # then ⌘R
 ```
 
-Signed automatically with the local **Apple Development** identity (team
-`W9C2P3N7Q2`, manual signing with the cert hash in `project.yml`). The app is
-unsandboxed so it can launch the model worker and read dropped images.
+Command-line release build (Apple silicon only — the MLX/Metal and Float16 paths do not
+compile for x86_64, so the build is pinned to `arm64`):
 
-## How it works
+```bash
+xcodegen generate
+xcodebuild -project Modelr.xcodeproj -scheme Modelr -configuration Release \
+    ARCHS=arm64 CODE_SIGNING_ALLOWED=NO build
+```
 
-- **SwiftUI app** (`Sources/`) — sidebar/projects, drag-drop, SceneKit viewer.
-- **Out-of-process worker** — `GenerationService` writes `modelr_worker.py` to
-  Application Support and runs `…/.venv/bin/python3.12 -u modelr_worker.py …`
-  (no shell, so signals reach it). The worker reimplements the FlowMatch denoise
-  loop and calls `vae.query_grid_octree` (FlashVDM fast decode). Stage/progress
-  and a streamed near-surface **point cloud** come back over stdout
-  (`[denoise] i/n`, `[grid] n`, `[points] <path>`).
-- **Process hygiene** ([`JobReaper.swift`](Sources/JobReaper.swift)) — workers run
-  with a `getppid()==1` parent-death watchdog, a PID registry verified by resolved
-  interpreter path before any SIGKILL, and a launch-time sweep, so a crash or
-  force-quit never leaves an orphaned GPU process. A per-project generation token
-  ([`ProjectStore.swift`](Sources/ProjectStore.swift)) keeps a cancelled run's late
-  callbacks from clobbering its replacement.
+Debug ad-hoc signs (identity `-`) so a machine without the team certificate can build; Release
+is set up for the Developer ID team but builds fine unsigned with `CODE_SIGNING_ALLOWED=NO` as
+above. The app is unsandboxed. No notarization is performed here.
 
-Model paths and fixed parameters live in
-[`PipelineConfig.swift`](Sources/PipelineConfig.swift); the engine is
-`/Users/xzm/Projects/Hunyuan3D-Shape-MLX`.
+## Tests
 
-## Storage
+The deterministic core compiles directly into the test bundle (no `TEST_HOST`), so tests run
+headless — no app launch, no GPU:
 
-`~/Library/Application Support/Modelr/`
-- `projects.json` — index (name, model, quantization)
-- `projects/<uuid>/input.*`, `output.obj` — per-project files
-- `running-pids.json`, `modelr_worker.py` — runtime
+```bash
+xcodebuild -project Modelr.xcodeproj -scheme Modelr -destination 'platform=macOS' test
+```
+
+This covers the reducer transition tables, the `DownloadManager` (against a local HTTP server
+exercising kill/resume mid-file, corrupt-hash, and disk-full), the project store, and mesh
+export/decimation.
+
+### End-to-end smoke (`MODELR_UI_SMOKE`)
+
+The app can self-drive its real flow for verification — no external UI automation. With
+`MODELR_UI_SMOKE=1` it walks onboarding → create project → import image → generate → paint →
+export GLB, capturing its own window at each stage, then exits 0. Environment knobs
+(`MODELR_SMOKE_OUT`, `MODELR_SMOKE_MODEL`, `MODELR_SMOKE_IMAGE`, `MODELR_SMOKE_IMPORT`,
+`MODELR_SMOKE_DOWNLOAD`) are documented in [`Sources/SmokeRunner.swift`](Sources/SmokeRunner.swift).
+Captured runs (onboarding, generating preview, shape, paint, export) for both the small and
+large lineups, plus a real download+resume trace, are under `docs/e2e/`.
+
+## Storage layout
+
+Everything lives under `~/Library/Application Support/Modelr/`:
+
+```
+models/
+  shape-small/  shape-large/  paint-small/  paint-large/   # one folder per installed model
+  *.partial                                                # in-flight, resumable downloads
+projects.json                                              # index (atomic writes, backup-on-corrupt)
+projects/<uuid>/                                           # source image, mask, mesh + texture versions
+```
+
+Installed models are re-derived from disk at boot (size check), so deleting a folder outside
+the app can never wedge the UI.
+
+## Credits & licenses
+
+Modelr vendors its dependencies (user mandate: everything vendored, reproducible builds):
+
+- **Hy3DMLX / HunyuanPaintMLX** (`Packages/`) — the shape and paint Swift libraries, shared
+  with the open-source [`Hunyuan3D-Swift`](../Projects/Hunyuan3D-Swift) package.
+- **[mlx-swift](https://github.com/ml-explore/mlx-swift)** (`vendor/mlx-swift`) — MIT
+  (© Apple Inc.); transitively `swift-numerics` (Apache-2.0) and bundled `fmt` (MIT).
+- **xatlas** (in the paint package) — MIT (© Jonathan Young).
+- **Model weights** — the Hunyuan3D shape/paint checkpoints are released by Tencent under the
+  **Tencent Hunyuan3D Community License**; the PBR model's DINOv2 encoder is **Apache-2.0**
+  (Meta) and the RealESRGAN super-resolution weights are **BSD-3-Clause**. Weights are
+  downloaded at runtime, not bundled.

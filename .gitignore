@@ -9,3 +9,7 @@ Packages/*/.build/
 vendor/*/.build/
 *.safetensors
 .derived/
+
+# Heavy E2E artifacts (screenshots, exported GLBs, logs). Curated README
+# screenshots live in docs/images/ and are committed explicitly.
+docs/e2e/

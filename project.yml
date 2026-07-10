@@ -19,6 +19,9 @@ settings:
     ENABLE_HARDENED_RUNTIME: "NO"
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
+    # Apple silicon only: MLX/Metal and Float16 paths do not build for x86_64.
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: "NO"
   configs:
     # Debug ad-hoc signs so a machine without the team certificate can build.
     debug:
