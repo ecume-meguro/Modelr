@@ -3,7 +3,9 @@ import AppKit
 import ImageIO
 
 struct ContentView: View {
+    @Environment(AppRuntime.self) private var runtime
     @Environment(ProjectStore.self) private var store
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         @Bindable var store = store
@@ -14,7 +16,7 @@ struct ContentView: View {
                         .tag(project.id)
                         .contextMenu {
                             Button("Delete", role: .destructive) {
-                                store.delete(project.id)
+                                runtime.deleteProject(project.id)
                             }
                         }
                 }
@@ -53,11 +55,30 @@ struct ContentView: View {
                 }
             }
         }
+        .sheet(isPresented: onboardingPresented) {
+            OnboardingView()
+                .environment(runtime)
+                .interactiveDismissDisabled()
+        }
+        .onChange(of: runtime.modelManagerSignal) { _, _ in
+            openSettings()                       // generation CTA without weights (§4.9)
+        }
+    }
+
+    /// First-run sheet visibility mirrors §4.1: shown while phase == onboarding.
+    private var onboardingPresented: Binding<Bool> {
+        Binding(get: { runtime.state.phase == .onboarding },
+                set: { shown in
+                    if !shown && runtime.state.phase == .onboarding {
+                        runtime.dispatch(.onboardingSkipped)   // Esc/close = Later
+                    }
+                })
     }
 }
 
 /// A row in the sidebar: a squircle thumbnail of the project's image + name/status.
 struct ProjectRow: View {
+    @Environment(AppRuntime.self) private var runtime
     @Environment(ProjectStore.self) private var store
     let project: Project
     @State private var thumb: NSImage?
@@ -72,8 +93,8 @@ struct ProjectRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(project.name)
                     .lineLimit(1)
-                if case .running(let stage, let detail, _) = store.status(for: project.id) {
-                    Text(detail.map { "\(stage) \($0)" } ?? stage)
+                if let running = runningLine {
+                    Text(running)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -128,16 +149,36 @@ struct ProjectRow: View {
         }
     }
 
-    private var statusDot: Color? {
-        switch store.status(for: project.id) {
-        case .running: return .accentColor
-        case .failed:  return .yellow
-        case .done, .idle: return nil
+    /// Status text while a job runs — the §4.4/§4.5 stage names, 1:1.
+    private var runningLine: String? {
+        let shape = runtime.state.shapeState(project.id)
+        if shape.isRunning {
+            if case .denoising(let k, let n) = shape, n > 0 {
+                return "Denoising \(k)/\(n)"
+            }
+            return AppReducer.shapeStageLabel(shape)
         }
+        let paint = runtime.state.paintState(project.id)
+        if paint.isRunning {
+            if case .denoising(let k, let n) = paint, n > 0 {
+                return "Painting \(k)/\(n)"
+            }
+            return AppReducer.paintStageLabel(paint)
+        }
+        return nil
+    }
+
+    private var statusDot: Color? {
+        let shape = runtime.state.shapeState(project.id)
+        let paint = runtime.state.paintState(project.id)
+        if shape.isRunning || paint.isRunning { return .accentColor }
+        if case .failed = shape { return .yellow }
+        if case .failed = paint { return .yellow }
+        return nil
     }
 
     private var subtitle: String {
-        var s = project.model.label
+        var s = project.shapeModel.label
         if project.quantization != .full { s += " · \(project.quantization.label)" }
         return s
     }

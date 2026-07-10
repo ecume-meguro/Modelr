@@ -101,6 +101,19 @@ final class PaintEngine {
         }
     }
 
+    /// Eviction the EngineArbiter can await: returns only after the resident
+    /// pipeline has actually been dropped on the engine queue.
+    func evictAndWait() async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            queue.async {
+                self.cachedKey = nil
+                self.cachedPipe = nil
+                MLX.GPU.clearCache()
+                cont.resume()
+            }
+        }
+    }
+
     /// Parse Modelr's `.mesh` (verts + normals + faces) into the paint package's
     /// `LoadedMesh` (positions + faces only).
     private static func loadShapeMesh(_ url: URL) -> LoadedMesh? {

@@ -51,7 +51,7 @@ struct VersionHistoryView: View {
                     if gen.kind == .paint {
                         Image(systemName: "paintbrush.fill").font(.caption2).foregroundStyle(.purple)
                     }
-                    Text(gen.model.label).font(.callout.weight(.medium))
+                    Text(gen.shapeModel.label).font(.callout.weight(.medium))
                 }
                 HStack(spacing: 5) {
                     Text(metaLine(gen))

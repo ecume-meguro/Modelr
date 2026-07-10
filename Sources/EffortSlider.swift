@@ -39,8 +39,9 @@ struct SteppedSlider: NSViewRepresentable {
     }
 }
 
-/// Popover content: native Model (Faster→Smarter) and Quality (Smaller→Best)
-/// sliders, each showing the active selection.
+/// Popover content: the Small/Large model picker plus the quality controls —
+/// one effort slider in normal mode, every knob (steps/guidance/octree/
+/// quantization/seed) in advanced mode. Per DESIGN.md §5.
 struct ModelSettingsPopover: View {
     @Environment(ProjectStore.self) private var store
     let projectID: Project.ID
@@ -50,6 +51,8 @@ struct ModelSettingsPopover: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let project {
+                modelPicker(project)
+                Divider()
                 if project.advancedMode {
                     advancedControls(project)
                 } else {
@@ -66,11 +69,31 @@ struct ModelSettingsPopover: View {
         .frame(width: 320)
     }
 
+    // MARK: model picker (both modes)
+
+    @ViewBuilder
+    private func modelPicker(_ p: Project) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Model").fontWeight(.semibold)
+                Spacer()
+                Text(p.shapeModel.detail).font(.caption).foregroundStyle(.tertiary)
+            }
+            Picker("", selection: modelBinding) {
+                ForEach(ShapeModel.allCases) { m in
+                    Text(m.label).tag(m)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+        }
+    }
+
     // MARK: normal — one combined quality slider
 
     @ViewBuilder
     private func normalControls(_ p: Project) -> some View {
-        steppedRow(title: "Quality", value: p.quality.label, detail: p.quality.detail,
+        steppedRow(title: "Quality", value: p.quality.label, detail: p.quality.detail(for: p.shapeModel),
                    index: qualityIndex, count: QualityPreset.ordered.count,
                    low: "Fast", high: "Best")
         Text("8-bit weights · higher = more detail, slower")
@@ -81,9 +104,6 @@ struct ModelSettingsPopover: View {
 
     @ViewBuilder
     private func advancedControls(_ p: Project) -> some View {
-        steppedRow(title: "Model", value: p.model.label, detail: p.model.detail,
-                   index: modelIndex, count: ModelChoice.ordered.count, low: "Faster", high: "Smarter")
-        Divider()
         steppedRow(title: "Weights", value: p.quantization.label, detail: p.quantization.detail,
                    index: quantIndex, count: Quantization.ordered.count, low: "Smaller", high: "Best")
         Divider()
@@ -95,6 +115,25 @@ struct ModelSettingsPopover: View {
         Divider()
         steppedRow(title: "Resolution", value: "\(p.octree)", detail: "Mesh grid — finer = denser mesh",
                    index: octreeIndex, count: QualityPreset.octreeStops.count, low: "Coarse", high: "Fine")
+        Divider()
+        seedRow(p)
+    }
+
+    /// Seed pinning (§3: every generation records its seed; pin to reproduce).
+    private func seedRow(_ p: Project) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Seed").fontWeight(.semibold)
+                Spacer()
+                TextField("Random", text: seedBinding)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 120)
+                    .multilineTextAlignment(.trailing)
+                    .font(.callout.monospacedDigit())
+            }
+            Text("Empty = new random seed each run (recorded per version)")
+                .font(.caption).foregroundStyle(.tertiary)
+        }
     }
 
     // MARK: rows
@@ -135,13 +174,13 @@ struct ModelSettingsPopover: View {
         Binding(get: { store.project(projectID)?.advancedMode ?? false },
                 set: { store.setAdvancedMode($0, for: projectID) })
     }
+    private var modelBinding: Binding<ShapeModel> {
+        Binding(get: { store.project(projectID)?.shapeModel ?? .small },
+                set: { store.setShapeModel($0, for: projectID) })
+    }
     private var qualityIndex: Binding<Int> {
         Binding(get: { QualityPreset.ordered.firstIndex(of: store.project(projectID)?.quality ?? .fast) ?? 1 },
                 set: { store.setQuality(QualityPreset.ordered[$0], for: projectID) })
-    }
-    private var modelIndex: Binding<Int> {
-        Binding(get: { ModelChoice.ordered.firstIndex(of: store.project(projectID)?.model ?? .mini) ?? 0 },
-                set: { store.setModel(ModelChoice.ordered[$0], for: projectID) })
     }
     private var quantIndex: Binding<Int> {
         Binding(get: { Quantization.ordered.firstIndex(of: store.project(projectID)?.quantization ?? .full) ?? 0 },
@@ -158,5 +197,12 @@ struct ModelSettingsPopover: View {
     private var octreeIndex: Binding<Int> {
         Binding(get: { QualityPreset.octreeStops.firstIndex(of: store.project(projectID)?.octree ?? 256) ?? 2 },
                 set: { store.setOctree(QualityPreset.octreeStops[$0], for: projectID) })
+    }
+    private var seedBinding: Binding<String> {
+        Binding(get: { store.project(projectID)?.seed.map(String.init) ?? "" },
+                set: { text in
+                    let trimmed = text.trimmingCharacters(in: .whitespaces)
+                    store.setSeed(trimmed.isEmpty ? nil : UInt64(trimmed), for: projectID)
+                })
     }
 }

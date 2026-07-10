@@ -2,64 +2,23 @@ import Foundation
 import Observation
 import AppKit
 
-/// Owns all projects, their files on disk, and the live generation jobs.
+/// The file + persistence service: owns projects, their on-disk folders, image
+/// processing, and the stage/commit lifecycle of generation files. All LIVE job
+/// state (running/failed/progress, tokens, downloads) lives in AppState and is
+/// driven by AppRuntime through the reducer — this store performs no engine or
+/// network work.
 @MainActor
 @Observable
 final class ProjectStore {
     private(set) var projects: [Project] = []
     var selection: Project.ID?
 
-    /// Transient, non-persisted status per project.
-    private var statuses: [Project.ID: GenerationStatus] = [:]
-    /// Latest in-progress preview mesh per project (cleared when the job ends).
-    private var previewURLs: [Project.ID: URL] = [:]
-    /// Latest streaming point cloud per project (during the grid-query stage).
-    private var pointsURLs: [Project.ID: URL] = [:]
     /// Bumped whenever input.png is rewritten, so the preview reloads from disk.
     private var inputVersions: [Project.ID: Int] = [:]
+    /// Transient import/processing error per project (image pipeline only).
+    private(set) var importErrors: [Project.ID: String] = [:]
 
-    private let shapeEngine = ShapeEngine()
-    private let paintEngine = PaintEngine()
-    private let downloader = ModelDownloader()
-
-    /// Non-nil while model weights are downloading (overall fraction + current file).
-    var downloadProgress: (fraction: Double, file: String)?
-    var downloadError: String?
-    /// Bumped when a download completes so availability-dependent UI re-evaluates.
-    var modelsVersion = 0
-    private var runningJobs: [Project.ID: any CancellableRun] = [:]
-    /// Monotonic per-project run token: callbacks from a superseded run are ignored.
-    private var runTokens: [Project.ID: UInt64] = [:]
-    private var tokenCounter: UInt64 = 0
-
-    /// Files + settings staged for the in-flight run, committed on success and
-    /// removed if the run is cancelled or fails.
-    private struct PendingGen {
-        let id: UUID
-        let mesh: URL
-        let input: URL
-        let source: URL?
-        let mask: URL?
-        let settings: RunSettings
-        let removeBackground: Bool
-        let startedAt: Date
-    }
-    private var pendingGen: [Project.ID: PendingGen] = [:]
-
-    // Paint (texture) state — independent of shape generation.
-    private var paintStatuses: [Project.ID: GenerationStatus] = [:]
-    private var paintViewsURLs: [Project.ID: URL] = [:]
-    private var paintJobs: [Project.ID: any CancellableRun] = [:]
-    private var paintTokens: [Project.ID: UInt64] = [:]
-    private struct PendingPaint {
-        let id: UUID
-        let source: Generation
-        let mesh: URL
-        let texture: URL
-        let settings: PaintSettings
-        let startedAt: Date
-    }
-    private var pendingPaint: [Project.ID: PendingPaint] = [:]
+    func clearImportError(_ id: Project.ID) { importErrors[id] = nil }
 
     private let rootDir: URL
 
@@ -95,12 +54,25 @@ final class ProjectStore {
         }
     }
 
-    private func clearStreamFiles(in folderURL: URL) {
+    /// Delete streamed preview meshes for a project (runtime calls this when a
+    /// shape run ends, cancels, or fails).
+    func clearStreamFiles(for id: Project.ID) {
         let fm = FileManager.default
-        guard let items = try? fm.contentsOfDirectory(atPath: folderURL.path) else { return }
+        let dir = folder(for: id)
+        guard let items = try? fm.contentsOfDirectory(atPath: dir.path) else { return }
         for item in items where (item.hasPrefix("preview_") && item.hasSuffix(".mesh"))
             || (item.hasPrefix("points_") && item.hasSuffix(".bin")) {
-            try? fm.removeItem(at: folderURL.appendingPathComponent(item))
+            try? fm.removeItem(at: dir.appendingPathComponent(item))
+        }
+    }
+
+    /// Delete streamed paint view grids for a project.
+    func clearPaintStreamFiles(for id: Project.ID) {
+        let fm = FileManager.default
+        let dir = folder(for: id)
+        guard let items = try? fm.contentsOfDirectory(atPath: dir.path) else { return }
+        for item in items where item.hasPrefix("paint_views_") && item.hasSuffix(".png") {
+            try? fm.removeItem(at: dir.appendingPathComponent(item))
         }
     }
 
@@ -122,19 +94,8 @@ final class ProjectStore {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
-    // MARK: paint accessors
-
-    func paintStatus(for id: Project.ID) -> GenerationStatus { paintStatuses[id] ?? .idle }
-    func isPainting(_ id: Project.ID) -> Bool {
-        if case .running = paintStatus(for: id) { return true }
-        return false
-    }
-    func paintViewsURL(for id: Project.ID) -> URL? {
-        guard let url = paintViewsURLs[id] else { return nil }
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
-    }
-    /// The untextured shape geometry for the current selection — for a paint version,
-    /// the shape it was textured from. Always the "model".
+    /// The untextured shape geometry for the current selection — for a paint
+    /// version, the shape it was textured from. Always the "model".
     func shapeMeshURL(for project: Project) -> URL? {
         guard let gen = project.currentGeneration else { return nil }
         let shapeName: String
@@ -164,19 +125,9 @@ final class ProjectStore {
         return .mesh(mesh)
     }
 
-    private func clearPaintStreamFiles(in folderURL: URL) {
-        let fm = FileManager.default
-        guard let items = try? fm.contentsOfDirectory(atPath: folderURL.path) else { return }
-        for item in items where item.hasPrefix("paint_views_") && item.hasSuffix(".png") {
-            try? fm.removeItem(at: folderURL.appendingPathComponent(item))
-        }
-    }
-
     func selectGeneration(_ genID: UUID, for id: Project.ID) {
         guard let i = projects.firstIndex(where: { $0.id == id }) else { return }
         projects[i].selectedGenerationID = genID
-        // Drop a stale paint error so it doesn't linger over a different version.
-        if case .failed = paintStatus(for: id) { paintStatuses[id] = .idle }
         save()
     }
 
@@ -238,20 +189,6 @@ final class ProjectStore {
 
     func project(_ id: Project.ID) -> Project? { projects.first { $0.id == id } }
 
-    func status(for id: Project.ID) -> GenerationStatus { statuses[id] ?? .idle }
-
-    /// The mesh to show right now while running: the latest preview if any.
-    func previewURL(for id: Project.ID) -> URL? {
-        guard let url = previewURLs[id] else { return nil }
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
-    }
-
-    /// The latest streaming point cloud (grid-query stage), if any.
-    func pointsURL(for id: Project.ID) -> URL? {
-        guard let url = pointsURLs[id] else { return nil }
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
-    }
-
     // MARK: - CRUD
 
     @discardableResult
@@ -264,13 +201,12 @@ final class ProjectStore {
         return project
     }
 
+    /// Remove the project and its folder. The runtime cancels any live jobs
+    /// before calling this.
     func delete(_ id: Project.ID) {
-        cancel(id)
-        cancelPaint(id)
         try? FileManager.default.removeItem(at: folder(for: id))
         projects.removeAll { $0.id == id }
-        statuses[id] = nil
-        runTokens[id] = nil
+        importErrors[id] = nil
         if selection == id { selection = projects.first?.id }
         save()
     }
@@ -283,9 +219,15 @@ final class ProjectStore {
         save()
     }
 
-    func setModel(_ model: ModelChoice, for id: Project.ID) {
+    func setShapeModel(_ model: ShapeModel, for id: Project.ID) {
         guard let i = projects.firstIndex(where: { $0.id == id }) else { return }
-        projects[i].model = model
+        projects[i].shapeModel = model
+        save()
+    }
+
+    func setPaintModel(_ model: PaintModel, for id: Project.ID) {
+        guard let i = projects.firstIndex(where: { $0.id == id }) else { return }
+        projects[i].paintModel = model
         save()
     }
 
@@ -301,7 +243,7 @@ final class ProjectStore {
         // configuration carries over instead of jumping to unrelated defaults.
         if on && !projects[i].advancedMode {
             let s = projects[i].resolvedSettings   // normal preset (advancedMode still false)
-            projects[i].model = s.model
+            projects[i].shapeModel = s.model
             projects[i].quantization = s.quant
             projects[i].steps = s.steps
             projects[i].guidance = s.guidance
@@ -328,6 +270,11 @@ final class ProjectStore {
     func setOctree(_ o: Int, for id: Project.ID) {
         guard let i = projects.firstIndex(where: { $0.id == id }) else { return }
         projects[i].octree = o
+        save()
+    }
+    func setSeed(_ s: UInt64?, for id: Project.ID) {
+        guard let i = projects.firstIndex(where: { $0.id == id }) else { return }
+        projects[i].seed = s
         save()
     }
 
@@ -380,14 +327,14 @@ final class ProjectStore {
             projects[i].sourceImageName = dest.lastPathComponent
             applyImage(id)
         } catch {
-            statuses[id] = .failed("Couldn't import image: \(error.localizedDescription)")
+            importErrors[id] = "Couldn't import image: \(error.localizedDescription)"
         }
     }
 
     func setImage(_ image: NSImage, for id: Project.ID) {
         guard let i = projects.firstIndex(where: { $0.id == id }) else { return }
         guard let png = image.pngData() else {
-            statuses[id] = .failed("Unsupported image."); return
+            importErrors[id] = "Unsupported image."; return
         }
         let dest = folder(for: id).appendingPathComponent("source.png")
         do {
@@ -397,7 +344,7 @@ final class ProjectStore {
             projects[i].sourceImageName = dest.lastPathComponent
             applyImage(id)
         } catch {
-            statuses[id] = .failed("Couldn't import image: \(error.localizedDescription)")
+            importErrors[id] = "Couldn't import image: \(error.localizedDescription)"
         }
     }
 
@@ -405,11 +352,11 @@ final class ProjectStore {
         guard let i = projects.firstIndex(where: { $0.id == id }) else { return }
         projects[i].removeBackground = on
         save()
-        if projects[i].sourceImageName != nil { applyImage(id) }   // re-process + regenerate
+        if projects[i].sourceImageName != nil { applyImage(id) }   // re-process
     }
 
     /// Produce the model input from the source image (optionally background-removed
-    /// via an editable mask), then kick off generation.
+    /// via an editable mask).
     private func applyImage(_ id: Project.ID) {
         guard let i = projects.firstIndex(where: { $0.id == id }),
               let srcName = projects[i].sourceImageName else { return }
@@ -418,6 +365,7 @@ final class ProjectStore {
         let input = dir.appendingPathComponent("input.png")
         let maskFile = dir.appendingPathComponent("mask.png")
         try? FileManager.default.removeItem(at: input)
+        importErrors[id] = nil
 
         var wrote = false
         if projects[i].removeBackground, let original = BackgroundRemover.loadCGImage(source) {
@@ -443,18 +391,17 @@ final class ProjectStore {
             projects[i].inputImageName = nil   // input.png was removed above; don't leave a dangling ref
             inputVersions[id, default: 0] += 1
             save()
-            statuses[id] = .failed("Couldn't process the image.")
+            importErrors[id] = "Couldn't process the image."
             return
         }
         projects[i].inputImageName = "input.png"
         projects[i].outputMeshName = nil
         inputVersions[id, default: 0] += 1   // force the left preview to reload from disk
         save()
-        // Generation is started explicitly by the user (Start button), so they can
-        // adjust background removal / model first.
+        // Generation is started explicitly by the user (Start button).
     }
 
-    /// Save a hand-edited mask and recomposite + regenerate.
+    /// Save a hand-edited mask and recomposite.
     func applyEditedMask(_ mask: CGImage, for id: Project.ID) {
         guard let i = projects.firstIndex(where: { $0.id == id }) else { return }
         if let data = BackgroundRemover.pngData(mask) {
@@ -477,32 +424,58 @@ final class ProjectStore {
         return (original, mask)
     }
 
-    // MARK: - generation
+    // MARK: - shape run staging (files for one run; committed or discarded by the runtime)
 
-    func generate(_ id: Project.ID) {
-        guard let project = projects.first(where: { $0.id == id }),
-              let image = imageURL(for: project) else { return }
+    struct StagedShapeRun {
+        let project: Project.ID
+        let genID: UUID
+        let mesh: URL
+        let input: URL
+        let source: URL?
+        let mask: URL?
+        let settings: RunSettings
+        /// The concrete seed this run uses (resolved from settings.seed or random).
+        let seed: UInt64
+        let removeBackground: Bool
+        let startedAt: Date
+    }
+
+    enum StagingError: LocalizedError {
+        case projectMissing
+        case noInputImage
+        case noShapeMesh
+        case snapshotFailed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .projectMissing: return "The project no longer exists."
+            case .noInputImage: return "Add an image first."
+            case .noShapeMesh: return "Generate a shape before painting."
+            case .snapshotFailed(let what): return "Couldn't snapshot \(what) for this run."
+            }
+        }
+    }
+
+    /// Snapshot the exact input used (image + source + mask) into per-run files,
+    /// so a mid-run input change can't corrupt this version (§4.4 Preparing).
+    func stageShapeRun(for id: Project.ID) throws -> StagedShapeRun {
+        guard let project = projects.first(where: { $0.id == id }) else {
+            throw StagingError.projectMissing
+        }
+        guard let image = imageURL(for: project) else { throw StagingError.noInputImage }
         let settings = project.resolvedSettings
 
-        guard let weightsURL = ModelStore.shapeWeightsFile(for: settings.model) else {
-            statuses[id] = .failed("\(settings.model.label) weights aren't available yet — download the model first.")
-            return
-        }
-
-        cancel(id)
-        tokenCounter += 1
-        let token = tokenCounter
-        runTokens[id] = token
-
-        // Each run gets its own saved files + a snapshot of the exact input used
-        // (taken now, so a mid-run input change can't corrupt this version).
         let genID = UUID()
         let dir = folder(for: id)
         let output = dir.appendingPathComponent("gen_\(genID.uuidString).mesh")
         let genInput = dir.appendingPathComponent("gen_\(genID.uuidString)_input.png")
         try? FileManager.default.removeItem(at: output)
         try? FileManager.default.removeItem(at: genInput)
-        try? FileManager.default.copyItem(at: image, to: genInput)
+        do {
+            try FileManager.default.copyItem(at: image, to: genInput)
+        } catch {
+            throw StagingError.snapshotFailed("the input image")
+        }
 
         // Snapshot the source + mask too, so this version's image can be re-edited.
         var genSource: URL?
@@ -520,281 +493,159 @@ final class ProjectStore {
             if (try? FileManager.default.copyItem(at: maskFile, to: snap)) != nil { genMask = snap }
         }
 
-        pendingGen[id] = PendingGen(id: genID, mesh: output, input: genInput,
-                                    source: genSource, mask: genMask,
-                                    settings: settings, removeBackground: project.removeBackground,
-                                    startedAt: Date())
-
-        clearStreamFiles(in: dir)
-        previewURLs[id] = nil
-        pointsURLs[id] = nil
-        statuses[id] = .running(stage: "Loading model…", detail: nil, fraction: nil)
-
-        paintEngine.evict()            // free the paint model — shape & paint run sequentially
-        let run = shapeEngine.generate(
-            imageURL: genInput,        // the immutable per-run snapshot, not the live input.png
-            output: output,
-            weightsURL: weightsURL,
-            quantize: settings.quant.flag,
-            steps: settings.steps,
-            guidance: Float(settings.guidance),
-            resolution: settings.octree,
-            seed: 0,
-            onProgress: { [weak self] stage, detail, fraction in
-                Task { @MainActor in
-                    guard let self, self.runTokens[id] == token else { return }
-                    self.statuses[id] = .running(stage: stage, detail: detail, fraction: fraction)
-                }
-            },
-            onPreview: { [weak self] url in
-                Task { @MainActor in
-                    guard let self, self.runTokens[id] == token else { return }
-                    self.previewURLs[id] = url
-                }
-            },
-            onFinish: { [weak self] outcome in
-                Task { @MainActor in
-                    guard let self, self.runTokens[id] == token else { return }
-                    self.runningJobs[id] = nil
-                    switch outcome {
-                    case .success:
-                        if self.commitGeneration(for: id) {
-                            self.statuses[id] = .done
-                        } else {
-                            self.statuses[id] = .failed("The model didn't produce a valid mesh.")
-                        }
-                        self.previewURLs[id] = nil
-                        self.pointsURLs[id] = nil
-                        self.clearStreamFiles(in: self.folder(for: id))
-                    case .failure(let message):
-                        self.discardPendingGen(for: id)
-                        self.previewURLs[id] = nil
-                        self.pointsURLs[id] = nil
-                        self.clearStreamFiles(in: self.folder(for: id))
-                        self.statuses[id] = .failed(message)
-                    }
-                }
-            })
-        runningJobs[id] = run
+        clearStreamFiles(for: id)
+        return StagedShapeRun(project: id, genID: genID, mesh: output, input: genInput,
+                              source: genSource, mask: genMask, settings: settings,
+                              seed: settings.seed ?? UInt64.random(in: 0..<UInt64(UInt32.max)),
+                              removeBackground: project.removeBackground, startedAt: Date())
     }
 
-    /// Download any missing weights for the project's shape model (+ the paint model)
-    /// into the app container from HuggingFace, reporting progress for the UI.
-    func downloadModels(for id: Project.ID) {
-        guard downloadProgress == nil,
-              let project = projects.first(where: { $0.id == id }) else { return }
-        let model = project.resolvedSettings.model
-        var files = ModelStore.isShapeAvailable(model) ? [] : downloader.shapeFiles(for: model)
-        if !ModelStore.isPaintAvailable { files += downloader.paintFiles() }
-        guard !files.isEmpty else { return }
-        downloadError = nil
-        downloadProgress = (0, "Starting…")
-        Task { @MainActor in
-            do {
-                try await downloader.download(files) { frac, file in
-                    Task { @MainActor in self.downloadProgress = (frac, file) }
-                }
-                self.downloadProgress = nil
-                self.modelsVersion += 1            // nudge availability-dependent UI
-            } catch {
-                self.downloadProgress = nil
-                self.downloadError = error.localizedDescription
-            }
+    /// Turn a finished run into a saved generation, selected for viewing.
+    /// Returns an error message (and cleans up) if the output is unusable.
+    func commitShapeRun(_ staged: StagedShapeRun) -> String? {
+        guard let i = projects.firstIndex(where: { $0.id == staged.project }) else {
+            discardShapeRun(staged)
+            return "The project no longer exists."
         }
-    }
-
-    /// Turn the just-finished run into a saved generation, selected for viewing.
-    /// Returns false (and cleans up) if the worker produced no usable mesh.
-    @discardableResult
-    private func commitGeneration(for id: Project.ID) -> Bool {
-        guard let pg = pendingGen[id], let i = projects.firstIndex(where: { $0.id == id }) else { return false }
-        pendingGen[id] = nil
         // A 0-byte (or sub-header) file means a crash mid-write — discard it.
-        let size = (try? pg.mesh.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        guard FileManager.default.fileExists(atPath: pg.mesh.path), size > 8 else {
-            removePendingFiles(pg)
-            return false
+        let size = (try? staged.mesh.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard FileManager.default.fileExists(atPath: staged.mesh.path), size > 8 else {
+            discardShapeRun(staged)
+            return "The model didn't produce a valid mesh."
         }
-        let s = pg.settings
-        let gen = Generation(id: pg.id, createdAt: pg.startedAt,
+        let s = staged.settings
+        let gen = Generation(id: staged.genID, createdAt: staged.startedAt,
                              modelRaw: s.model.rawValue, quantRaw: s.quant.rawValue,
-                             steps: s.steps, removeBackground: pg.removeBackground,
-                             meshFileName: pg.mesh.lastPathComponent,
-                             inputFileName: pg.input.lastPathComponent,
-                             durationSeconds: Date().timeIntervalSince(pg.startedAt),
+                             steps: s.steps, removeBackground: staged.removeBackground,
+                             meshFileName: staged.mesh.lastPathComponent,
+                             inputFileName: staged.input.lastPathComponent,
+                             durationSeconds: Date().timeIntervalSince(staged.startedAt),
                              guidanceRaw: s.guidance, octreeRaw: s.octree,
-                             sourceFileName: pg.source?.lastPathComponent,
-                             maskFileName: pg.mask?.lastPathComponent)
+                             seedRaw: staged.seed,
+                             sourceFileName: staged.source?.lastPathComponent,
+                             maskFileName: staged.mask?.lastPathComponent)
         projects[i].generations.append(gen)
         projects[i].selectedGenerationID = gen.id
         projects[i].outputMeshName = nil
         save()
-        return true
+        return nil
     }
 
     /// Drop a staged run's files (cancelled / failed) so they don't accumulate.
-    private func discardPendingGen(for id: Project.ID) {
-        guard let pg = pendingGen[id] else { return }
-        pendingGen[id] = nil
-        removePendingFiles(pg)
-    }
-
-    private func removePendingFiles(_ pg: PendingGen) {
-        for url in [pg.mesh, pg.input, pg.source, pg.mask].compactMap({ $0 }) {
+    func discardShapeRun(_ staged: StagedShapeRun) {
+        for url in [staged.mesh, staged.input, staged.source, staged.mask].compactMap({ $0 }) {
             try? FileManager.default.removeItem(at: url)
         }
+        clearStreamFiles(for: staged.project)
     }
 
-    func cancel(_ id: Project.ID) {
-        cancelPaint(id)                   // a fresh/cancelled shape invalidates any in-flight paint
-        runningJobs[id]?.cancel()
-        runningJobs[id] = nil
-        tokenCounter += 1                 // invalidate any in-flight callbacks
-        runTokens[id] = tokenCounter
-        discardPendingGen(for: id)
-        previewURLs[id] = nil
-        pointsURLs[id] = nil
-        clearStreamFiles(in: folder(for: id))
-        if case .running = status(for: id) { statuses[id] = .idle }
+    // MARK: - paint run staging
+
+    struct StagedPaintRun {
+        let project: Project.ID
+        let paintID: UUID
+        /// The immutable shape generation being textured.
+        let source: Generation
+        let shapeMesh: URL
+        let image: URL
+        let outMesh: URL
+        let outTexture: URL
+        let settings: PaintSettings
+        let startedAt: Date
     }
 
-    func isRunning(_ id: Project.ID) -> Bool {
-        if case .running = status(for: id) { return true }
-        return false
-    }
-
-    // MARK: - paint (texture)
-
-    func paint(_ id: Project.ID) {
-        guard let project = projects.first(where: { $0.id == id }),
-              let current = project.currentGeneration else { return }
-        // Texture the underlying shape; re-painting a paint version uses its source.
+    /// Resolve the shape to texture (the selected version, or the shape a selected
+    /// paint version came from) and stage the output files.
+    func stagePaintRun(for id: Project.ID) throws -> StagedPaintRun {
+        guard let project = projects.first(where: { $0.id == id }) else {
+            throw StagingError.projectMissing
+        }
+        guard let current = project.currentGeneration else { throw StagingError.noShapeMesh }
         let shape: Generation
-        if current.kind == .shape { shape = current }
-        else if let sid = current.sourceShapeID,
-                let s = project.generations.first(where: { $0.id == sid }) { shape = s }
-        else { return }
-        guard let paintWeightsRoot = ModelStore.paintWeightsRoot else {
-            paintStatuses[id] = .failed("Paint weights aren't available yet — download the paint model first."); return
+        if current.kind == .shape {
+            shape = current
+        } else if let sid = current.sourceShapeID,
+                  let s = project.generations.first(where: { $0.id == sid }) {
+            shape = s
+        } else {
+            throw StagingError.noShapeMesh
         }
         let dir = folder(for: id)
         let meshURL = dir.appendingPathComponent(shape.meshFileName)
-        guard FileManager.default.fileExists(atPath: meshURL.path),
-              let image = inputURL(for: shape, in: id) ?? imageURL(for: project) else { return }
-
-        cancelPaint(id)
-        tokenCounter += 1; let token = tokenCounter; paintTokens[id] = token
+        guard FileManager.default.fileExists(atPath: meshURL.path) else {
+            throw StagingError.noShapeMesh
+        }
+        guard let image = inputURL(for: shape, in: id) ?? imageURL(for: project) else {
+            throw StagingError.noInputImage
+        }
 
         let paintID = UUID()
         let outMesh = dir.appendingPathComponent("painted_\(paintID.uuidString).tmesh")
         let outTex = dir.appendingPathComponent("painted_\(paintID.uuidString)_texture.png")
         try? FileManager.default.removeItem(at: outMesh)
-        clearPaintStreamFiles(in: dir)
-        paintViewsURLs[id] = nil
-        let settings = project.resolvedPaintSettings
-        pendingPaint[id] = PendingPaint(id: paintID, source: shape, mesh: outMesh, texture: outTex,
-                                        settings: settings, startedAt: Date())
-        paintStatuses[id] = .running(stage: "Loading paint model…", detail: nil, fraction: nil)
+        try? FileManager.default.removeItem(at: outTex)
+        clearPaintStreamFiles(for: id)
 
         // Prefer the shape's immutable input snapshot; if it's missing, snapshot the
         // live image so a mid-paint input change can't corrupt this run.
         var paintInput = image
         if inputURL(for: shape, in: id) == nil {
-            let copy = FileManager.default.temporaryDirectory
-                .appendingPathComponent("paint_input_\(paintID.uuidString).png")
+            let copy = dir.appendingPathComponent("painted_\(paintID.uuidString)_input.png")
             if (try? FileManager.default.copyItem(at: image, to: copy)) != nil { paintInput = copy }
         }
-        shapeEngine.evict()            // free the shape model — paint runs after shape
-        let job = paintEngine.paint(
-            meshURL: meshURL, imageURL: paintInput, output: outMesh, texture: outTex,
-            weightsRoot: paintWeightsRoot,
-            res: settings.res, steps: settings.steps, tex: settings.tex,
-            superres: settings.superres, viewsDir: dir,
-            onProgress: { [weak self] stage, fraction in
-                Task { @MainActor in
-                    guard let self, self.paintTokens[id] == token else { return }
-                    self.paintStatuses[id] = .running(stage: stage, detail: nil, fraction: fraction)
-                }
-            },
-            onViews: { [weak self] url in
-                Task { @MainActor in
-                    guard let self, self.paintTokens[id] == token else { return }
-                    self.paintViewsURLs[id] = url
-                }
-            },
-            onFinish: { [weak self] outcome in
-                Task { @MainActor in
-                    guard let self, self.paintTokens[id] == token else { return }
-                    self.paintJobs[id] = nil
-                    switch outcome {
-                    case .success:
-                        if self.commitPaint(for: id) {
-                            self.paintStatuses[id] = .done
-                        }   // else commitPaint set .failed (missing/zero-byte output)
-                        self.clearPaintStreamFiles(in: self.folder(for: id))
-                        self.paintViewsURLs[id] = nil
-                    case .failure(let message):
-                        if let p = self.pendingPaint[id] {
-                            try? FileManager.default.removeItem(at: p.mesh)
-                            try? FileManager.default.removeItem(at: p.texture)
-                            self.pendingPaint[id] = nil
-                        }
-                        self.clearPaintStreamFiles(in: self.folder(for: id))
-                        self.paintViewsURLs[id] = nil
-                        self.paintStatuses[id] = .failed(message)
-                    }
-                }
-            })
-        paintJobs[id] = job
+        return StagedPaintRun(project: id, paintID: paintID, source: shape,
+                              shapeMesh: meshURL, image: paintInput,
+                              outMesh: outMesh, outTexture: outTex,
+                              settings: project.resolvedPaintSettings, startedAt: Date())
     }
 
-    @discardableResult
-    private func commitPaint(for id: Project.ID) -> Bool {
-        guard let pend = pendingPaint[id], let i = projects.firstIndex(where: { $0.id == id }) else { return false }
-        pendingPaint[id] = nil
-        // Require BOTH the mesh and the texture, each non-trivially sized (a crash mid-
-        // write leaves a 0-byte file) before recording the version.
+    /// Record a finished paint run as a saved generation. Returns an error message
+    /// (and cleans up) if the outputs are unusable.
+    func commitPaintRun(_ staged: StagedPaintRun) -> String? {
+        guard let i = projects.firstIndex(where: { $0.id == staged.project }) else {
+            discardPaintRun(staged)
+            return "The project no longer exists."
+        }
+        // Require BOTH the mesh and the texture, each non-trivially sized (a crash
+        // mid-write leaves a 0-byte file) before recording the version.
         func sized(_ url: URL) -> Bool {
             ((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 8
         }
-        guard sized(pend.mesh), sized(pend.texture) else {
-            try? FileManager.default.removeItem(at: pend.mesh)
-            try? FileManager.default.removeItem(at: pend.texture)
-            paintStatuses[id] = .failed("Paint didn't produce a usable texture.")
-            return false
+        guard sized(staged.outMesh), sized(staged.outTexture) else {
+            discardPaintRun(staged)
+            return "Paint didn't produce a usable texture."
         }
-        let src = pend.source
-        let s = pend.settings
+        let src = staged.source
+        let s = staged.settings
         let gen = Generation(
-            id: pend.id, createdAt: pend.startedAt,
+            id: staged.paintID, createdAt: staged.startedAt,
             modelRaw: src.modelRaw, quantRaw: src.quantRaw, steps: src.steps,
             removeBackground: src.removeBackground,
-            meshFileName: pend.mesh.lastPathComponent,
+            meshFileName: staged.outMesh.lastPathComponent,
             inputFileName: src.inputFileName,
-            durationSeconds: Date().timeIntervalSince(pend.startedAt),
+            durationSeconds: Date().timeIntervalSince(staged.startedAt),
             guidanceRaw: src.guidanceRaw, octreeRaw: src.octreeRaw,
-            paintedTextureFileName: pend.texture.lastPathComponent,
+            seedRaw: src.seedRaw,
+            paintedTextureFileName: staged.outTexture.lastPathComponent,
             kindRaw: "paint", sourceShapeID: src.id,
+            paintModelRaw: s.model.rawValue,
             paintResRaw: s.res, paintStepsRaw: s.steps,
             paintTexRaw: s.tex, paintFacesRaw: s.faces, paintSuperresRaw: s.superres)
         projects[i].generations.append(gen)
         projects[i].selectedGenerationID = gen.id
         save()
-        return true
+        return nil
     }
 
-    func cancelPaint(_ id: Project.ID) {
-        paintJobs[id]?.cancel()
-        paintJobs[id] = nil
-        tokenCounter += 1; paintTokens[id] = tokenCounter
-        if let p = pendingPaint[id] {
-            try? FileManager.default.removeItem(at: p.mesh)
-            try? FileManager.default.removeItem(at: p.texture)
-            pendingPaint[id] = nil
+    func discardPaintRun(_ staged: StagedPaintRun) {
+        try? FileManager.default.removeItem(at: staged.outMesh)
+        try? FileManager.default.removeItem(at: staged.outTexture)
+        // Remove the per-run input snapshot only if we created one (it lives in
+        // the project folder with the painted_ prefix).
+        if staged.image.lastPathComponent.hasPrefix("painted_") {
+            try? FileManager.default.removeItem(at: staged.image)
         }
-        clearPaintStreamFiles(in: folder(for: id))
-        paintViewsURLs[id] = nil
-        if case .running = paintStatus(for: id) { paintStatuses[id] = .idle }
+        clearPaintStreamFiles(for: staged.project)
     }
 
     // MARK: - persistence
@@ -812,13 +663,10 @@ final class ProjectStore {
         projects = decoded.sorted { $0.createdAt > $1.createdAt }
         selection = projects.first?.id
 
-        // Self-heal: a worker may have written output.mesh before the success
-        // callback persisted outputMeshName (app quit/crash in that window).
-        // Recover those from disk so a finished mesh isn't silently lost.
+        // Migrate a legacy single output.mesh into the generations list, so an
+        // existing project's result becomes its first saved version.
         var healed = false
         for i in projects.indices {
-            // Migrate a legacy single output.mesh into the generations list, so an
-            // existing project's result becomes its first saved version.
             if projects[i].generations.isEmpty {
                 let dir = folder(for: projects[i].id)
                 let legacy = dir.appendingPathComponent("output.mesh")
@@ -837,9 +685,9 @@ final class ProjectStore {
                     let maskName = FileManager.default.fileExists(atPath: dir.appendingPathComponent("mask.png").path)
                         ? snapshot("mask.png", as: "gen_legacy_mask") : nil
                     let gen = Generation(id: UUID(), createdAt: projects[i].createdAt,
-                                         modelRaw: projects[i].model.rawValue,
+                                         modelRaw: projects[i].shapeModel.rawValue,
                                          quantRaw: projects[i].quantization.rawValue,
-                                         steps: projects[i].model.steps,
+                                         steps: projects[i].shapeModel.defaultSteps,
                                          removeBackground: projects[i].removeBackground,
                                          meshFileName: "output.mesh",
                                          inputFileName: inputName,
@@ -851,9 +699,6 @@ final class ProjectStore {
                     projects[i].outputMeshName = nil
                     healed = true
                 }
-            }
-            if meshURL(for: projects[i]) != nil {
-                statuses[projects[i].id] = .done
             }
         }
         if healed { save() }

@@ -3,8 +3,10 @@ import AppKit
 import UniformTypeIdentifiers
 
 /// Image input and 3D output. Side-by-side when there's room, stacked when narrow,
-/// so nothing ever gets clipped.
+/// so nothing ever gets clipped. Status pills mirror the §4.4/§4.5 state machines
+/// 1:1 — the UI shows the state machine, no bespoke strings.
 struct ProjectDetailView: View {
+    @Environment(AppRuntime.self) private var runtime
     @Environment(ProjectStore.self) private var store
     let project: Project
     @State private var objectLoading = false
@@ -19,6 +21,9 @@ struct ProjectDetailView: View {
     @State private var brushRadius: CGFloat = 22
     @StateObject private var maskHolder = MaskCanvasHolder()
     private var isEditingMask: Bool { editorInputs != nil }
+
+    private var shapeJob: ShapeJobState { runtime.state.shapeState(project.id) }
+    private var paintJob: PaintJobState { runtime.state.paintState(project.id) }
 
     var body: some View {
         GeometryReader { geo in
@@ -68,8 +73,8 @@ struct ProjectDetailView: View {
     /// Show the paint strip while painting, on a paint error, or when viewing a paint
     /// version (so its texture is visible without replacing the shape model).
     private var paintMode: Bool {
-        if store.isPainting(project.id) { return true }
-        if case .failed = store.paintStatus(for: project.id) { return true }
+        if paintJob.isRunning { return true }
+        if case .failed = paintJob { return true }
         return project.currentGeneration?.kind == .paint
     }
 
@@ -99,6 +104,23 @@ struct ProjectDetailView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
+            if let importError = store.importErrors[project.id] {
+                VStack {
+                    Spacer()
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+                        Text(importError).font(.caption)
+                        Button { store.clearImportError(project.id) } label: {
+                            Image(systemName: "xmark").font(.caption2)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(10)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                    .padding(12)
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
         }
         .animation(.snappy(duration: 0.2), value: project.removeBackground)
     }
@@ -107,8 +129,8 @@ struct ProjectDetailView: View {
     /// interactive textured mesh once baked.
     private var paintPane: some View {
         ZStack {
-            if store.isPainting(project.id) {
-                if let grid = store.paintViewsURL(for: project.id) {
+            if paintJob.isRunning {
+                if let grid = runtime.paintViewPreviews[project.id] {
                     StreamImage(url: grid)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding(16)
@@ -131,27 +153,26 @@ struct ProjectDetailView: View {
 
     /// The textured mesh + texture to export from the paint viewport (nil while painting).
     private var paintExportSource: (URL, URL)? {
-        guard !store.isPainting(project.id),
+        guard !paintJob.isRunning,
               case .texturedMesh(let mesh, let tex)? = texturedContent else { return nil }
         return (mesh, tex)
     }
 
     @ViewBuilder
     private var paintStatusOverlay: some View {
-        switch store.paintStatus(for: project.id) {
-        case .running(let stage, _, let fraction):
-            statusPill(stage, hint: fraction == nil, fraction: fraction)
-        case .failed(let message):
-            VStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
-                Text("Paint failed").font(.callout.weight(.medium))
-                Text(message).font(.caption2).foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center).lineLimit(3)
-            }
-            .padding(16).frame(maxWidth: 240)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        case .idle, .done:
+        switch paintJob {
+        case .idle:
             EmptyView()
+        case .failed(let stage, let message):
+            failureBox(title: "Paint failed — \(stage)", message: message) {
+                runtime.dispatch(.paintFailureDismissed(project: project.id))
+            }
+        case .denoising(let k, let n):
+            statusPill("Denoising", detail: n > 0 ? "\(k)/\(n)" : nil,
+                       fraction: runtime.state.paint[project.id]?.fraction)
+        default:
+            statusPill(AppReducer.paintStageLabel(paintJob), detail: nil,
+                       fraction: runtime.state.paint[project.id]?.fraction)
         }
     }
 
@@ -220,7 +241,7 @@ struct ProjectDetailView: View {
         // Island 2 — SHAPE: section icon + setting · | · action
         ToolbarItem(placement: .primaryAction) {
             HStack(spacing: 12) {
-                configButton(settingsLabel, icon: "cube", disabled: store.isRunning(project.id)) {
+                configButton(settingsLabel, icon: "cube", disabled: shapeJob.isRunning) {
                     showSettings = true
                 }
                 .help("Shape model & quality")
@@ -240,7 +261,7 @@ struct ProjectDetailView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 HStack(spacing: 12) {
-                    configButton(paintLabel, icon: "paintpalette", disabled: store.isPainting(project.id)) {
+                    configButton(paintLabel, icon: "paintpalette", disabled: paintJob.isRunning) {
                         showPaintSettings = true
                     }
                     .help("Paint settings")
@@ -289,9 +310,10 @@ struct ProjectDetailView: View {
         .buttonStyle(.plain)
     }
 
-    /// Paint config summary for the toolbar (the chosen texture quality).
+    /// Paint config summary for the toolbar (model + chosen texture quality).
     private var paintLabel: String {
-        project.paintAdvanced ? "Custom" : project.paintQuality.label
+        let quality = project.paintAdvanced ? "Custom" : project.paintQuality.label
+        return "\(project.paintModel.label) · \(quality)"
     }
 
     private var paintPink: Color { Color(red: 0.90, green: 0.25, blue: 0.85) }
@@ -300,26 +322,32 @@ struct ProjectDetailView: View {
     @ViewBuilder
     private var shapeActionButton: some View {
         if store.imageURL(for: project) != nil {
-            if store.isRunning(project.id) {
-                actionPill("Stop", "stop.fill", fill: .red) { store.cancel(project.id) }
+            if shapeJob.isRunning {
+                // Cancel edges exist for Preparing…Decoding only (§4.4): the
+                // button stays visible but inert during Meshing/Committing.
+                actionPill("Stop", "stop.fill", fill: .red) { runtime.cancelShape(project.id) }
+                    .disabled(!shapeJob.isCancellable)
+                    .opacity(shapeJob.isCancellable ? 1 : 0.45)
             } else if project.generations.isEmpty {
-                actionPill("Generate", "play.fill", fill: shapeBlue) { store.generate(project.id) }
+                actionPill("Generate", "play.fill", fill: shapeBlue) { runtime.requestGenerate(project.id) }
             } else {
-                actionPill("Regenerate", "arrow.clockwise", fill: shapeBlue) { store.generate(project.id) }
+                actionPill("Regenerate", "arrow.clockwise", fill: shapeBlue) { runtime.requestGenerate(project.id) }
             }
         }
     }
 
     @ViewBuilder
     private var paintActionButton: some View {
-        if store.isPainting(project.id) {
-            actionPill("Stop", "stop.fill", fill: .red) { store.cancelPaint(project.id) }
+        if paintJob.isRunning {
+            // §4.5 allows cancel only from Rendering/Denoising.
+            actionPill("Stop", "stop.fill", fill: .red) { runtime.cancelPaint(project.id) }
+                .disabled(!paintJob.isCancellable)
+                .opacity(paintJob.isCancellable ? 1 : 0.45)
         } else {
-            let off = !ModelStore.isPaintAvailable || store.isRunning(project.id)
-            actionPill("Paint", "paintbrush.fill", fill: paintPink) { store.paint(project.id) }
-                .disabled(off)
-                .opacity(off ? 0.45 : 1)
-                .help(ModelStore.isPaintAvailable ? "Generate a texture" : "Paint model not found")
+            // Enabled even without weights: the reducer routes to the model
+            // manager instead of erroring (§4.9 weightsMissing).
+            actionPill("Paint", "paintbrush.fill", fill: paintPink) { runtime.requestPaint(project.id) }
+                .help("Generate a texture")
         }
     }
 
@@ -350,12 +378,12 @@ struct ProjectDetailView: View {
         ZStack {
             if let content = displayedContent {
                 MeshViewer(content: content, onLoading: { objectLoading = $0 })
-            } else if store.isRunning(project.id) {
+            } else if shapeJob.isRunning {
                 PointCloud()                     // animation while loading (no content yet)
                     .frame(width: 150, height: 150)
             }
             statusOverlay
-            exportOverlay(meshURL: store.isRunning(project.id) ? nil : store.shapeMeshURL(for: project),
+            exportOverlay(meshURL: shapeJob.isRunning ? nil : store.shapeMeshURL(for: project),
                           texture: nil)
         }
     }
@@ -434,12 +462,13 @@ struct ProjectDetailView: View {
         return s.quant == .full ? s.model.label : "\(s.model.label) · \(s.quant.label)"
     }
 
-    /// What to show in the viewer: the streaming point cloud (held briefly after the
-    /// run so it's seen complete), else the latest preview mesh, else the final mesh
-    /// once the point cloud has been cleared.
+    /// What to show in the viewer: the latest streamed preview mesh while running,
+    /// else the final mesh.
     private var displayedContent: ViewerContent? {
-        if let points = store.pointsURL(for: project.id) { return .points(points) }
-        if let preview = store.previewURL(for: project.id) { return .mesh(preview) }
+        if let preview = runtime.shapePreviews[project.id],
+           FileManager.default.fileExists(atPath: preview.path) {
+            return .mesh(preview)
+        }
         // The model pane is always the (untextured) shape geometry.
         if let shape = store.shapeMeshURL(for: project) { return .mesh(shape) }
         return nil
@@ -447,43 +476,55 @@ struct ProjectDetailView: View {
 
     @ViewBuilder
     private var statusOverlay: some View {
-        switch store.status(for: project.id) {
-        case .running(let stage, _, let fraction):
-            statusPill(stage, hint: fraction == nil, fraction: fraction)
-
-        case .idle, .done:
+        switch shapeJob {
+        case .idle:
             // Not generating, but the (large) mesh may still be loading into the view —
             // right after a run finishes, or when switching to another project.
             if objectLoading {
-                statusPill("Loading object…", hint: true, fraction: nil)
+                statusPill("Loading object…", detail: nil, fraction: nil)
             }
-
-        case .failed(let message):
-            VStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
-                Text("Couldn't generate")
-                    .font(.callout.weight(.medium))
-                Text(message)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(3)
+        case .failed(let stage, let message):
+            failureBox(title: "Couldn't generate — \(stage)", message: message) {
+                runtime.dispatch(.shapeFailureDismissed(project: project.id))
             }
-            .padding(16)
-            .frame(maxWidth: 240)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        case .denoising(let k, let n):
+            statusPill("Denoising", detail: n > 0 ? "\(k)/\(n)" : nil,
+                       fraction: runtime.state.shape[project.id]?.fraction)
+        default:
+            statusPill(AppReducer.shapeStageLabel(shapeJob), detail: nil,
+                       fraction: runtime.state.shape[project.id]?.fraction)
         }
     }
 
-    private func statusPill(_ label: String, hint: Bool, fraction: Double?) -> some View {
+    private func failureBox(title: String, message: String, dismiss: @escaping () -> Void) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+            Text(title)
+                .font(.callout.weight(.medium))
+                .multilineTextAlignment(.center)
+            Text(message)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .lineLimit(3)
+            Button("Dismiss", action: dismiss)
+                .buttonStyle(.borderless)
+                .font(.caption)
+        }
+        .padding(16)
+        .frame(maxWidth: 260)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func statusPill(_ label: String, detail: String?, fraction: Double?) -> some View {
         VStack {
             Spacer()
             VStack(spacing: 8) {
-                Text(label)
+                Text(detail.map { "\(label) \($0)" } ?? label)
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                if hint {
+                if fraction == nil {
                     Text("This can take a few seconds")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)

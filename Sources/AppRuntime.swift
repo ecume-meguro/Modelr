@@ -1,0 +1,428 @@
+import Foundation
+import Observation
+
+/// The impure shell around the pure core: owns AppState, feeds every event
+/// through AppReducer, and executes the returned effects against the real world
+/// (ProjectStore files, DownloadManager network, EngineArbiter + engines).
+/// Views observe this object; all UI intents come through `dispatch` or the
+/// convenience methods below.
+@MainActor
+@Observable
+final class AppRuntime {
+    private(set) var state = AppState()
+    let store: ProjectStore
+
+    /// Latest streamed preview mesh per project (shape denoise). Transient view
+    /// data, token-guarded against stale engine callbacks.
+    private(set) var shapePreviews: [Project.ID: URL] = [:]
+    /// Latest streamed multiview grid per project (paint denoise).
+    private(set) var paintViewPreviews: [Project.ID: URL] = [:]
+    /// Bumped when generation is requested without weights — the UI routes to
+    /// Settings → Models (§4.9 weightsMissing: never a bare error).
+    private(set) var modelManagerSignal = 0
+
+    @ObservationIgnored private let shapeEngine = ShapeEngine()
+    @ObservationIgnored private let paintEngine = PaintEngine()
+    @ObservationIgnored private let arbiter: EngineArbiter
+    @ObservationIgnored private var downloads: DownloadManager!
+    @ObservationIgnored private let bridge = EventBridge()
+
+    @ObservationIgnored private var stagedShapes: [Project.ID: (token: UInt64, run: ProjectStore.StagedShapeRun)] = [:]
+    @ObservationIgnored private var stagedPaints: [Project.ID: (token: UInt64, run: ProjectStore.StagedPaintRun)] = [:]
+    @ObservationIgnored private var engineRuns: [JobKey: any CancellableRun] = [:]
+
+    @ObservationIgnored private var eventQueue: [AppEvent] = []
+    @ObservationIgnored private var draining = false
+    @ObservationIgnored private var booted = false
+
+    private static let onboardingKey = "onboardingComplete"
+    private static let intentsKey = "installIntents"
+
+    init(store: ProjectStore? = nil) {
+        self.store = store ?? ProjectStore()
+        let shape = shapeEngine
+        let paint = paintEngine
+        arbiter = EngineArbiter(evictors: [
+            .shape: { await shape.evictAndWait() },
+            .paint: { await paint.evictAndWait() },
+        ])
+        downloads = DownloadManager(
+            configuration: .init(rootDir: ModelStore.modelsRoot),
+            emit: { [bridge] event in bridge.send(event) })
+        bridge.runtime = self
+    }
+
+    /// Forwards events from background subsystems onto the main actor without
+    /// retaining the runtime before it finishes initializing.
+    final class EventBridge: @unchecked Sendable {
+        weak var runtime: AppRuntime?
+        func send(_ event: AppEvent) {
+            Task { @MainActor in self.runtime?.dispatch(event) }
+        }
+    }
+
+    // MARK: - boot (§4.1)
+
+    func bootIfNeeded() {
+        guard !booted else { return }
+        booted = true
+        let downloads = downloads!
+        Task.detached(priority: .userInitiated) { [bridge] in
+            let legacy = ModelStore.legacyLayoutExists
+            let report = Self.scanBootReport(downloads: downloads)
+            bridge.send(.bootScanned(legacyLayoutDetected: legacy, report: report))
+        }
+    }
+
+    private nonisolated static func scanBootReport(downloads: DownloadManager) -> BootReport {
+        var report = BootReport()
+        report.onboardingComplete = UserDefaults.standard.bool(forKey: onboardingKey)
+        let intents = Set((UserDefaults.standard.stringArray(forKey: intentsKey) ?? [])
+            .compactMap(ModelID.init(rawValue:)))
+        for model in ModelID.allCases {
+            if downloads.isInstalledOnDisk(model) {
+                report.installed.insert(model)
+            } else if intents.contains(model) || downloads.hasPartialData(for: model) {
+                report.resumable[model] = downloads.resumableBytes(for: model)
+            }
+        }
+        return report
+    }
+
+    // MARK: - dispatch loop
+
+    /// FIFO event processing: effects may synchronously produce follow-up events
+    /// (e.g. staging), which queue behind the current reduction instead of
+    /// recursing — keeps ordering deterministic.
+    func dispatch(_ event: AppEvent) {
+        eventQueue.append(event)
+        guard !draining else { return }
+        draining = true
+        while !eventQueue.isEmpty {
+            let next = eventQueue.removeFirst()
+            let effects = AppReducer.reduce(&state, next)
+            for effect in effects { perform(effect) }
+        }
+        draining = false
+    }
+
+    // MARK: - UI conveniences
+
+    func requestGenerate(_ id: Project.ID) {
+        guard let project = store.project(id) else { return }
+        dispatch(.shapeGenerateRequested(project: id, model: project.resolvedSettings.model.modelID))
+    }
+
+    func requestPaint(_ id: Project.ID) {
+        guard let project = store.project(id) else { return }
+        dispatch(.paintRequested(project: id, model: project.resolvedPaintSettings.model.modelID))
+    }
+
+    func cancelShape(_ id: Project.ID) { dispatch(.shapeCancelRequested(project: id)) }
+    func cancelPaint(_ id: Project.ID) { dispatch(.paintCancelRequested(project: id)) }
+
+    /// Cancel whatever is legal to cancel, then remove the project + its files.
+    func deleteProject(_ id: Project.ID) {
+        dispatch(.shapeCancelRequested(project: id))
+        dispatch(.paintCancelRequested(project: id))
+        shapePreviews[id] = nil
+        paintViewPreviews[id] = nil
+        store.delete(id)
+    }
+
+    func install(_ model: ModelID) { dispatch(.installRequested(model)) }
+    func pauseInstall(_ model: ModelID) { dispatch(.installPauseRequested(model)) }
+    func resumeInstall(_ model: ModelID) { dispatch(.installResumeRequested(model)) }
+    func removeInstall(_ model: ModelID) { dispatch(.installRemoveRequested(model)) }
+    func retryInstall(_ model: ModelID) { dispatch(.installRetryRequested(model)) }
+    func importWeights(_ model: ModelID, from folder: URL) {
+        dispatch(.importWeightsRequested(model, folder: folder))
+    }
+
+    func showModelManager() { modelManagerSignal += 1 }
+
+    var shapeJobs: [Project.ID: ShapeJob] { state.shape }
+    var paintJobs: [Project.ID: PaintJob] { state.paint }
+
+    // MARK: - effect execution
+
+    private func perform(_ effect: AppEffect) {
+        switch effect {
+        // boot / persistence
+        case .performMigration:
+            let downloads = downloads!
+            Task.detached(priority: .userInitiated) { [bridge] in
+                ModelStore.performLegacyMigration()
+                let report = Self.scanBootReport(downloads: downloads)
+                bridge.send(.migrationFinished(report: report))
+            }
+
+        case .persistOnboardingComplete:
+            UserDefaults.standard.set(true, forKey: Self.onboardingKey)
+
+        case .persistInstallIntents(let intents):
+            UserDefaults.standard.set(intents.map(\.rawValue).sorted(), forKey: Self.intentsKey)
+
+        // model install
+        case .startDownload(let model, let attempt):
+            downloads.start(model, attempt: attempt)
+
+        case .pauseDownload(let model):
+            downloads.pause(model)
+
+        case .verifyFiles(let model, let attempt):
+            downloads.verify(model, attempt: attempt)
+
+        case .removeModelFiles(let model):
+            downloads.removeFiles(for: model)
+
+        case .importWeights(let model, let folder):
+            downloads.importWeights(for: model, from: folder)
+
+        // shape job
+        case .stageShape(let project, let token):
+            do {
+                let staged = try store.stageShapeRun(for: project)
+                stagedShapes[project] = (token, staged)
+                shapePreviews[project] = nil
+                dispatch(.shapeStaged(project: project, token: token, error: nil))
+            } catch {
+                dispatch(.shapeStaged(project: project, token: token,
+                                      error: error.localizedDescription))
+            }
+
+        case .startShapeEngine(let project, let token):
+            startShapeEngine(project: project, token: token)
+
+        case .commitShape(let project, let token):
+            guard let (stagedToken, staged) = stagedShapes[project], stagedToken == token else {
+                dispatch(.shapeCommitFinished(project: project, token: token,
+                                              error: "The run's staged files were lost."))
+                break
+            }
+            stagedShapes[project] = nil
+            let error = store.commitShapeRun(staged)
+            shapePreviews[project] = nil
+            store.clearStreamFiles(for: project)
+            dispatch(.shapeCommitFinished(project: project, token: token, error: error))
+
+        case .discardShapeStaging(let project, let token):
+            if let (stagedToken, staged) = stagedShapes[project], stagedToken == token {
+                stagedShapes[project] = nil
+                store.discardShapeRun(staged)
+            }
+            shapePreviews[project] = nil
+            store.clearStreamFiles(for: project)
+
+        // paint job
+        case .stagePaint(let project, let token):
+            do {
+                let staged = try store.stagePaintRun(for: project)
+                stagedPaints[project] = (token, staged)
+                paintViewPreviews[project] = nil
+                dispatch(.paintStaged(project: project, token: token, error: nil))
+            } catch {
+                dispatch(.paintStaged(project: project, token: token,
+                                      error: error.localizedDescription))
+            }
+
+        case .unwrapPaintMesh(let project, let token):
+            // Pass-through today: the vendored PaintPipeline still unwraps inside
+            // the engine run. Wave 2b moves QEM decimation + xatlas here (with the
+            // undecimated-retry fallback from §4.5).
+            dispatch(.paintUnwrapFinished(project: project, token: token, error: nil))
+
+        case .startPaintEngine(let project, let token):
+            startPaintEngine(project: project, token: token)
+
+        case .commitPaint(let project, let token):
+            guard let (stagedToken, staged) = stagedPaints[project], stagedToken == token else {
+                dispatch(.paintCommitFinished(project: project, token: token,
+                                              error: "The run's staged files were lost."))
+                break
+            }
+            stagedPaints[project] = nil
+            let error = store.commitPaintRun(staged)
+            paintViewPreviews[project] = nil
+            store.clearPaintStreamFiles(for: project)
+            dispatch(.paintCommitFinished(project: project, token: token, error: error))
+
+        case .discardPaintStaging(let project, let token):
+            if let (stagedToken, staged) = stagedPaints[project], stagedToken == token {
+                stagedPaints[project] = nil
+                store.discardPaintRun(staged)
+            }
+            paintViewPreviews[project] = nil
+            store.clearPaintStreamFiles(for: project)
+
+        // engine arbiter
+        case .grantEngine(let key):
+            Task { [arbiter, bridge] in
+                await arbiter.grant(key)                   // evict-then-grant, sequenced
+                bridge.send(.engineGranted(key))
+            }
+
+        case .cancelEngine(let key):
+            engineRuns[key]?.cancel()
+
+        case .releaseEngine(let key):
+            engineRuns[key] = nil
+            Task { [arbiter] in await arbiter.release(key) }
+
+        // UX routing
+        case .openModelManager:
+            modelManagerSignal += 1
+        }
+    }
+
+    // MARK: - engine adapters (callbacks → token-carrying events)
+
+    private func startShapeEngine(project: Project.ID, token: UInt64) {
+        let key = JobKey(kind: .shape, project: project, token: token)
+        guard let (stagedToken, staged) = stagedShapes[project], stagedToken == token else {
+            dispatch(.shapeEngineFinished(project: project, token: token,
+                                          result: .failure("The run's staged files were lost.")))
+            return
+        }
+        guard let weights = ModelStore.shapeWeightsFile(for: staged.settings.model) else {
+            dispatch(.shapeEngineFinished(project: project, token: token,
+                                          result: .failure("\(staged.settings.model.label) weights are no longer installed.")))
+            return
+        }
+        let bridge = bridge
+        var run: ShapeEngine.Run!
+        run = shapeEngine.generate(
+            imageURL: staged.input,
+            output: staged.mesh,
+            weightsURL: weights,
+            quantize: staged.settings.quant.flag,
+            steps: staged.settings.steps,
+            guidance: Float(staged.settings.guidance),
+            resolution: staged.settings.octree,
+            seed: staged.seed,
+            onProgress: { stage, _, fraction in
+                if let mapped = Self.mapShapeStage(stage) {
+                    bridge.send(.shapeEngineStage(project: project, token: token,
+                                                  stage: mapped, fraction: fraction))
+                }
+            },
+            onPreview: { url in
+                Task { @MainActor in
+                    guard let self = bridge.runtime,
+                          self.state.shape[project]?.token == token else { return }
+                    self.shapePreviews[project] = url
+                }
+            },
+            onFinish: { outcome in
+                let result: EngineResult
+                switch outcome {
+                case .success: result = .success
+                case .failure(let message):
+                    result = run.cancelled ? .cancelled : .failure(message)
+                }
+                bridge.send(.shapeEngineFinished(project: project, token: token, result: result))
+            })
+        engineRuns[key] = run
+    }
+
+    private func startPaintEngine(project: Project.ID, token: UInt64) {
+        let key = JobKey(kind: .paint, project: project, token: token)
+        guard let (stagedToken, staged) = stagedPaints[project], stagedToken == token else {
+            dispatch(.paintEngineFinished(project: project, token: token,
+                                          result: .failure("The run's staged files were lost.")))
+            return
+        }
+        guard staged.settings.model == .small else {
+            // The vendored PBR entry point isn't app-wired yet (wave 2b); fail
+            // honestly through the state machine instead of painting with the
+            // wrong weights.
+            dispatch(.paintEngineFinished(project: project, token: token,
+                                          result: .failure("PBR (Large) texturing isn't available in-app yet — use Color for now.")))
+            return
+        }
+        guard let weightsRoot = ModelStore.paintWeightsRoot(for: staged.settings.model) else {
+            dispatch(.paintEngineFinished(project: project, token: token,
+                                          result: .failure("Paint weights are no longer installed.")))
+            return
+        }
+        let bridge = bridge
+        let viewsDir = staged.outMesh.deletingLastPathComponent()
+        var run: PaintEngine.Run!
+        run = paintEngine.paint(
+            meshURL: staged.shapeMesh,
+            imageURL: staged.image,
+            output: staged.outMesh,
+            texture: staged.outTexture,
+            weightsRoot: weightsRoot,
+            res: staged.settings.res,
+            steps: staged.settings.steps,
+            tex: staged.settings.tex,
+            superres: staged.settings.superres,
+            viewsDir: viewsDir,
+            onProgress: { stage, fraction in
+                if let mapped = Self.mapPaintStage(stage) {
+                    bridge.send(.paintEngineStage(project: project, token: token,
+                                                  stage: mapped, fraction: fraction))
+                }
+            },
+            onViews: { url in
+                Task { @MainActor in
+                    guard let self = bridge.runtime,
+                          self.state.paint[project]?.token == token else { return }
+                    self.paintViewPreviews[project] = url
+                }
+            },
+            onFinish: { outcome in
+                let result: EngineResult
+                switch outcome {
+                case .success: result = .success
+                case .failure(let message):
+                    result = run.cancelled ? .cancelled : .failure(message)
+                }
+                bridge.send(.paintEngineFinished(project: project, token: token, result: result))
+            })
+        engineRuns[key] = run
+    }
+
+    // MARK: - engine progress → §4.4/§4.5 stages
+
+    /// Hy3DMLX emits: "Conditioning image", "Denoising (k/N)", "Decoding shape",
+    /// "Building mesh", "Done" (+ "Loading model…" on cache miss).
+    static func mapShapeStage(_ stage: String) -> ShapeStage? {
+        if stage.hasPrefix("Conditioning") { return .conditioning }
+        if stage.hasPrefix("Denoising") {
+            let (step, total) = parseProgress(stage)
+            return .denoising(step: step, total: total)
+        }
+        if stage.hasPrefix("Decoding") { return .decoding }
+        if stage.hasPrefix("Building mesh") { return .meshing }
+        return nil                              // Loading model… / Done
+    }
+
+    /// HunyuanPaintMLX emits: "Loading paint model", "Unwrapping UVs", "Rendering
+    /// control maps", "Painting (k/N)", "Decoding views", "Super-resolving",
+    /// "Baking texture", "Done". "Unwrapping UVs" arrives with weights already
+    /// resident, so it marks the Rendering stage boundary (§4.5 LoadingModel →
+    /// Rendering: weights resident); inpainting has no separate engine signal and
+    /// is passed through on completion.
+    static func mapPaintStage(_ stage: String) -> PaintStage? {
+        if stage.hasPrefix("Unwrapping") || stage.hasPrefix("Rendering") { return .rendering }
+        if stage.hasPrefix("Painting") {
+            let (step, total) = parseProgress(stage)
+            return .denoising(step: step, total: total)
+        }
+        if stage.hasPrefix("Decoding") { return .decoding }
+        if stage.hasPrefix("Super-resolving") { return .upscaling }
+        if stage.hasPrefix("Baking") { return .baking }
+        return nil                              // Loading paint model / Done
+    }
+
+    /// Extract "(k/N)" from an engine stage string; (0, 0) when absent.
+    private static func parseProgress(_ stage: String) -> (Int, Int) {
+        guard let open = stage.firstIndex(of: "("), let close = stage.firstIndex(of: ")"),
+              open < close else { return (0, 0) }
+        let parts = stage[stage.index(after: open)..<close].split(separator: "/")
+        guard parts.count == 2, let k = Int(parts[0]), let n = Int(parts[1]) else { return (0, 0) }
+        return (k, n)
+    }
+}

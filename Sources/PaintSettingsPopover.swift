@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// Paint (texture) configuration — Normal (one quality slider) / Advanced (steps,
-/// view resolution, texture size, super-resolution). Mirrors ModelSettingsPopover.
+/// Paint (texture) configuration — the Color/PBR model picker plus Normal (one
+/// quality slider) / Advanced (steps, view resolution, texture size, mesh
+/// detail, super-resolution). Mirrors ModelSettingsPopover.
 struct PaintSettingsPopover: View {
     @Environment(ProjectStore.self) private var store
     let projectID: Project.ID
@@ -11,6 +12,8 @@ struct PaintSettingsPopover: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let project = store.project(projectID) {
+                modelPicker(project)
+                Divider()
                 if project.paintAdvanced {
                     advanced(project)
                 } else {
@@ -25,6 +28,25 @@ struct PaintSettingsPopover: View {
         }
         .padding(16)
         .frame(width: 320)
+    }
+
+    /// Small = Color (RGB), Large = PBR (albedo + metallic-roughness), per §5.
+    @ViewBuilder
+    private func modelPicker(_ p: Project) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Texture type").fontWeight(.semibold)
+                Spacer()
+                Text(p.paintModel.detail).font(.caption).foregroundStyle(.tertiary)
+            }
+            Picker("", selection: modelBinding) {
+                ForEach(PaintModel.allCases) { m in
+                    Text(m.label).tag(m)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+        }
     }
 
     @ViewBuilder
@@ -92,6 +114,10 @@ struct PaintSettingsPopover: View {
     private var advancedBinding: Binding<Bool> {
         Binding(get: { store.project(projectID)?.paintAdvanced ?? false },
                 set: { store.setPaintAdvanced($0, for: projectID) })
+    }
+    private var modelBinding: Binding<PaintModel> {
+        Binding(get: { store.project(projectID)?.paintModel ?? .small },
+                set: { store.setPaintModel($0, for: projectID) })
     }
     private var qualityIndex: Binding<Int> {
         Binding(get: { PaintQuality.ordered.firstIndex(of: store.project(projectID)?.paintQuality ?? .fast) ?? 0 },

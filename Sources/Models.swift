@@ -1,49 +1,83 @@
 import Foundation
 
-/// The shape model to generate with. Each maps to a self-contained DiT weights dir
-/// (config.yaml + model.fp16.safetensors bundling DINO + DiT + VAE).
-enum ModelChoice: String, CaseIterable, Identifiable {
-    case mini, miniTurbo, standard, standardTurbo   // 2mini, 2mini-turbo, 2.0, 2.0-turbo
+/// The shape checkpoint to generate with (DESIGN.md §2): Small = 2mini (0.6B,
+/// 30-step CFG), Large = 2.0-turbo (1.1B distilled, 8-step consistency).
+enum ShapeModel: String, CaseIterable, Identifiable {
+    case small, large
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .mini:          return "Mini"
-        case .miniTurbo:     return "Mini Turbo"
-        case .standard:      return "Standard"
-        case .standardTurbo: return "Standard Turbo"
+        case .small: return "Small"
+        case .large: return "Large"
         }
     }
 
     var detail: String {
         switch self {
-        case .mini:          return "2mini · 0.6B · fast"
-        case .miniTurbo:     return "2mini distilled · 8-step · fastest"
-        case .standard:      return "2.0 · 1.1B · best detail"
-        case .standardTurbo: return "2.0 distilled · 8-step · sweet spot"
+        case .small: return "2mini · 0.6B · fastest"
+        case .large: return "2.0 turbo · 1.1B · best detail"
         }
     }
 
-    var weightsSubpath: String {
+    var modelID: ModelID {
         switch self {
-        case .mini:          return "weights/Hunyuan3D-2mini/hunyuan3d-dit-v2-mini"
-        case .miniTurbo:     return "weights/Hunyuan3D-2mini/hunyuan3d-dit-v2-mini-turbo"
-        case .standard:      return "weights/Hunyuan3D-2/hunyuan3d-dit-v2-0"
-        case .standardTurbo: return "weights/Hunyuan3D-2/hunyuan3d-dit-v2-0-turbo"
+        case .small: return .shapeSmall
+        case .large: return .shapeLarge
         }
     }
 
     /// Distilled (turbo) checkpoints run a consistency schedule in far fewer steps.
-    var steps: Int {
+    var defaultSteps: Int {
         switch self {
-        case .miniTurbo, .standardTurbo: return 8
-        case .mini, .standard:           return 30
+        case .small: return 30
+        case .large: return 8
         }
     }
 
-    /// Faster → Smarter ordering for the effort slider.
-    static let ordered: [ModelChoice] = [.miniTurbo, .mini, .standardTurbo, .standard]
+    /// Migration-aware decoding: projects saved before the 2×2 lineup carry the
+    /// old four-value raws (mini/miniTurbo → small; standard/standardTurbo → large).
+    init(legacyRaw: String?) {
+        switch legacyRaw {
+        case "small", "mini", "miniTurbo": self = .small
+        case "large", "standard", "standardTurbo": self = .large
+        default: self = .small
+        }
+    }
+}
+
+/// The paint checkpoint (§2): Small = 2.0 RGB color texture, Large = 2.1 PBR
+/// (albedo + metallic-roughness).
+enum PaintModel: String, CaseIterable, Identifiable {
+    case small, large
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .small: return "Color"
+        case .large: return "PBR"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .small: return "RGB texture · 2048 atlas"
+        case .large: return "Albedo + metal-rough · 4096 atlas"
+        }
+    }
+
+    var modelID: ModelID {
+        switch self {
+        case .small: return .paintSmall
+        case .large: return .paintLarge
+        }
+    }
+
+    init(legacyRaw: String?) {
+        self = legacyRaw.flatMap(PaintModel.init(rawValue:)) ?? .small
+    }
 }
 
 /// Weight quantization of the DiT + DINO block linears (VAE always stays fp16).
@@ -68,7 +102,7 @@ enum Quantization: String, CaseIterable, Identifiable {
         }
     }
 
-    /// CLI value for --quantize (0 = off).
+    /// Engine value for quantize (0 = off).
     var flag: Int {
         switch self {
         case .full: return 0
@@ -81,7 +115,8 @@ enum Quantization: String, CaseIterable, Identifiable {
     static let ordered: [Quantization] = [.int4, .int8, .full]
 }
 
-/// Normal-mode quality ladder: one slider that bundles model + steps + octree.
+/// Normal-mode effort ladder: one slider bundling steps + octree for the chosen
+/// model (the model itself is a separate Small/Large picker per DESIGN.md §5).
 /// Quantization is fixed at 8-bit in normal mode.
 enum QualityPreset: String, CaseIterable, Identifiable {
     case fastest, fast, balanced, high, max
@@ -98,20 +133,12 @@ enum QualityPreset: String, CaseIterable, Identifiable {
         }
     }
 
-    var model: ModelChoice {
-        switch self {
-        case .fastest:               return .miniTurbo
-        case .fast:                  return .standardTurbo
-        case .balanced, .high, .max: return .standard
-        }
-    }
-
-    var steps: Int {
-        switch self {
-        case .fastest, .fast: return 8       // distilled (turbo)
-        case .balanced:       return 30
-        case .high:           return 40
-        case .max:            return 50
+    /// Denoise steps scale with the model's schedule (CFG vs consistency).
+    func steps(for model: ShapeModel) -> Int {
+        let index = Self.ordered.firstIndex(of: self) ?? 2
+        switch model {
+        case .small: return [12, 20, 30, 40, 50][index]
+        case .large: return [4, 6, 8, 10, 12][index]
         }
     }
 
@@ -125,19 +152,24 @@ enum QualityPreset: String, CaseIterable, Identifiable {
         }
     }
 
-    var detail: String { "\(model.label) · \(steps) steps · grid \(octree)" }
+    func detail(for model: ShapeModel) -> String {
+        "\(steps(for: model)) steps · grid \(octree)"
+    }
 
     static let ordered: [QualityPreset] = [.fastest, .fast, .balanced, .high, .max]
     static let octreeStops = [128, 192, 256, 320, 384, 448, 512]
 }
 
-/// The fully-resolved parameters for one run (from normal preset or advanced fields).
+/// The fully-resolved parameters for one run (from normal preset or advanced
+/// fields). `seed` nil = pick a random seed at staging time (it's recorded on
+/// the Generation either way — reproducibility is part of determinism, §3).
 struct RunSettings {
-    let model: ModelChoice
+    let model: ShapeModel
     let quant: Quantization
     let steps: Int
     let guidance: Double
     let octree: Int
+    let seed: UInt64?
 }
 
 /// Normal-mode paint quality ladder (one slider): bundles render res, diffusion
@@ -200,6 +232,7 @@ enum PaintQuality: String, CaseIterable, Identifiable {
 }
 
 struct PaintSettings {
+    let model: PaintModel
     let res: Int
     let steps: Int
     let tex: Int
@@ -229,6 +262,8 @@ struct Project: Identifiable, Codable, Hashable {
     var stepsRaw: Int?
     var guidanceRaw: Double?
     var octreeRaw: Int?
+    var seedRaw: UInt64?
+    var paintModelRaw: String?
     var paintAdvancedRaw: Bool?
     var paintQualityRaw: String?
     var paintStepsRaw: Int?
@@ -260,9 +295,15 @@ struct Project: Identifiable, Codable, Hashable {
         return generations.last
     }
 
-    var model: ModelChoice {
-        get { modelRaw.flatMap(ModelChoice.init(rawValue:)) ?? .mini }
+    /// Migration-aware (old four-value raws map onto Small/Large).
+    var shapeModel: ShapeModel {
+        get { ShapeModel(legacyRaw: modelRaw) }
         set { modelRaw = newValue.rawValue }
+    }
+
+    var paintModel: PaintModel {
+        get { PaintModel(legacyRaw: paintModelRaw) }
+        set { paintModelRaw = newValue.rawValue }
     }
 
     var quantization: Quantization {
@@ -279,7 +320,7 @@ struct Project: Identifiable, Codable, Hashable {
         set { qualityRaw = newValue.rawValue }
     }
     var steps: Int {
-        get { stepsRaw ?? model.steps }
+        get { stepsRaw ?? shapeModel.defaultSteps }
         set { stepsRaw = newValue }
     }
     var guidance: Double {
@@ -290,16 +331,21 @@ struct Project: Identifiable, Codable, Hashable {
         get { octreeRaw ?? 256 }
         set { octreeRaw = newValue }
     }
+    /// nil = a fresh random seed per run (the resolved value is recorded).
+    var seed: UInt64? {
+        get { seedRaw }
+        set { seedRaw = newValue }
+    }
 
     /// Effective run parameters from the current mode (normal preset or advanced fields).
     var resolvedSettings: RunSettings {
         if advancedMode {
-            return RunSettings(model: model, quant: quantization, steps: steps,
-                               guidance: guidance, octree: octree)
+            return RunSettings(model: shapeModel, quant: quantization, steps: steps,
+                               guidance: guidance, octree: octree, seed: seed)
         }
         let p = quality
-        return RunSettings(model: p.model, quant: .int8, steps: p.steps,
-                           guidance: 5.0, octree: p.octree)
+        return RunSettings(model: shapeModel, quant: .int8, steps: p.steps(for: shapeModel),
+                           guidance: 5.0, octree: p.octree, seed: nil)
     }
 
     // MARK: paint config
@@ -335,11 +381,12 @@ struct Project: Identifiable, Codable, Hashable {
 
     var resolvedPaintSettings: PaintSettings {
         if paintAdvanced {
-            return PaintSettings(res: paintRes, steps: paintSteps, tex: paintTex,
-                                 superres: paintSuperres, faces: paintFaces)
+            return PaintSettings(model: paintModel, res: paintRes, steps: paintSteps,
+                                 tex: paintTex, superres: paintSuperres, faces: paintFaces)
         }
         let q = paintQuality
-        return PaintSettings(res: q.res, steps: q.steps, tex: q.tex, superres: q.superres, faces: q.faces)
+        return PaintSettings(model: paintModel, res: q.res, steps: q.steps, tex: q.tex,
+                             superres: q.superres, faces: q.faces)
     }
 }
 
@@ -356,12 +403,14 @@ struct Generation: Identifiable, Codable, Hashable {
     var durationSeconds: Double?
     var guidanceRaw: Double? = nil
     var octreeRaw: Int? = nil
+    var seedRaw: UInt64? = nil          // the seed this run actually used
     var sourceFileName: String? = nil   // original image snapshot (for re-editing)
     var maskFileName: String? = nil     // mask snapshot (nil if no background removal)
     var paintedMeshFileName: String? = nil    // (legacy) textured .tmesh
     var paintedTextureFileName: String? = nil // for a paint version: the baked texture
     var kindRaw: String? = nil          // shape (default) or paint
     var sourceShapeID: UUID? = nil      // for a paint version: the shape it textured
+    var paintModelRaw: String? = nil
     var paintResRaw: Int? = nil
     var paintStepsRaw: Int? = nil
     var paintTexRaw: Int? = nil
@@ -371,18 +420,8 @@ struct Generation: Identifiable, Codable, Hashable {
     var kind: GenerationKind { GenerationKind(rawValue: kindRaw ?? "shape") ?? .shape }
     var isPainted: Bool { kind == .paint }
 
-    var model: ModelChoice { ModelChoice(rawValue: modelRaw) ?? .mini }
+    var shapeModel: ShapeModel { ShapeModel(legacyRaw: modelRaw) }
     var quantization: Quantization { Quantization(rawValue: quantRaw) ?? .full }
     var guidance: Double { guidanceRaw ?? 5.0 }
     var octree: Int { octreeRaw ?? 256 }
-}
-
-/// Transient (not persisted) generation state for a project.
-/// `stage` is the clean label (main view); `detail` is e.g. "12/30" (sidebar);
-/// `fraction` (nil = indeterminate) drives the progress bar.
-enum GenerationStatus: Equatable {
-    case idle
-    case running(stage: String, detail: String?, fraction: Double?)
-    case done
-    case failed(String)
 }

@@ -111,6 +111,20 @@ final class ShapeEngine {
         }
     }
 
+    /// Eviction the EngineArbiter can await: returns only after the resident
+    /// model has actually been dropped on the engine queue, making the
+    /// evict-then-load handoff deterministic (no cross-queue overlap).
+    func evictAndWait() async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            queue.async {
+                self.cachedKey = nil
+                self.cachedGen = nil
+                MLX.GPU.clearCache()
+                cont.resume()
+            }
+        }
+    }
+
     private static func loadCGImage(_ url: URL) -> CGImage? {
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         return CGImageSourceCreateImageAtIndex(src, 0, nil)
