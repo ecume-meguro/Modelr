@@ -80,28 +80,33 @@ enum SmokeRunner {
         let paintModel: PaintModel = modelChoice == "large" ? .large : .small
         let needed = [shapeModel.modelID, paintModel.modelID]
 
-        // 2. Onboarding: capture the sheet, complete it in import mode (weights
-        //    come from a local folder through the real import/verify path).
-        if runtime.state.phase == .onboarding {
+        // 2. Onboarding: capture the sheet, then complete it in import mode —
+        //    weights come from a local folder through the real import/verify path
+        //    (the import runs whether or not onboarding appeared, so a warm
+        //    container can still add a missing pair).
+        let onboardingShown = runtime.state.phase == .onboarding
+        if onboardingShown {
             await settle()
             capture("01-onboarding")
-            if let importRoot = env["MODELR_SMOKE_IMPORT"] {
-                let root = URL(fileURLWithPath: importRoot, isDirectory: true)
-                for model in needed where !runtime.state.installState(model).isInstalled {
-                    log("importing \(model.rawValue) from \(root.path)")
-                    runtime.importWeights(model, from: root.appendingPathComponent(model.slug))
-                    try await waitUntil("import \(model.rawValue)", 1800) {
-                        switch runtime.state.installState(model) {
-                        case .installed, .failed: return true
-                        default: return false
-                        }
+        }
+        if let importRoot = env["MODELR_SMOKE_IMPORT"] {
+            let root = URL(fileURLWithPath: importRoot, isDirectory: true)
+            for model in needed where !runtime.state.installState(model).isInstalled {
+                log("importing \(model.rawValue) from \(root.path)")
+                runtime.importWeights(model, from: root.appendingPathComponent(model.slug))
+                try await waitUntil("import \(model.rawValue)", 1800) {
+                    switch runtime.state.installState(model) {
+                    case .installed, .failed: return true
+                    default: return false
                     }
-                    if case .failed(let message) = runtime.state.installState(model) {
-                        throw fail("import \(model.rawValue) failed: \(message)")
-                    }
-                    log("imported \(model.rawValue)")
                 }
+                if case .failed(let message) = runtime.state.installState(model) {
+                    throw fail("import \(model.rawValue) failed: \(message)")
+                }
+                log("imported \(model.rawValue)")
             }
+        }
+        if onboardingShown {
             runtime.dispatch(.onboardingSkipped)
             try await waitUntil("onboarding complete", 10) { runtime.state.phase == .ready }
             log("onboarding: complete")
