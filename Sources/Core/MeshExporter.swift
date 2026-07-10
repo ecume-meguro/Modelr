@@ -49,15 +49,23 @@ enum MeshExporter {
         let rawNormals: Data
         let rawUVs: Data?
         let rawFaces: Data
-        let texturePNG: Data?     // raw PNG bytes (textured export)
+        let texturePNG: Data?     // raw PNG bytes (textured export: baseColor/albedo)
+        /// Optional metallic-roughness PNG (glTF 2.0 convention: G = roughness,
+        /// B = metallic). Provided by the PBR paint path; GLB embeds it alongside
+        /// the base color.
+        let metallicRoughnessPNG: Data?
     }
 
     // MARK: - Public entry point
 
-    /// Read `meshURL` (+ optional `texture`) and write `format` to `dest`.
-    /// OBJ additionally writes a companion `.mtl` and `.png` next to `dest`.
-    static func export(meshURL: URL, texture: URL?, format: MeshExportFormat, to dest: URL) throws {
-        let mesh = try read(meshURL: meshURL, textureURL: texture)
+    /// Read `meshURL` (+ optional `texture` and `metallicRoughness`) and write
+    /// `format` to `dest`. OBJ additionally writes a companion `.mtl` and `.png`
+    /// next to `dest`. `metallicRoughness` affects GLB only (§4.8: PBR GLB carries
+    /// albedo + metallic-roughness); the other formats have no standard slot for it.
+    static func export(meshURL: URL, texture: URL?, metallicRoughness: URL? = nil,
+                       format: MeshExportFormat, to dest: URL) throws {
+        let mesh = try read(meshURL: meshURL, textureURL: texture,
+                            metallicRoughnessURL: metallicRoughness)
         switch format {
         case .stl: try encodeSTL(mesh).write(to: dest)
         case .ply: try encodePLY(mesh).write(to: dest)
@@ -81,7 +89,8 @@ enum MeshExporter {
 
     // MARK: - Reading
 
-    static func read(meshURL: URL, textureURL: URL?) throws -> MeshData {
+    static func read(meshURL: URL, textureURL: URL?,
+                     metallicRoughnessURL: URL? = nil) throws -> MeshData {
         guard let data = try? Data(contentsOf: meshURL), data.count >= 8 else { throw ExportError.unreadable }
         let n = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 0, as: Int32.self) })
         let m = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 4, as: Int32.self) })
@@ -105,10 +114,13 @@ enum MeshExporter {
 
         var png: Data? = nil
         if let textureURL { png = try? Data(contentsOf: textureURL) }
+        var mrPNG: Data? = nil
+        if let metallicRoughnessURL { mrPNG = try? Data(contentsOf: metallicRoughnessURL) }
 
         return MeshData(vertCount: n, faceCount: m, verts: verts, normals: normals, uvs: uvs,
                         indices: indices, rawVerts: rawVerts, rawNormals: rawNormals,
-                        rawUVs: rawUVs, rawFaces: rawFaces, texturePNG: png)
+                        rawUVs: rawUVs, rawFaces: rawFaces, texturePNG: png,
+                        metallicRoughnessPNG: mrPNG)
     }
 
     private static func floats(_ d: Data, count: Int) -> [Float] {
@@ -252,6 +264,9 @@ enum MeshExporter {
         let n = mesh.vertCount
         let m3 = mesh.faceCount * 3
         let hasUV = mesh.rawUVs != nil && mesh.texturePNG != nil
+        // PBR: a metallic-roughness map rides along only when the base color does
+        // (both sample the same TEXCOORD_0 per glTF 2.0 pbrMetallicRoughness).
+        let hasMR = hasUV && mesh.metallicRoughnessPNG != nil
 
         // BIN buffer — concatenate the raw LE slices (already in glTF's expected byte layout),
         // 4-byte aligned by construction (12n, 12n, 8n, 12m are all multiples of 4).
@@ -272,6 +287,13 @@ enum MeshExporter {
             imgOffset = bin.count       // already 4-aligned (follows 12m indices)
             imgLen = png.count
             bin.append(png)
+        }
+        var mrOffset = 0, mrLen = 0
+        if hasMR, let mr = mesh.metallicRoughnessPNG {
+            while bin.count % 4 != 0 { bin.append(0) }  // PNG lengths aren't 4-aligned
+            mrOffset = bin.count
+            mrLen = mr.count
+            bin.append(mr)
         }
         let bufferLen = bin.count       // logical buffer length (unpadded)
         while bin.count % 4 != 0 { bin.append(0) }     // pad chunk to 4 bytes
@@ -323,17 +345,30 @@ enum MeshExporter {
         if hasUV {
             let imgBV = nextBV
             bufferViews.append(["buffer": 0, "byteOffset": imgOffset, "byteLength": imgLen])
+            nextBV += 1
+            var textures: [[String: Any]] = [["sampler": 0, "source": 0]]
+            var images: [[String: Any]] = [["bufferView": imgBV, "mimeType": "image/png"]]
+            var pbr: [String: Any] = ["baseColorTexture": ["index": 0]]
+            if hasMR {
+                // glTF 2.0 pbrMetallicRoughness: the map's G channel is roughness,
+                // B is metallic; factors are multipliers, so both stay 1.0.
+                let mrBV = nextBV
+                bufferViews.append(["buffer": 0, "byteOffset": mrOffset, "byteLength": mrLen])
+                nextBV += 1
+                images.append(["bufferView": mrBV, "mimeType": "image/png"])
+                textures.append(["sampler": 0, "source": 1])
+                pbr["metallicRoughnessTexture"] = ["index": 1]
+                pbr["metallicFactor"] = 1.0
+                pbr["roughnessFactor"] = 1.0
+            } else {
+                // RGB-only texture: matte fallback (no metals without an MR map).
+                pbr["metallicFactor"] = 0.0
+                pbr["roughnessFactor"] = 1.0
+            }
             primitive["material"] = 0
-            json["materials"] = [[
-                "name": "painted",
-                "pbrMetallicRoughness": [
-                    "baseColorTexture": ["index": 0],
-                    "metallicFactor": 0.0,
-                    "roughnessFactor": 1.0,
-                ],
-            ]]
-            json["textures"] = [["sampler": 0, "source": 0]]
-            json["images"] = [["bufferView": imgBV, "mimeType": "image/png"]]
+            json["materials"] = [["name": "painted", "pbrMetallicRoughness": pbr]]
+            json["textures"] = textures
+            json["images"] = images
             json["samplers"] = [["magFilter": 9729, "minFilter": 9987, "wrapS": 10497, "wrapT": 10497]]
         }
 
