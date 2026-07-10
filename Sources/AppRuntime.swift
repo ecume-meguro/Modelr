@@ -21,6 +21,15 @@ final class AppRuntime {
     /// Settings → Models (§4.9 weightsMissing: never a bare error).
     private(set) var modelManagerSignal = 0
 
+    /// What the most recent run per project was configured with (recorded at staging,
+    /// kept after failure) — feeds the failure-details popover (§4.9 engineFailed).
+    struct RunDetails: Equatable {
+        var model: String
+        var seed: UInt64?
+    }
+    private(set) var lastShapeRunDetails: [Project.ID: RunDetails] = [:]
+    private(set) var lastPaintRunDetails: [Project.ID: RunDetails] = [:]
+
     @ObservationIgnored private let shapeEngine = ShapeEngine()
     @ObservationIgnored private let paintEngine = PaintEngine()
     @ObservationIgnored private let arbiter: EngineArbiter
@@ -127,6 +136,8 @@ final class AppRuntime {
         dispatch(.paintCancelRequested(project: id))
         shapePreviews[id] = nil
         paintViewPreviews[id] = nil
+        lastShapeRunDetails[id] = nil
+        lastPaintRunDetails[id] = nil
         store.delete(id)
     }
 
@@ -185,6 +196,8 @@ final class AppRuntime {
                 let staged = try store.stageShapeRun(for: project)
                 stagedShapes[project] = (token, staged)
                 shapePreviews[project] = nil
+                lastShapeRunDetails[project] = RunDetails(model: staged.settings.model.label,
+                                                          seed: staged.seed)
                 dispatch(.shapeStaged(project: project, token: token, error: nil))
             } catch {
                 dispatch(.shapeStaged(project: project, token: token,
@@ -220,6 +233,10 @@ final class AppRuntime {
                 let staged = try store.stagePaintRun(for: project)
                 stagedPaints[project] = (token, staged)
                 paintViewPreviews[project] = nil
+                // Paint has no user seed yet (the vendored pipeline fixes its own);
+                // the shape seed it textures is what reproduces the result.
+                lastPaintRunDetails[project] = RunDetails(model: staged.settings.model.label,
+                                                          seed: staged.source.seedRaw)
                 dispatch(.paintStaged(project: project, token: token, error: nil))
             } catch {
                 dispatch(.paintStaged(project: project, token: token,
@@ -227,10 +244,36 @@ final class AppRuntime {
             }
 
         case .unwrapPaintMesh(let project, let token):
-            // Pass-through today: the vendored PaintPipeline still unwraps inside
-            // the engine run. Wave 2b moves QEM decimation + xatlas here (with the
-            // undecimated-retry fallback from §4.5).
-            dispatch(.paintUnwrapFinished(project: project, token: token, error: nil))
+            // §4.5 prep: QEM-decimate the shape mesh to the run's face budget before
+            // the engine, whose internal xatlas unwrap + rasterizer cost scales with
+            // triangle count (the known #1 perf issue — ~238 s to paint a 240k-vert
+            // mesh, dominated by unwrap+raster). On decimation failure the original
+            // mesh is painted instead — slow but correct. The pipeline still unwraps
+            // internally; this stage owns the face budget + early mesh validation.
+            guard let (stagedToken, staged) = stagedPaints[project], stagedToken == token else {
+                dispatch(.paintUnwrapFinished(project: project, token: token,
+                                              error: "The run's staged files were lost."))
+                break
+            }
+            let src = staged.shapeMesh
+            let dst = staged.prepMesh
+            let budget = staged.settings.faces
+            Task.detached(priority: .userInitiated) { [bridge] in
+                let outcome = MeshDecimator.decimateMeshFile(at: src, faceBudget: budget, to: dst)
+                let error: String?
+                switch outcome {
+                case .decimated, .unchanged:
+                    error = nil
+                case .fallback:
+                    // Undecimated fallback (§4.5): scrub any partial prep file so
+                    // the engine picks up the original mesh.
+                    try? FileManager.default.removeItem(at: dst)
+                    error = nil
+                case .unreadable(let message):
+                    error = message                      // genuinely bad mesh → Failed
+                }
+                bridge.send(.paintUnwrapFinished(project: project, token: token, error: error))
+            }
 
         case .startPaintEngine(let project, let token):
             startPaintEngine(project: project, token: token)
@@ -349,7 +392,7 @@ final class AppRuntime {
         let viewsDir = staged.outMesh.deletingLastPathComponent()
         var run: PaintEngine.Run!
         run = paintEngine.paint(
-            meshURL: staged.shapeMesh,
+            meshURL: staged.engineMesh,      // decimated prep mesh when present (§4.5)
             imageURL: staged.image,
             output: staged.outMesh,
             texture: staged.outTexture,

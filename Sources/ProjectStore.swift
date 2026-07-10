@@ -138,14 +138,23 @@ final class ProjectStore {
         // Cascade: deleting a shape also removes the paint versions that textured it,
         // so no paint version is left pointing at a missing source.
         let toRemove = projects[i].generations.filter { $0.id == genID || $0.sourceShapeID == genID }
+        let removedIDs = Set(toRemove.map { $0.id })
+        func fileNames(_ gen: Generation) -> [String] {
+            [gen.meshFileName, gen.inputFileName, gen.sourceFileName, gen.maskFileName,
+             gen.paintedMeshFileName, gen.paintedTextureFileName]
+                .compactMap { $0 }.filter { !$0.isEmpty }
+        }
+        // Paint versions share their input/source/mask snapshots with the shape they
+        // textured — never delete a file a surviving generation still references.
+        let stillReferenced = Set(projects[i].generations
+            .filter { !removedIDs.contains($0.id) }
+            .flatMap(fileNames))
         for gen in toRemove {
-            for name in [gen.meshFileName, gen.inputFileName, gen.sourceFileName, gen.maskFileName,
-                         gen.paintedMeshFileName, gen.paintedTextureFileName]
-                .compactMap({ $0 }).filter({ !$0.isEmpty }) {
+            for name in fileNames(gen) where !stillReferenced.contains(name) {
                 try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
             }
         }
-        let removed = Set(toRemove.map { $0.id })
+        let removed = removedIDs
         projects[i].generations.removeAll { removed.contains($0.id) }
         if let sel = projects[i].selectedGenerationID, removed.contains(sel) {
             projects[i].selectedGenerationID = projects[i].generations.last?.id
@@ -547,11 +556,21 @@ final class ProjectStore {
         /// The immutable shape generation being textured.
         let source: Generation
         let shapeMesh: URL
+        /// Where the §4.5 prep stage writes the QEM-decimated mesh when the shape
+        /// exceeds the face budget. Exists only if decimation ran and succeeded: the
+        /// engine paints `prepMesh` when present, else the original `shapeMesh`
+        /// (slow-but-correct fallback). Per-run scratch — deleted on commit + discard.
+        let prepMesh: URL
         let image: URL
         let outMesh: URL
         let outTexture: URL
         let settings: PaintSettings
         let startedAt: Date
+
+        /// The geometry the paint engine should consume.
+        var engineMesh: URL {
+            FileManager.default.fileExists(atPath: prepMesh.path) ? prepMesh : shapeMesh
+        }
     }
 
     /// Resolve the shape to texture (the selected version, or the shape a selected
@@ -582,8 +601,10 @@ final class ProjectStore {
         let paintID = UUID()
         let outMesh = dir.appendingPathComponent("painted_\(paintID.uuidString).tmesh")
         let outTex = dir.appendingPathComponent("painted_\(paintID.uuidString)_texture.png")
+        let prepMesh = dir.appendingPathComponent("painted_\(paintID.uuidString)_prep.mesh")
         try? FileManager.default.removeItem(at: outMesh)
         try? FileManager.default.removeItem(at: outTex)
+        try? FileManager.default.removeItem(at: prepMesh)
         clearPaintStreamFiles(for: id)
 
         // Prefer the shape's immutable input snapshot; if it's missing, snapshot the
@@ -594,7 +615,7 @@ final class ProjectStore {
             if (try? FileManager.default.copyItem(at: image, to: copy)) != nil { paintInput = copy }
         }
         return StagedPaintRun(project: id, paintID: paintID, source: shape,
-                              shapeMesh: meshURL, image: paintInput,
+                              shapeMesh: meshURL, prepMesh: prepMesh, image: paintInput,
                               outMesh: outMesh, outTexture: outTex,
                               settings: project.resolvedPaintSettings, startedAt: Date())
     }
@@ -626,6 +647,10 @@ final class ProjectStore {
             durationSeconds: Date().timeIntervalSince(staged.startedAt),
             guidanceRaw: src.guidanceRaw, octreeRaw: src.octreeRaw,
             seedRaw: src.seedRaw,
+            // Carry the shape's source/mask snapshots so restoring a paint version
+            // rebuilds the same editable image set as restoring its source shape.
+            sourceFileName: src.sourceFileName,
+            maskFileName: src.maskFileName,
             paintedTextureFileName: staged.outTexture.lastPathComponent,
             kindRaw: "paint", sourceShapeID: src.id,
             paintModelRaw: s.model.rawValue,
@@ -633,6 +658,7 @@ final class ProjectStore {
             paintTexRaw: s.tex, paintFacesRaw: s.faces, paintSuperresRaw: s.superres)
         projects[i].generations.append(gen)
         projects[i].selectedGenerationID = gen.id
+        try? FileManager.default.removeItem(at: staged.prepMesh)   // per-run scratch
         save()
         return nil
     }
@@ -640,6 +666,7 @@ final class ProjectStore {
     func discardPaintRun(_ staged: StagedPaintRun) {
         try? FileManager.default.removeItem(at: staged.outMesh)
         try? FileManager.default.removeItem(at: staged.outTexture)
+        try? FileManager.default.removeItem(at: staged.prepMesh)
         // Remove the per-run input snapshot only if we created one (it lives in
         // the project folder with the painted_ prefix).
         if staged.image.lastPathComponent.hasPrefix("painted_") {
