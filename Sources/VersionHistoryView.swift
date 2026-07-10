@@ -112,9 +112,11 @@ struct VersionHistoryView: View {
 
     private func subtitle(_ gen: Generation) -> String {
         let rel = gen.createdAt.formatted(.relative(presentation: .named))
-        if let d = gen.durationSeconds {
-            return "\(rel) · \(String(format: "%.1fs", d))"
-        }
-        return rel
+        var parts = [rel]
+        if let d = gen.durationSeconds { parts.append(String(format: "%.1fs", d)) }
+        // The seed this run actually used (§3: reproducibility is part of
+        // determinism) — a paint version shows its source shape's seed.
+        if let seed = gen.seedRaw { parts.append("seed \(seed)") }
+        return parts.joined(separator: " · ")
     }
 }

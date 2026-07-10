@@ -120,11 +120,31 @@ struct ModelSettingsPopover: View {
     }
 
     /// Seed pinning (§3: every generation records its seed; pin to reproduce).
+    /// The pin button copies the last generation's recorded seed into the field so
+    /// "regenerate exactly that one" is one click; the dice returns to random.
     private func seedRow(_ p: Project) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Seed").fontWeight(.semibold)
                 Spacer()
+                if let last = lastRecordedSeed(p), p.seed != last {
+                    Button {
+                        store.setSeed(last, for: projectID)
+                    } label: {
+                        Image(systemName: "pin")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Reuse the last run's seed (\(last))")
+                }
+                if p.seed != nil {
+                    Button {
+                        store.setSeed(nil, for: projectID)
+                    } label: {
+                        Image(systemName: "dice")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Back to a random seed per run")
+                }
                 TextField("Random", text: seedBinding)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 120)
@@ -134,6 +154,11 @@ struct ModelSettingsPopover: View {
             Text("Empty = new random seed each run (recorded per version)")
                 .font(.caption).foregroundStyle(.tertiary)
         }
+    }
+
+    /// The seed the newest shape generation actually ran with, if any.
+    private func lastRecordedSeed(_ p: Project) -> UInt64? {
+        p.generations.last(where: { $0.kind == .shape && $0.seedRaw != nil })?.seedRaw
     }
 
     // MARK: rows

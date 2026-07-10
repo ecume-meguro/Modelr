@@ -138,6 +138,26 @@ final class ReducerPaintTests: XCTestCase {
         XCTAssertEqual(w.jobState, .idle)
     }
 
+    /// The failure pill's Retry re-dispatches the original request: Failed → a new
+    /// run directly (no dismiss needed), with a fresh token so stale events from the
+    /// dead run are dropped.
+    func testRetryFromFailedStartsNewRunWithFreshToken() {
+        var w = PaintWalker()
+        w.toLoading()
+        let deadToken = w.token
+        w.send(.paintEngineFinished(project: w.project, token: deadToken, result: .failure("boom")))
+        guard case .failed = w.jobState else { return XCTFail("expected failed, got \(w.jobState)") }
+
+        let effects = w.send(.paintRequested(project: w.project, model: .paintSmall))
+        XCTAssertEqual(w.jobState, .preparing)
+        XCTAssertNotEqual(w.token, deadToken)
+        XCTAssertEqual(effects, [.stagePaint(project: w.project, token: w.token)])
+
+        // Leftover events from the failed run can't touch the retry.
+        w.send(.paintEngineFinished(project: w.project, token: deadToken, result: .success))
+        XCTAssertEqual(w.jobState, .preparing)
+    }
+
     // MARK: cancel — ONLY Rendering and Denoising have edges (§4.5)
 
     func testCancelFromRenderingAndDenoising() {
