@@ -52,6 +52,13 @@ struct VersionHistoryView: View {
                         Image(systemName: "paintbrush.fill").font(.caption2).foregroundStyle(.purple)
                     }
                     Text(gen.shapeModel.label).font(.callout.weight(.medium))
+                    if gen.isPBR {
+                        Text("PBR")
+                            .font(.system(size: 9, weight: .bold))
+                            .padding(.horizontal, 4).padding(.vertical, 1)
+                            .background(Color.purple.opacity(0.22), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                            .foregroundStyle(.purple)
+                    }
                 }
                 HStack(spacing: 5) {
                     Text(metaLine(gen))

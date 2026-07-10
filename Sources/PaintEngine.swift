@@ -18,11 +18,11 @@ final class PaintEngine {
         func cancel() { lock.lock(); _cancelled = true; lock.unlock() }
     }
 
-    /// Mirrors the old `GenerationService.paint` contract. `viewsDir` is where streamed
-    /// preview grids are written (the caller cleans them up).
+    /// 2.0 RGB (Color) paint. `viewsDir` is where streamed preview grids are written
+    /// (the caller cleans them up). `seed` is the resolved concrete seed for this run.
     @discardableResult
     func paint(meshURL: URL, imageURL: URL, output: URL, texture: URL, weightsRoot: URL,
-               res: Int, steps: Int, tex: Int, superres: Bool, viewsDir: URL,
+               res: Int, steps: Int, tex: Int, superres: Bool, seed: UInt64, viewsDir: URL,
                onProgress: @escaping (String, Double?) -> Void,
                onViews: @escaping (URL) -> Void,
                onFinish: @escaping (GenerationOutcome) -> Void) -> Run {
@@ -33,32 +33,15 @@ final class PaintEngine {
             guard let loaded = Self.loadShapeMesh(meshURL) else {
                 onFinish(.failure("Couldn't read the shape mesh.")); return
             }
-
-            // Key only on what changes the LOADED WEIGHTS (root + whether super-res loads).
-            // res/steps/tex are per-run knobs, set on the cached pipe so changing quality
-            // doesn't reload multiple GB of weights.
-            let key = "\(weightsRoot.path)#\(superres)"
-            let pipe: PaintPipeline
-            if self.cachedKey == key, let p = self.cachedPipe {
-                pipe = p
-            } else {
-                onProgress("Loading paint model…", nil)
-                self.cachedKey = nil
-                self.cachedPipe = nil
-                MLX.GPU.clearCache()
-                pipe = PaintPipeline(weightsRoot: weightsRoot.path, res: res, steps: steps,
-                                     tex: tex, superRes: superres)
-                self.cachedKey = key
-                self.cachedPipe = pipe
-            }
-            pipe.res = res; pipe.steps = steps; pipe.tex = tex
+            let pipe = self.residentPipe(weightsRoot: weightsRoot, res: res, steps: steps,
+                                         tex: tex, superres: superres, onProgress: onProgress)
             if run.cancelled { onFinish(.failure("Cancelled")); return }
 
             var viewIdx = 0
             let result: PaintResult?
             do {
                 result = try pipe.paintRGB(
-                    mesh: loaded, imagePath: imageURL.path,
+                    mesh: loaded, imagePath: imageURL.path, guidance: 2.0, seed: seed,
                     onProgress: { stage, frac in onProgress(stage, Double(frac)) },
                     isCancelled: { run.cancelled },
                     onViews: { data in
@@ -76,7 +59,8 @@ final class PaintEngine {
             if run.cancelled { onFinish(.failure("Cancelled")); return }
             guard let result else { onFinish(.failure("Couldn't unwrap or paint this mesh.")); return }
             do {
-                try PaintMeshWriter.write(result, to: output)
+                try PaintMeshWriter.write(vertices: result.vertices, faces: result.faces,
+                                          uvs: result.uvs, to: output)
                 try result.albedoPNG.write(to: texture)
                 if run.cancelled {                                // closed the post-write cancel window
                     try? FileManager.default.removeItem(at: output)
@@ -89,6 +73,92 @@ final class PaintEngine {
             }
         }
         return run
+    }
+
+    /// 2.1 PBR (Large) paint — same contract as `paint`, plus a metallic-roughness
+    /// map written to `mrTexture` (G = roughness, B = metallic). Guidance is fixed at
+    /// the 2.1 value (3.0); `seed` is the resolved concrete seed. The stage callbacks
+    /// use the same strings the RGB path emits, so `mapPaintStage` maps them into the
+    /// same reducer stages ("Baking textures" still matches the "Baking" prefix).
+    @discardableResult
+    func paintPBR(meshURL: URL, imageURL: URL, output: URL, texture: URL, mrTexture: URL,
+                  weightsRoot: URL, res: Int, steps: Int, tex: Int, superres: Bool, seed: UInt64,
+                  viewsDir: URL,
+                  onProgress: @escaping (String, Double?) -> Void,
+                  onViews: @escaping (URL) -> Void,
+                  onFinish: @escaping (GenerationOutcome) -> Void) -> Run {
+        let run = Run()
+        queue.async { [weak self] in
+            guard let self else { return }
+            if run.cancelled { onFinish(.failure("Cancelled")); return }
+            guard let loaded = Self.loadShapeMesh(meshURL) else {
+                onFinish(.failure("Couldn't read the shape mesh.")); return
+            }
+            let pipe = self.residentPipe(weightsRoot: weightsRoot, res: res, steps: steps,
+                                         tex: tex, superres: superres, onProgress: onProgress)
+            if run.cancelled { onFinish(.failure("Cancelled")); return }
+
+            var viewIdx = 0
+            let result: PBRPaintResult?
+            do {
+                result = try pipe.paintPBR(
+                    mesh: loaded, imagePath: imageURL.path, guidance: 3.0, seed: seed,
+                    onProgress: { stage, frac in onProgress(stage, Double(frac)) },
+                    isCancelled: { run.cancelled },
+                    onViews: { data in
+                        let u = viewsDir.appendingPathComponent("paint_views_\(viewIdx).png")
+                        viewIdx += 1
+                        try? data.write(to: u)
+                        onViews(u)
+                    })
+            } catch {
+                self.cachedKey = nil; self.cachedPipe = nil      // failed load → retry fresh next time
+                onFinish(.failure("Couldn't load the paint model: \(error.localizedDescription)"))
+                return
+            }
+
+            if run.cancelled { onFinish(.failure("Cancelled")); return }
+            guard let result else { onFinish(.failure("Couldn't unwrap or paint this mesh.")); return }
+            do {
+                try PaintMeshWriter.write(vertices: result.vertices, faces: result.faces,
+                                          uvs: result.uvs, to: output)
+                try result.albedoPNG.write(to: texture)
+                try result.metallicRoughnessPNG.write(to: mrTexture)
+                if run.cancelled {                                // closed the post-write cancel window
+                    for u in [output, texture, mrTexture] { try? FileManager.default.removeItem(at: u) }
+                    onFinish(.failure("Cancelled")); return
+                }
+                onFinish(.success)
+            } catch {
+                onFinish(.failure("Couldn't write the painted mesh: \(error.localizedDescription)"))
+            }
+        }
+        return run
+    }
+
+    /// Fetch (or build) the resident pipeline for `weightsRoot`. Keys only on what
+    /// changes the LOADED WEIGHTS (root + whether super-res loads); res/steps/tex are
+    /// per-run knobs set on the cached pipe so changing quality — or switching between
+    /// the Color and PBR checkpoints (different roots) — doesn't needlessly reload GBs.
+    /// Must be called on `queue`.
+    private func residentPipe(weightsRoot: URL, res: Int, steps: Int, tex: Int, superres: Bool,
+                              onProgress: (String, Double?) -> Void) -> PaintPipeline {
+        let key = "\(weightsRoot.path)#\(superres)"
+        let pipe: PaintPipeline
+        if cachedKey == key, let p = cachedPipe {
+            pipe = p
+        } else {
+            onProgress("Loading paint model…", nil)
+            cachedKey = nil
+            cachedPipe = nil
+            MLX.GPU.clearCache()
+            pipe = PaintPipeline(weightsRoot: weightsRoot.path, res: res, steps: steps,
+                                 tex: tex, superRes: superres)
+            cachedKey = key
+            cachedPipe = pipe
+        }
+        pipe.res = res; pipe.steps = steps; pipe.tex = tex
+        return pipe
     }
 
     /// Drop the resident paint pipeline and free GPU buffers (called when the shape
@@ -138,8 +208,9 @@ final class PaintEngine {
 /// (`[i32 nV][i32 nF][f32 verts][f32 normals][f32 uvs][i32 faces]`), computing
 /// area-weighted vertex normals.
 enum PaintMeshWriter {
-    static func write(_ r: PaintResult, to url: URL) throws {
-        let verts = r.vertices, faces = r.faces, uvs = r.uvs
+    /// Serialize unwrapped geometry + UVs (shared by the RGB and PBR paint paths —
+    /// both produce the same geometry contract, differing only in their baked maps).
+    static func write(vertices verts: [Float], faces: [UInt32], uvs: [Float], to url: URL) throws {
         let n = verts.count / 3, m = faces.count / 3
         guard n > 0, m > 0, uvs.count == n * 2 else {
             throw NSError(domain: "PaintMeshWriter", code: 1,

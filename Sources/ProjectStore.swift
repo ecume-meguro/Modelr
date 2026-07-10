@@ -22,8 +22,10 @@ final class ProjectStore {
 
     private let rootDir: URL
 
-    init() {
-        rootDir = FileManager.default
+    /// `rootDir` defaults to Application Support; tests inject a temp directory for
+    /// isolation (nothing else varies by root).
+    init(rootDir: URL? = nil) {
+        self.rootDir = rootDir ?? FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Modelr", isDirectory: true)
         try? FileManager.default.createDirectory(at: projectsDir, withIntermediateDirectories: true)
@@ -120,7 +122,17 @@ final class ProjectStore {
         guard FileManager.default.fileExists(atPath: mesh.path) else { return nil }
         if gen.kind == .paint, let texName = gen.paintedTextureFileName {
             let tex = dir.appendingPathComponent(texName)
-            if FileManager.default.fileExists(atPath: tex.path) { return .texturedMesh(mesh, tex) }
+            if FileManager.default.fileExists(atPath: tex.path) {
+                // PBR version: hand the viewer the albedo + metallic-roughness pair
+                // for physically-based lighting; Color versions stay flat-textured.
+                if let mrName = gen.paintedMRFileName {
+                    let mr = dir.appendingPathComponent(mrName)
+                    if FileManager.default.fileExists(atPath: mr.path) {
+                        return .pbrMesh(mesh, albedo: tex, metallicRoughness: mr)
+                    }
+                }
+                return .texturedMesh(mesh, tex)
+            }
         }
         return .mesh(mesh)
     }
@@ -141,7 +153,7 @@ final class ProjectStore {
         let removedIDs = Set(toRemove.map { $0.id })
         func fileNames(_ gen: Generation) -> [String] {
             [gen.meshFileName, gen.inputFileName, gen.sourceFileName, gen.maskFileName,
-             gen.paintedMeshFileName, gen.paintedTextureFileName]
+             gen.paintedMeshFileName, gen.paintedTextureFileName, gen.paintedMRFileName]
                 .compactMap { $0 }.filter { !$0.isEmpty }
         }
         // Paint versions share their input/source/mask snapshots with the shape they
@@ -321,6 +333,10 @@ final class ProjectStore {
     func setPaintFaces(_ n: Int, for id: Project.ID) {
         guard let i = projects.firstIndex(where: { $0.id == id }) else { return }
         projects[i].paintFaces = n; save()
+    }
+    func setPaintSeed(_ s: UInt64?, for id: Project.ID) {
+        guard let i = projects.firstIndex(where: { $0.id == id }) else { return }
+        projects[i].paintSeed = s; save()
     }
 
     // MARK: - image input
@@ -564,8 +580,16 @@ final class ProjectStore {
         let image: URL
         let outMesh: URL
         let outTexture: URL
+        /// The metallic-roughness map, written by the PBR (Large) path only. Always
+        /// staged; left unwritten (and required-absent at commit) for the Color path.
+        let outMR: URL
         let settings: PaintSettings
+        /// The concrete seed this run uses (resolved from settings.seed or random).
+        let seed: UInt64
         let startedAt: Date
+
+        /// A PBR (Large) run — produces the extra metallic-roughness map.
+        var isPBR: Bool { settings.model == .large }
 
         /// The geometry the paint engine should consume.
         var engineMesh: URL {
@@ -601,9 +625,11 @@ final class ProjectStore {
         let paintID = UUID()
         let outMesh = dir.appendingPathComponent("painted_\(paintID.uuidString).tmesh")
         let outTex = dir.appendingPathComponent("painted_\(paintID.uuidString)_texture.png")
+        let outMR = dir.appendingPathComponent("painted_\(paintID.uuidString)_mr.png")
         let prepMesh = dir.appendingPathComponent("painted_\(paintID.uuidString)_prep.mesh")
         try? FileManager.default.removeItem(at: outMesh)
         try? FileManager.default.removeItem(at: outTex)
+        try? FileManager.default.removeItem(at: outMR)
         try? FileManager.default.removeItem(at: prepMesh)
         clearPaintStreamFiles(for: id)
 
@@ -614,10 +640,13 @@ final class ProjectStore {
             let copy = dir.appendingPathComponent("painted_\(paintID.uuidString)_input.png")
             if (try? FileManager.default.copyItem(at: image, to: copy)) != nil { paintInput = copy }
         }
+        let settings = project.resolvedPaintSettings
         return StagedPaintRun(project: id, paintID: paintID, source: shape,
                               shapeMesh: meshURL, prepMesh: prepMesh, image: paintInput,
-                              outMesh: outMesh, outTexture: outTex,
-                              settings: project.resolvedPaintSettings, startedAt: Date())
+                              outMesh: outMesh, outTexture: outTex, outMR: outMR,
+                              settings: settings,
+                              seed: settings.seed ?? UInt64.random(in: 0..<UInt64(UInt32.max)),
+                              startedAt: Date())
     }
 
     /// Record a finished paint run as a saved generation. Returns an error message
@@ -636,6 +665,12 @@ final class ProjectStore {
             discardPaintRun(staged)
             return "Paint didn't produce a usable texture."
         }
+        // A PBR run must also produce the metallic-roughness map; without it the
+        // version would silently degrade to Color at load/export time.
+        if staged.isPBR, !sized(staged.outMR) {
+            discardPaintRun(staged)
+            return "PBR paint didn't produce a metallic-roughness map."
+        }
         let src = staged.source
         let s = staged.settings
         let gen = Generation(
@@ -652,10 +687,12 @@ final class ProjectStore {
             sourceFileName: src.sourceFileName,
             maskFileName: src.maskFileName,
             paintedTextureFileName: staged.outTexture.lastPathComponent,
+            paintedMRFileName: staged.isPBR ? staged.outMR.lastPathComponent : nil,
             kindRaw: "paint", sourceShapeID: src.id,
             paintModelRaw: s.model.rawValue,
             paintResRaw: s.res, paintStepsRaw: s.steps,
-            paintTexRaw: s.tex, paintFacesRaw: s.faces, paintSuperresRaw: s.superres)
+            paintTexRaw: s.tex, paintFacesRaw: s.faces, paintSuperresRaw: s.superres,
+            paintSeedRaw: staged.seed)
         projects[i].generations.append(gen)
         projects[i].selectedGenerationID = gen.id
         try? FileManager.default.removeItem(at: staged.prepMesh)   // per-run scratch
@@ -666,6 +703,7 @@ final class ProjectStore {
     func discardPaintRun(_ staged: StagedPaintRun) {
         try? FileManager.default.removeItem(at: staged.outMesh)
         try? FileManager.default.removeItem(at: staged.outTexture)
+        try? FileManager.default.removeItem(at: staged.outMR)
         try? FileManager.default.removeItem(at: staged.prepMesh)
         // Remove the per-run input snapshot only if we created one (it lives in
         // the project folder with the painted_ prefix).
@@ -742,7 +780,7 @@ final class ProjectStore {
             var referenced = Set<String>()
             for gen in project.generations {
                 for name in [gen.meshFileName, gen.inputFileName, gen.sourceFileName, gen.maskFileName,
-                             gen.paintedMeshFileName, gen.paintedTextureFileName]
+                             gen.paintedMeshFileName, gen.paintedTextureFileName, gen.paintedMRFileName]
                     .compactMap({ $0 }).filter({ !$0.isEmpty }) {
                     referenced.insert(name)
                 }

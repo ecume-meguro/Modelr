@@ -204,9 +204,14 @@ enum MeshExporter {
 
         var mtl: Data? = nil
         if hasUV, let textureName {
+            // OBJ/MTL has no standard metallic-roughness slot, so a PBR export carries
+            // the albedo (base color) only — note it so the dropped map isn't a surprise.
+            let pbrNote = mesh.metallicRoughnessPNG != nil
+                ? "# albedo (base color) only — OBJ/MTL has no metallic-roughness slot; use GLB for full PBR\n"
+                : ""
             let m = """
             # Modelr material
-            newmtl material0
+            \(pbrNote)newmtl material0
             Ka 1.000 1.000 1.000
             Kd 1.000 1.000 1.000
             Ks 0.000 0.000 0.000

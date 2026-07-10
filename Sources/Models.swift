@@ -238,6 +238,9 @@ struct PaintSettings {
     let tex: Int
     let superres: Bool
     let faces: Int
+    /// nil = a fresh random seed per run (the resolved value is recorded on the
+    /// paint Generation). Passed through to the pipeline's seeded initial noise.
+    let seed: UInt64?
 }
 
 /// Whether a saved version is an untextured shape or a textured paint result.
@@ -271,6 +274,7 @@ struct Project: Identifiable, Codable, Hashable {
     var paintTexRaw: Int?
     var paintSuperresRaw: Bool?
     var paintFacesRaw: Int?
+    var paintSeedRaw: UInt64?
 
     init(id: UUID = UUID(), name: String, createdAt: Date = Date()) {
         self.id = id
@@ -378,15 +382,21 @@ struct Project: Identifiable, Codable, Hashable {
         get { paintFacesRaw ?? 120_000 }
         set { paintFacesRaw = newValue }
     }
+    /// nil = a fresh random seed per paint run (the resolved value is recorded).
+    var paintSeed: UInt64? {
+        get { paintSeedRaw }
+        set { paintSeedRaw = newValue }
+    }
 
     var resolvedPaintSettings: PaintSettings {
         if paintAdvanced {
             return PaintSettings(model: paintModel, res: paintRes, steps: paintSteps,
-                                 tex: paintTex, superres: paintSuperres, faces: paintFaces)
+                                 tex: paintTex, superres: paintSuperres, faces: paintFaces,
+                                 seed: paintSeed)
         }
         let q = paintQuality
         return PaintSettings(model: paintModel, res: q.res, steps: q.steps, tex: q.tex,
-                             superres: q.superres, faces: q.faces)
+                             superres: q.superres, faces: q.faces, seed: nil)
     }
 }
 
@@ -407,7 +417,8 @@ struct Generation: Identifiable, Codable, Hashable {
     var sourceFileName: String? = nil   // original image snapshot (for re-editing)
     var maskFileName: String? = nil     // mask snapshot (nil if no background removal)
     var paintedMeshFileName: String? = nil    // (legacy) textured .tmesh
-    var paintedTextureFileName: String? = nil // for a paint version: the baked texture
+    var paintedTextureFileName: String? = nil // for a paint version: the baked albedo/base-color
+    var paintedMRFileName: String? = nil      // for a PBR version: the metallic-roughness map
     var kindRaw: String? = nil          // shape (default) or paint
     var sourceShapeID: UUID? = nil      // for a paint version: the shape it textured
     var paintModelRaw: String? = nil
@@ -416,9 +427,15 @@ struct Generation: Identifiable, Codable, Hashable {
     var paintTexRaw: Int? = nil
     var paintFacesRaw: Int? = nil
     var paintSuperresRaw: Bool? = nil
+    var paintSeedRaw: UInt64? = nil     // the seed this paint run actually used
 
     var kind: GenerationKind { GenerationKind(rawValue: kindRaw ?? "shape") ?? .shape }
     var isPainted: Bool { kind == .paint }
+    /// A PBR paint version — it carries a metallic-roughness map alongside the
+    /// albedo. Drives physically-based viewer lighting, the two-texture GLB export,
+    /// and the history "PBR" badge.
+    var isPBR: Bool { kind == .paint && paintedMRFileName != nil }
+    var paintModel: PaintModel { PaintModel(legacyRaw: paintModelRaw) }
 
     var shapeModel: ShapeModel { ShapeModel(legacyRaw: modelRaw) }
     var quantization: Quantization { Quantization(rawValue: quantRaw) ?? .full }

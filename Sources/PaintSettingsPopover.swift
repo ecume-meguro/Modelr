@@ -75,6 +75,45 @@ struct PaintSettingsPopover: View {
             Text("4× upscale views before baking — sharper, slower")
                 .font(.caption2).foregroundStyle(.tertiary)
         }
+        Divider()
+        seedRow(p)
+    }
+
+    /// Paint seed (§3: every paint version records its seed; pin to reproduce). The
+    /// library now takes the initial-noise seed, so texturing is reproducible too.
+    private func seedRow(_ p: Project) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Seed").fontWeight(.semibold)
+                Spacer()
+                if let last = lastRecordedSeed(p), p.paintSeed != last {
+                    Button { store.setPaintSeed(last, for: projectID) } label: {
+                        Image(systemName: "pin")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Reuse the last paint run's seed (\(last))")
+                }
+                if p.paintSeed != nil {
+                    Button { store.setPaintSeed(nil, for: projectID) } label: {
+                        Image(systemName: "dice")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Back to a random seed per run")
+                }
+                TextField("Random", text: seedBinding)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 120)
+                    .multilineTextAlignment(.trailing)
+                    .font(.callout.monospacedDigit())
+            }
+            Text("Empty = new random seed each run (recorded per version)")
+                .font(.caption).foregroundStyle(.tertiary)
+        }
+    }
+
+    /// The seed the newest paint generation actually ran with, if any.
+    private func lastRecordedSeed(_ p: Project) -> UInt64? {
+        p.generations.last(where: { $0.kind == .paint && $0.paintSeedRaw != nil })?.paintSeedRaw
     }
 
     // MARK: rows
@@ -142,5 +181,12 @@ struct PaintSettingsPopover: View {
     private var facesIndex: Binding<Int> {
         Binding(get: { PaintQuality.faceStops.firstIndex(of: store.project(projectID)?.paintFaces ?? 120_000) ?? 2 },
                 set: { store.setPaintFaces(PaintQuality.faceStops[$0], for: projectID) })
+    }
+    private var seedBinding: Binding<String> {
+        Binding(get: { store.project(projectID)?.paintSeed.map(String.init) ?? "" },
+                set: { text in
+                    let trimmed = text.trimmingCharacters(in: .whitespaces)
+                    store.setPaintSeed(trimmed.isEmpty ? nil : UInt64(trimmed), for: projectID)
+                })
     }
 }

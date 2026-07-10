@@ -233,10 +233,10 @@ final class AppRuntime {
                 let staged = try store.stagePaintRun(for: project)
                 stagedPaints[project] = (token, staged)
                 paintViewPreviews[project] = nil
-                // Paint has no user seed yet (the vendored pipeline fixes its own);
-                // the shape seed it textures is what reproduces the result.
+                // The resolved paint seed (the initial-noise seed the pipeline runs
+                // with) — recorded on the version and shown in the failure details.
                 lastPaintRunDetails[project] = RunDetails(model: staged.settings.model.label,
-                                                          seed: staged.source.seedRaw)
+                                                          seed: staged.seed)
                 dispatch(.paintStaged(project: project, token: token, error: nil))
             } catch {
                 dispatch(.paintStaged(project: project, token: token,
@@ -375,14 +375,6 @@ final class AppRuntime {
                                           result: .failure("The run's staged files were lost.")))
             return
         }
-        guard staged.settings.model == .small else {
-            // The vendored PBR entry point isn't app-wired yet (wave 2b); fail
-            // honestly through the state machine instead of painting with the
-            // wrong weights.
-            dispatch(.paintEngineFinished(project: project, token: token,
-                                          result: .failure("PBR (Large) texturing isn't available in-app yet — use Color for now.")))
-            return
-        }
         guard let weightsRoot = ModelStore.paintWeightsRoot(for: staged.settings.model) else {
             dispatch(.paintEngineFinished(project: project, token: token,
                                           result: .failure("Paint weights are no longer installed.")))
@@ -390,40 +382,48 @@ final class AppRuntime {
         }
         let bridge = bridge
         let viewsDir = staged.outMesh.deletingLastPathComponent()
+        let onProgress: (String, Double?) -> Void = { stage, fraction in
+            if let mapped = Self.mapPaintStage(stage) {
+                bridge.send(.paintEngineStage(project: project, token: token,
+                                              stage: mapped, fraction: fraction))
+            }
+        }
+        let onViews: (URL) -> Void = { url in
+            Task { @MainActor in
+                guard let self = bridge.runtime,
+                      self.state.paint[project]?.token == token else { return }
+                self.paintViewPreviews[project] = url
+            }
+        }
         var run: PaintEngine.Run!
-        run = paintEngine.paint(
-            meshURL: staged.engineMesh,      // decimated prep mesh when present (§4.5)
-            imageURL: staged.image,
-            output: staged.outMesh,
-            texture: staged.outTexture,
-            weightsRoot: weightsRoot,
-            res: staged.settings.res,
-            steps: staged.settings.steps,
-            tex: staged.settings.tex,
-            superres: staged.settings.superres,
-            viewsDir: viewsDir,
-            onProgress: { stage, fraction in
-                if let mapped = Self.mapPaintStage(stage) {
-                    bridge.send(.paintEngineStage(project: project, token: token,
-                                                  stage: mapped, fraction: fraction))
-                }
-            },
-            onViews: { url in
-                Task { @MainActor in
-                    guard let self = bridge.runtime,
-                          self.state.paint[project]?.token == token else { return }
-                    self.paintViewPreviews[project] = url
-                }
-            },
-            onFinish: { outcome in
-                let result: EngineResult
-                switch outcome {
-                case .success: result = .success
-                case .failure(let message):
-                    result = run.cancelled ? .cancelled : .failure(message)
-                }
-                bridge.send(.paintEngineFinished(project: project, token: token, result: result))
-            })
+        let onFinish: (GenerationOutcome) -> Void = { outcome in
+            let result: EngineResult
+            switch outcome {
+            case .success: result = .success
+            case .failure(let message):
+                result = run.cancelled ? .cancelled : .failure(message)
+            }
+            bridge.send(.paintEngineFinished(project: project, token: token, result: result))
+        }
+        // Large → 2.1 PBR (albedo + metallic-roughness); Small → 2.0 Color (RGB).
+        if staged.settings.model == .large {
+            run = paintEngine.paintPBR(
+                meshURL: staged.engineMesh, imageURL: staged.image,
+                output: staged.outMesh, texture: staged.outTexture, mrTexture: staged.outMR,
+                weightsRoot: weightsRoot,
+                res: staged.settings.res, steps: staged.settings.steps, tex: staged.settings.tex,
+                superres: staged.settings.superres, seed: staged.seed, viewsDir: viewsDir,
+                onProgress: onProgress, onViews: onViews, onFinish: onFinish)
+        } else {
+            run = paintEngine.paint(
+                meshURL: staged.engineMesh,      // decimated prep mesh when present (§4.5)
+                imageURL: staged.image,
+                output: staged.outMesh, texture: staged.outTexture,
+                weightsRoot: weightsRoot,
+                res: staged.settings.res, steps: staged.settings.steps, tex: staged.settings.tex,
+                superres: staged.settings.superres, seed: staged.seed, viewsDir: viewsDir,
+                onProgress: onProgress, onViews: onViews, onFinish: onFinish)
+        }
         engineRuns[key] = run
     }
 

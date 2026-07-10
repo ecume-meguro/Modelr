@@ -1,10 +1,12 @@
 import SwiftUI
 import SceneKit
+import ImageIO
 
 /// What the viewer is showing right now.
 enum ViewerContent: Equatable {
     case mesh(URL)                    // binary .mesh (preview or final shape)
     case texturedMesh(URL, URL)       // .tmesh (with UVs) + texture image
+    case pbrMesh(URL, albedo: URL, metallicRoughness: URL)  // .tmesh + albedo + MR (G=rough, B=metal)
     case points(URL)                  // a streaming near-surface point cloud (.bin float32 xyz)
 }
 
@@ -115,13 +117,18 @@ struct MeshViewer: NSViewRepresentable {
         switch content {
         case .mesh(let url):                      return loadMesh(url)
         case .texturedMesh(let mesh, let tex):    return loadTexturedMesh(mesh, texture: tex)
+        case .pbrMesh(let mesh, let albedo, let mr):
+            return loadTexturedMesh(mesh, texture: albedo, metallicRoughness: mr)
         case .points(let url):                    return loadPoints(url)
         }
     }
 
     /// Loads the textured .tmesh (verts f32, normals f32, UVs f32, faces i32) and
-    /// applies the baked texture as the diffuse material.
-    private static func loadTexturedMesh(_ url: URL, texture: URL) -> (SCNNode, SCNVector3, CGFloat)? {
+    /// applies the baked texture. With `metallicRoughness` set (PBR/Large), switches
+    /// to physically-based lighting: albedo → diffuse, and the MR map is split into
+    /// its glTF channels — G → roughness, B → metalness — as grayscale images.
+    private static func loadTexturedMesh(_ url: URL, texture: URL,
+                                         metallicRoughness: URL? = nil) -> (SCNNode, SCNVector3, CGFloat)? {
         guard let data = try? Data(contentsOf: url), data.count >= 8 else { return nil }
         let n = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 0, as: Int32.self) })
         let m = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 4, as: Int32.self) })
@@ -149,11 +156,22 @@ struct MeshViewer: NSViewRepresentable {
         let geometry = SCNGeometry(sources: [vSource, nSource, uvSource], elements: [element])
 
         let material = SCNMaterial()
-        material.lightingModel = .blinn
         material.diffuse.contents = NSImage(contentsOf: texture) ?? NSColor(white: 0.82, alpha: 1)
         material.diffuse.wrapS = .repeat
         material.diffuse.wrapT = .repeat
         material.isDoubleSided = true
+        if let mrURL = metallicRoughness, let mr = loadCGImage(mrURL) {
+            // glTF metallic-roughness packing: G = roughness, B = metallic. SceneKit's
+            // physicallyBased model wants separate single-channel maps, so pull each out.
+            material.lightingModel = .physicallyBased
+            if let rough = channelImage(mr, channel: 1) { material.roughness.contents = rough }
+            if let metal = channelImage(mr, channel: 2) { material.metalness.contents = metal }
+            for prop in [material.roughness, material.metalness] {
+                prop.wrapS = .repeat; prop.wrapT = .repeat
+            }
+        } else {
+            material.lightingModel = .blinn
+        }
         geometry.materials = [material]
 
         let node = SCNNode(geometry: geometry)
@@ -202,6 +220,34 @@ struct MeshViewer: NSViewRepresentable {
         let center = SCNVector3((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, (lo.z + hi.z) / 2)
         let extent = max(hi.x - lo.x, max(hi.y - lo.y, hi.z - lo.z))
         return (node, center, max(extent / 2, 0.05))
+    }
+
+    /// Decode a PNG to a CGImage for channel extraction.
+    private static func loadCGImage(_ url: URL) -> CGImage? {
+        guard let data = try? Data(contentsOf: url),
+              let src = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(src, 0, nil)
+    }
+
+    /// Extract one 8-bit channel (0=R, 1=G, 2=B) of an RGBA image into a grayscale
+    /// image — SceneKit reads a single-channel map's luminance for roughness/metalness.
+    private static func channelImage(_ image: CGImage, channel: Int) -> NSImage? {
+        let w = image.width, h = image.height
+        guard w > 0, h > 0 else { return nil }
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        guard let ctx = CGContext(data: &rgba, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: w * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        var gray = [UInt8](repeating: 0, count: w * h)
+        for i in 0..<(w * h) { gray[i] = rgba[i * 4 + channel] }
+        guard let grayCtx = CGContext(data: &gray, width: w, height: h, bitsPerComponent: 8,
+                                      bytesPerRow: w,
+                                      space: CGColorSpaceCreateDeviceGray(),
+                                      bitmapInfo: CGImageAlphaInfo.none.rawValue),
+              let out = grayCtx.makeImage() else { return nil }
+        return NSImage(cgImage: out, size: NSSize(width: w, height: h))
     }
 
     private static func loadPoints(_ url: URL) -> (SCNNode, SCNVector3, CGFloat)? {
