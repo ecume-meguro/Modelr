@@ -60,6 +60,12 @@ targets:
     sources:
       - Tests
       - Sources/Core
+      # Storage-layer files under test (no MLX/engine deps) — the ProjectStore
+      # round-trip needs Models + its viewer/image helpers to compile.
+      - Sources/Models.swift
+      - Sources/ProjectStore.swift
+      - Sources/MeshViewer.swift
+      - Sources/BackgroundRemover.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zimeng.ModelrTests

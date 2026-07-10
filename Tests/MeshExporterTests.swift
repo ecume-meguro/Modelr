@@ -144,6 +144,24 @@ final class MeshExporterTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("model.png")), Self.tinyPNG)
     }
 
+    /// A PBR export to OBJ carries albedo only (no MTL slot for metallic-roughness),
+    /// and the MTL notes the dropped map so it isn't a silent loss (§4.8).
+    func testOBJPBRWritesAlbedoOnlyWithNote() throws {
+        let mesh = try writeMeshFile(named: "t.tmesh", withUVs: true)
+        let albedo = try writePNG(named: "albedo.png", Self.tinyPNG)
+        let mr = try writePNG(named: "mr.png", Self.tinyMRPNG)
+        let dest = dir.appendingPathComponent("pbr.obj")
+        try MeshExporter.export(meshURL: mesh, texture: albedo, metallicRoughness: mr,
+                                format: .obj, to: dest)
+
+        let mtl = try String(contentsOf: dir.appendingPathComponent("pbr.mtl"), encoding: .utf8)
+        XCTAssertTrue(mtl.contains("map_Kd pbr.png"))
+        XCTAssertFalse(mtl.contains("mr"), "OBJ/MTL has no metallic-roughness slot")
+        XCTAssertTrue(mtl.lowercased().contains("albedo"), "MTL should note it's albedo-only")
+        // Only the albedo PNG is written next to the OBJ — no MR sidecar.
+        XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("pbr.png")), Self.tinyPNG)
+    }
+
     func testOBJUntexturedHasNoMaterial() throws {
         let mesh = try writeMeshFile(named: "t.mesh", withUVs: false)
         let dest = dir.appendingPathComponent("plain.obj")
