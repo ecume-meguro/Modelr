@@ -164,9 +164,11 @@ struct ProjectDetailView: View {
         case .idle:
             EmptyView()
         case .failed(let stage, let message):
-            failureBox(title: "Paint failed — \(stage)", message: message) {
-                runtime.dispatch(.paintFailureDismissed(project: project.id))
-            }
+            FailurePill(title: "Paint failed — \(stage)", message: message, stage: stage,
+                        model: runtime.lastPaintRunDetails[project.id]?.model,
+                        seed: runtime.lastPaintRunDetails[project.id]?.seed,
+                        retry: { runtime.requestPaint(project.id) },
+                        dismiss: { runtime.dispatch(.paintFailureDismissed(project: project.id)) })
         case .denoising(let k, let n):
             statusPill("Denoising", detail: n > 0 ? "\(k)/\(n)" : nil,
                        fraction: runtime.state.paint[project.id]?.fraction)
@@ -254,8 +256,10 @@ struct ProjectDetailView: View {
             .padding(.horizontal, 10)
         }
 
-        // Island 3 — PAINT: same template, paint-colored action
-        if project.currentGeneration != nil {
+        // Island 3 — PAINT: same template, paint-colored action. Visible as soon as
+        // the project has an image so the pipeline is discoverable; the action is
+        // gated (with a reason tooltip) until a shape mesh exists (§5, edge states).
+        if store.imageURL(for: project) != nil || project.currentGeneration != nil {
             if #available(macOS 26.0, *) {
                 ToolbarSpacer(.fixed, placement: .primaryAction)
             }
@@ -272,9 +276,24 @@ struct ProjectDetailView: View {
                     paintActionButton
                 }
                 .padding(.horizontal, 10)
+                // .help on the island (not the disabled pill): macOS suppresses help
+                // tags on disabled controls, and the reason must stay discoverable.
+                .help(hasShapeMesh || paintJob.isRunning ? "" : "Generate a shape first — painting textures an existing 3D model")
             }
         }
     }
+
+    // MARK: - install-state gates (§4.9 weightsMissing / §5 edge states)
+
+    private var anyShapeModelInstalled: Bool {
+        runtime.state.installState(.shapeSmall).isInstalled
+            || runtime.state.installState(.shapeLarge).isInstalled
+    }
+    private var anyPaintModelInstalled: Bool {
+        runtime.state.installState(.paintSmall).isInstalled
+            || runtime.state.installState(.paintLarge).isInstalled
+    }
+    private var hasShapeMesh: Bool { store.shapeMeshURL(for: project) != nil }
 
     /// A section's config control: section icon + the current setting, opens a popover.
     /// Identical shape for Shape and Paint so the two islands read consistently.
@@ -328,6 +347,11 @@ struct ProjectDetailView: View {
                 actionPill("Stop", "stop.fill", fill: .red) { runtime.cancelShape(project.id) }
                     .disabled(!shapeJob.isCancellable)
                     .opacity(shapeJob.isCancellable ? 1 : 0.45)
+            } else if !anyShapeModelInstalled {
+                // No shape weights at all: an explicit CTA that routes to the model
+                // manager (§4.9 weightsMissing — never a bare error).
+                actionPill("Get Models", "arrow.down.circle", fill: .gray) { runtime.showModelManager() }
+                    .help("Install a shape model to generate")
             } else if project.generations.isEmpty {
                 actionPill("Generate", "play.fill", fill: shapeBlue) { runtime.requestGenerate(project.id) }
             } else {
@@ -343,11 +367,16 @@ struct ProjectDetailView: View {
             actionPill("Stop", "stop.fill", fill: .red) { runtime.cancelPaint(project.id) }
                 .disabled(!paintJob.isCancellable)
                 .opacity(paintJob.isCancellable ? 1 : 0.45)
+        } else if !anyPaintModelInstalled {
+            actionPill("Get Models", "arrow.down.circle", fill: .gray) { runtime.showModelManager() }
+                .help("Install a paint model to texture")
         } else {
-            // Enabled even without weights: the reducer routes to the model
-            // manager instead of erroring (§4.9 weightsMissing).
+            // Gated until a shape mesh exists; the island carries the reason tooltip
+            // (macOS hides help tags on disabled controls).
             actionPill("Paint", "paintbrush.fill", fill: paintPink) { runtime.requestPaint(project.id) }
-                .help("Generate a texture")
+                .disabled(!hasShapeMesh)
+                .opacity(hasShapeMesh ? 1 : 0.45)
+                .help(hasShapeMesh ? "Generate a texture" : "")
         }
     }
 
@@ -381,10 +410,35 @@ struct ProjectDetailView: View {
             } else if shapeJob.isRunning {
                 PointCloud()                     // animation while loading (no content yet)
                     .frame(width: 150, height: 150)
+            } else if store.imageURL(for: project) != nil, case .idle = shapeJob {
+                // Image imported but nothing generated yet: a clear CTA in the pane
+                // itself (the toolbar pill alone is easy to miss on first use).
+                generateCTA
             }
             statusOverlay
             exportOverlay(meshURL: shapeJob.isRunning ? nil : store.shapeMeshURL(for: project),
                           texture: nil)
+        }
+    }
+
+    /// Empty-state call to action for the shape pane. Routes to the model manager
+    /// when no shape model is installed (§4.9 weightsMissing), otherwise generates.
+    private var generateCTA: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "cube.transparent")
+                .font(.system(size: 34, weight: .light))
+                .foregroundStyle(.tertiary)
+            Text("No 3D model yet")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            if anyShapeModelInstalled {
+                actionPill("Generate", "play.fill", fill: shapeBlue) { runtime.requestGenerate(project.id) }
+            } else {
+                actionPill("Get Models", "arrow.down.circle", fill: .gray) { runtime.showModelManager() }
+                Text("Install a shape model to generate")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         }
     }
 
@@ -484,9 +538,11 @@ struct ProjectDetailView: View {
                 statusPill("Loading object…", detail: nil, fraction: nil)
             }
         case .failed(let stage, let message):
-            failureBox(title: "Couldn't generate — \(stage)", message: message) {
-                runtime.dispatch(.shapeFailureDismissed(project: project.id))
-            }
+            FailurePill(title: "Couldn't generate — \(stage)", message: message, stage: stage,
+                        model: runtime.lastShapeRunDetails[project.id]?.model,
+                        seed: runtime.lastShapeRunDetails[project.id]?.seed,
+                        retry: { runtime.requestGenerate(project.id) },
+                        dismiss: { runtime.dispatch(.shapeFailureDismissed(project: project.id)) })
         case .denoising(let k, let n):
             statusPill("Denoising", detail: n > 0 ? "\(k)/\(n)" : nil,
                        fraction: runtime.state.shape[project.id]?.fraction)
@@ -494,27 +550,6 @@ struct ProjectDetailView: View {
             statusPill(AppReducer.shapeStageLabel(shapeJob), detail: nil,
                        fraction: runtime.state.shape[project.id]?.fraction)
         }
-    }
-
-    private func failureBox(title: String, message: String, dismiss: @escaping () -> Void) -> some View {
-        VStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle")
-                .foregroundStyle(.orange)
-            Text(title)
-                .font(.callout.weight(.medium))
-                .multilineTextAlignment(.center)
-            Text(message)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .lineLimit(3)
-            Button("Dismiss", action: dismiss)
-                .buttonStyle(.borderless)
-                .font(.caption)
-        }
-        .padding(16)
-        .frame(maxWidth: 260)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
 
     private func statusPill(_ label: String, detail: String?, fraction: Double?) -> some View {
@@ -537,6 +572,100 @@ struct ProjectDetailView: View {
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
             .padding(.bottom, 22)
         }
+    }
+}
+
+/// §4.9 engineFailed: the sticky failure pill. Retry re-dispatches the original
+/// request event (the reducer accepts a new run from Failed); Details opens a
+/// popover with the full message, stage, model, and seed, plus Copy details.
+private struct FailurePill: View {
+    let title: String
+    let message: String
+    let stage: String
+    let model: String?
+    let seed: UInt64?
+    let retry: () -> Void
+    let dismiss: () -> Void
+    @State private var showDetails = false
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+            Text(title)
+                .font(.callout.weight(.medium))
+                .multilineTextAlignment(.center)
+            Text(message)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .lineLimit(3)
+            HStack(spacing: 12) {
+                Button("Retry", action: retry)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                Button("Details…") { showDetails = true }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                    .popover(isPresented: $showDetails, arrowEdge: .bottom) { detailsView }
+                Button("Dismiss", action: dismiss)
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: 280)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var detailsView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Failure Details").font(.headline)
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 5) {
+                GridRow {
+                    Text("Stage").foregroundStyle(.secondary)
+                    Text(stage)
+                }
+                if let model {
+                    GridRow {
+                        Text("Model").foregroundStyle(.secondary)
+                        Text(model)
+                    }
+                }
+                if let seed {
+                    GridRow {
+                        Text("Seed").foregroundStyle(.secondary)
+                        Text(String(seed)).monospacedDigit()
+                    }
+                }
+            }
+            .font(.caption)
+            Divider()
+            ScrollView {
+                Text(message)
+                    .font(.caption)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 140)
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(detailsText, forType: .string)
+            } label: {
+                Label("Copy Details", systemImage: "doc.on.doc")
+            }
+            .controlSize(.small)
+        }
+        .padding(14)
+        .frame(width: 320)
+    }
+
+    private var detailsText: String {
+        var lines = ["Stage: \(stage)"]
+        if let model { lines.append("Model: \(model)") }
+        if let seed { lines.append("Seed: \(seed)") }
+        lines.append("Message: \(message)")
+        return lines.joined(separator: "\n")
     }
 }
 
