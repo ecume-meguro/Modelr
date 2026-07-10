@@ -8,3 +8,4 @@ DerivedData/
 Packages/*/.build/
 vendor/*/.build/
 *.safetensors
+.derived/
