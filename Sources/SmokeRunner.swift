@@ -302,9 +302,25 @@ enum SmokeRunner {
             log("capture \(name): no window")
             return
         }
-        var cg = CGWindowListCreateImage(.null, .optionIncludingWindow,
+        // Composite the window with any attached sheet (a sheet is its own child
+        // NSWindow, so a single-window capture would show only the dimmed parent).
+        var windowIDs: [CGWindowID] = [CGWindowID(window.windowNumber)]
+        if let sheet = window.attachedSheet {
+            windowIDs.append(CGWindowID(sheet.windowNumber))
+        }
+        // CGWindowListCreateImageFromArray wants raw window IDs in the CFArray
+        // (not boxed numbers); first element = topmost, so the sheet leads.
+        var rawIDs = windowIDs.reversed().map { UnsafeRawPointer(bitPattern: UInt($0)) }
+        let idArray = CFArrayCreate(kCFAllocatorDefault, &rawIDs, rawIDs.count, nil)
+        var cg = idArray.flatMap {
+            CGImage(windowListFromArrayScreenBounds: .null, windowArray: $0,
+                    imageOption: [.boundsIgnoreFraming, .bestResolution])
+        }
+        if cg == nil {
+            cg = CGWindowListCreateImage(.null, .optionIncludingWindow,
                                          CGWindowID(window.windowNumber),
                                          [.boundsIgnoreFraming, .bestResolution])
+        }
         if cg == nil, let view = window.contentView,
            let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
             view.cacheDisplay(in: view.bounds, to: rep)
