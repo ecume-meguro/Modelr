@@ -14,13 +14,19 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    DEVELOPMENT_TEAM: "W9C2P3N7Q2"
     CODE_SIGN_STYLE: Manual
-    CODE_SIGN_IDENTITY: "FDD0A087336FAF382EAC9341D63AC269B4F29C99"
     PROVISIONING_PROFILE_SPECIFIER: ""
     ENABLE_HARDENED_RUNTIME: "NO"
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
+  configs:
+    # Debug ad-hoc signs so a machine without the team certificate can build.
+    debug:
+      CODE_SIGN_IDENTITY: "-"
+      DEVELOPMENT_TEAM: ""
+    release:
+      DEVELOPMENT_TEAM: "W9C2P3N7Q2"
+      CODE_SIGN_IDENTITY: "FDD0A087336FAF382EAC9341D63AC269B4F29C99"
 
 targets:
   Modelr:
