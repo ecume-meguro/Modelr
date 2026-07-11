@@ -1,9 +1,6 @@
 # modelr
 
-native macos app for local image → 3d: drop in a picture, get a shape mesh, then paint
-it with a full color or pbr texture, entirely on your mac. both the shape and texture
-pipelines run in-process on [mlx swift](https://github.com/zimengxiong/hunyuan3d-swift) (no
-python, no pytorch, nothing leaves the machine) and render live in scenekit as they generate.
+native macos app for local image → 3d. both the shape and texture pipelines run in-process on [mlx swift](https://github.com/zimengxiong/hunyuan3d-swift) (no python, no pytorch, nothing leaves the machine) and render live in scenekit as they generate.
 
 ## models
 
