@@ -48,7 +48,7 @@ struct ModelManagerView: View {
         TimelineView(.periodic(from: .now, by: 3)) { _ in
             HStack(spacing: 6) {
                 Image(systemName: "internaldrive").foregroundStyle(.secondary)
-                Text("Model library: \(OnboardingView.gb(ModelStore.totalBytesOnDisk())) on disk · \(OnboardingView.gb(DiskSpace.free())) free")
+                Text("\(OnboardingView.gb(ModelStore.totalBytesOnDisk())) on disk · \(OnboardingView.gb(DiskSpace.free())) free")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -69,19 +69,19 @@ private struct ModelRow: View {
     private var state: ModelInstallState { runtime.state.installState(model) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(catalog.displayName).font(.body.weight(.medium))
-                    Text(catalog.detail).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                controls
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(catalog.displayName).font(.body.weight(.semibold))
+                Text(catalog.detail).font(.caption).foregroundStyle(.secondary)
+                statusLine
+                    .padding(.top, 2)
             }
-            statusLine
+            Spacer(minLength: 12)
+            controls
+                .frame(minWidth: 108, alignment: .trailing)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
     }
 
     // MARK: controls per state
@@ -96,24 +96,38 @@ private struct ModelRow: View {
                 }
                 Button("Import weights folder…") { importTarget = model }
             } label: {
-                Text("Install")
+                Text("Install").frame(maxWidth: .infinity)
             }
-            .fixedSize()
+            .frame(width: 108)
 
         case .queued:
             Text("Waiting…").font(.caption).foregroundStyle(.secondary)
+                .frame(width: 108, alignment: .trailing)
 
         case .downloading:
-            Button("Pause") { runtime.pauseInstall(model) }
+            Button { runtime.pauseInstall(model) } label: {
+                Text("Pause").frame(maxWidth: .infinity)
+            }
+            .frame(width: 108)
 
         case .paused:
-            Button("Resume") { runtime.resumeInstall(model) }
+            HStack(spacing: 8) {
+                Button("Cancel", role: .destructive) { runtime.removeInstall(model) }
+                Button { runtime.resumeInstall(model) } label: {
+                    Text("Resume")
+                }
+                .buttonStyle(.borderedProminent)
+            }
 
         case .verifying:
             ProgressView().controlSize(.small)
+                .frame(width: 108, alignment: .trailing)
 
         case .installed:
-            Button("Remove", role: .destructive) { runtime.removeInstall(model) }
+            Button(role: .destructive) { runtime.removeInstall(model) } label: {
+                Text("Remove").frame(maxWidth: .infinity)
+            }
+            .frame(width: 108)
 
         case .failed:
             HStack(spacing: 8) {
@@ -130,12 +144,12 @@ private struct ModelRow: View {
     private var statusLine: some View {
         switch state {
         case .notInstalled:
-            Label("Not installed · \(OnboardingView.gb(catalog.totalBytes)) download",
+            Label("\(OnboardingView.gb(catalog.totalBytes)) download",
                   systemImage: "arrow.down.circle.dotted")
                 .font(.caption).foregroundStyle(.tertiary)
 
         case .queued:
-            Label("Queued — one download at a time", systemImage: "clock")
+            Label("Queued", systemImage: "clock")
                 .font(.caption).foregroundStyle(.secondary)
 
         case .downloading(let p):
@@ -148,7 +162,7 @@ private struct ModelRow: View {
             }
 
         case .paused(let bytes):
-            Label("Paused · \(OnboardingView.gb(bytes)) of \(OnboardingView.gb(catalog.totalBytes)) kept — resumes where it stopped",
+            Label("Paused · \(OnboardingView.gb(bytes)) of \(OnboardingView.gb(catalog.totalBytes))",
                   systemImage: "pause.circle")
                 .font(.caption).foregroundStyle(.secondary)
 

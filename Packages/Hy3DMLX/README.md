@@ -1,11 +1,11 @@
-# Hy3DMLX — MLX Swift
+# Hy3DMLX — mlx swift
 
 MLX **Swift** port of Hunyuan3D image→mesh shape inference, for native macOS/iOS apps (Mac App
 Store shippable — Metal runs in the App Store sandbox). The Python package in the repo root is the
 parity reference; this Swift package re-implements the same modules against
 [`mlx-swift`](https://github.com/ml-explore/mlx-swift), loading the **same `.safetensors` weights**.
 
-## Status — full image→GLB pipeline, no Python at runtime
+## status — full image→glb pipeline, no python at runtime
 
 Every stage runs in MLX Swift (or, for image decode, CoreGraphics — a host op even in the Python
 reference). The whole path is sandbox-clean for iOS/Mac:
@@ -21,7 +21,7 @@ image file
   → GLB.swift          (binary glTF writer)
 ```
 
-### Speed (2mini fp16, R256, this Apple-Silicon machine)
+### speed (2mini fp16, r256, this apple-silicon machine)
 
 | grid path | grid stage | end-to-end | mesh |
 |-----------|------------|------------|------|
@@ -34,7 +34,7 @@ NaN-filling inactive cells. **~15× on the grid stage, ~4.5× end-to-end, near-l
 run identical MLX Metal kernels, so this algorithmic win is the real performance lever; the host
 language is not.
 
-### Per-stage parity vs the parity-verified Python (`swift run hy3d-cli`)
+### per-stage parity vs the parity-verified python (`swift run hy3d-cli`)
 
 | stage    | metric            | value        |
 |----------|-------------------|--------------|
@@ -48,7 +48,7 @@ The neural compute is bit-identical. The one approximate stage is **image prepro
 cosine ~0.997): CoreGraphics/bilinear resampling differs from cv2's kernels, so the conditioning
 is ~0.97 cosine and the full image→GLB mesh is Chamfer ~0.015 vs Python — **visually identical**.
 
-### Files
+### files
 
 - `Layers.swift` — fp32 LayerNorm/RMSNorm, GELU tanh/erf, SiLU, SDPA, timestep embedding.
 - `DiT.swift` — `Hunyuan3DDiT` (FLUX double/single stream, RMS QK-norm, no RoPE).
@@ -64,7 +64,7 @@ is ~0.97 cosine and the full image→GLB mesh is Chamfer ~0.015 vs Python — **
 - `hy3d-cli/main.swift` — `swift run hy3d-cli` prints per-stage parity; `swift run hy3d-cli mesh [R]`
   runs the full image→GLB pipeline (default R=256) → `outputs/swift_demo.glb`.
 
-## Build & run
+## build & run
 
 ```bash
 # one-time: the Metal toolchain is a separate Xcode component on macOS 26/27

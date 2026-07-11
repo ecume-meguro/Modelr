@@ -85,9 +85,15 @@ enum AppReducer {
             effects += startNextInstallIfFree(&state)
 
         case .installRemoveRequested(let model):
-            guard state.installState(model) == .installed else { break }
-            state.models[model] = .notInstalled
-            effects.append(.removeModelFiles(model))
+            // Remove an installed model, or cancel a paused download — both
+            // discard the install folder (partials included) and reset to zero.
+            switch state.installState(model) {
+            case .installed, .paused:
+                state.models[model] = .notInstalled
+                effects.append(.removeModelFiles(model))
+            default:
+                break
+            }
 
         case .importWeightsRequested(let model, let folder):
             switch state.installState(model) {

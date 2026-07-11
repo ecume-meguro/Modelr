@@ -20,9 +20,9 @@ struct OnboardingView: View {
         }
         var subtitle: String {
             switch self {
-            case .fastStart: return "Small shape + color texture — quickest results"
-            case .bestQuality: return "Large shape + PBR texture — finest detail"
-            case .everything: return "All four models — switch freely"
+            case .fastStart: return "Small shape + color texture"
+            case .bestQuality: return "Large shape + PBR texture"
+            case .everything: return "All four models"
             }
         }
         var icon: String {
@@ -66,7 +66,7 @@ struct OnboardingView: View {
                 .padding(.top, 40)
             Text("Welcome to Modelr")
                 .font(.title.weight(.semibold))
-            Text("Turn a single image into a textured 3D model — fully on this Mac.\nNothing leaves your machine; the models run locally.")
+            Text("Image to 3D, on this Mac.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -88,7 +88,7 @@ struct OnboardingView: View {
             Text("Choose your models")
                 .font(.title2.weight(.semibold))
                 .padding(.top, 28)
-            Text("Weights download once and live in the app's library. You can add or remove models anytime in Settings → Models.")
+            Text("Add or remove anytime in Settings → Models.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -183,7 +183,7 @@ struct OnboardingView: View {
                 Button("Later") { runtime.dispatch(.onboardingSkipped) }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
-                    .help("Keep downloading in the background — manage in Settings → Models")
+                    .help("Keeps downloading in the background")
                 Spacer()
             }
             .padding(.bottom, 20)
@@ -248,7 +248,7 @@ struct OnboardingView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Text("Progress is kept — retrying resumes where it stopped.")
+            Text("Retrying resumes where it stopped.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
             Spacer().frame(height: 10)

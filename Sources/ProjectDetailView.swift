@@ -283,7 +283,7 @@ struct ProjectDetailView: View {
                 .padding(.horizontal, 10)
                 // .help on the island (not the disabled pill): macOS suppresses help
                 // tags on disabled controls, and the reason must stay discoverable.
-                .help(hasShapeMesh || paintJob.isRunning ? "" : "Generate a shape first — painting textures an existing 3D model")
+                .help(hasShapeMesh || paintJob.isRunning ? "" : "Generate a shape first")
             }
         }
     }
@@ -326,7 +326,9 @@ struct ProjectDetailView: View {
                 .labelStyle(.titleAndIcon)
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(.white)
-                .padding(.horizontal, 14)
+                .lineLimit(1)
+                .fixedSize()
+                .padding(.horizontal, 12)
                 .padding(.vertical, 6)
                 .background(fill, in: Capsule())
                 .contentShape(Capsule())
@@ -568,11 +570,6 @@ struct ProjectDetailView: View {
                 Text(detail.map { "\(label) \($0)" } ?? label)
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                if fraction == nil {
-                    Text("This can take a few seconds")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
                 SmoothProgressBar(fraction: fraction)
                     .frame(width: 200, height: 4)
             }

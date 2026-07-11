@@ -8,7 +8,7 @@ parity reference; this package re-implements each module against
 Because mlx-swift calls the **same MLX Metal backend** as Python MLX, identical weights + op order
 give **bit-identical** output. Parity is transitive: **Swift == Python MLX (CUDA-parity) == CUDA**.
 
-## Parity panel (`swift run -c release paint-cli`)
+## parity panel (`swift run -c release paint-cli`)
 
 | Module | cosine | maxabs | notes |
 |---|---|---|---|
@@ -26,7 +26,7 @@ The only non-bit-exact precompute is the PoseRoPE **voxel index** quantization (
 fp16): ≤1 off-by-one per cell — the same fp16 boundary residual Python itself carries vs CUDA. The
 neural diffusion path is cosine-1.0 parity.
 
-## Layout
+## layout
 - `Sources/HunyuanPaintMLX/`
   - `Layers2D.swift` — GroupNorm (fp32), Conv2d, Linear, Resnet(+temb), Up/Downsample, VAEAttn
   - `VAE.swift` — AutoencoderKL (encode/decode)
@@ -43,12 +43,12 @@ neural diffusion path is cosine-1.0 parity.
 Functional style: weights live in a `[String: MLXArray]` dict keyed by the Python MLX module path;
 forward functions index it. `IntOrPair` takes a tuple init: `IntOrPair((0,1))`.
 
-## Build & run
+## build & run
 ```bash
 # one-time on macOS 26/27: xcodebuild -downloadComponent MetalToolchain
 # (re)dump fixtures from repo root:  uv run python swift/dump_*.py
 cd swift && swift run -c release paint-cli
 ```
 
-## Not ported (native host glue, out of scope for the diffusion core)
+## not ported (native host glue, out of scope for the diffusion core)
 Mesh I/O (Model I/O), xatlas UV-unwrap, the Metal cr-rasterizer (reuse `gpu_raster`), bake, inpaint.

@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Modelr alpaca app icon</title>
+  <desc id="desc">A friendly low-poly alpaca emerging from a three-dimensional modeling grid.</desc>
+
+  <defs>
+    <linearGradient id="background" x1="112" y1="76" x2="904" y2="948" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#21155F"/>
+      <stop offset="0.48" stop-color="#4730B8"/>
+      <stop offset="1" stop-color="#1768D8"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(512 410) rotate(90) scale(470)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8B78FF" stop-opacity="0.68"/>
+      <stop offset="1" stop-color="#533ACC" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="woolFront" x1="333" y1="334" x2="690" y2="806" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFDF4"/>
+      <stop offset="1" stop-color="#E7E7F8"/>
+    </linearGradient>
+    <linearGradient id="woolSide" x1="474" y1="391" x2="712" y2="769" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#D9D8F2"/>
+      <stop offset="1" stop-color="#A6A7D8"/>
+    </linearGradient>
+    <linearGradient id="face" x1="389" y1="261" x2="633" y2="591" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF7E5"/>
+      <stop offset="1" stop-color="#E7C9A8"/>
+    </linearGradient>
+    <linearGradient id="muzzle" x1="425" y1="436" x2="607" y2="580" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F9D7B4"/>
+      <stop offset="1" stop-color="#C98E72"/>
+    </linearGradient>
+    <linearGradient id="platform" x1="234" y1="741" x2="812" y2="882" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5EF1DD" stop-opacity="0.8"/>
+      <stop offset="1" stop-color="#26A5E9" stop-opacity="0.3"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="28" stdDeviation="25" flood-color="#110A45" flood-opacity="0.48"/>
+    </filter>
+    <filter id="softShadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#20105D" flood-opacity="0.34"/>
+    </filter>
+    <clipPath id="iconClip">
+      <rect x="32" y="32" width="960" height="960" rx="218"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#iconClip)">
+    <!-- App tile -->
+    <rect x="32" y="32" width="960" height="960" rx="218" fill="url(#background)"/>
+    <rect x="32" y="32" width="960" height="960" rx="218" fill="url(#glow)"/>
+    <path d="M74 245C224 93 459 43 672 87c120 25 221 80 300 157V32H32v291c12-28 26-54 42-78Z" fill="#FFFFFF" opacity="0.055"/>
+
+    <!-- Sparse 3D workspace grid -->
+    <g fill="none" stroke="#B8C5FF" stroke-width="3" opacity="0.16">
+      <path d="M88 756 512 547l424 209-424 211L88 756Z"/>
+      <path d="m194 704 424 210M300 652l424 210M406 600l424 210M618 600 194 810M724 652 300 862M830 704 406 914"/>
+    </g>
+
+    <!-- Floating geometry/editing nodes -->
+    <g fill="#70F3E2" opacity="0.85">
+      <circle cx="145" cy="404" r="7"/>
+      <circle cx="858" cy="313" r="7"/>
+      <circle cx="876" cy="596" r="7"/>
+    </g>
+    <g fill="none" stroke="#70F3E2" stroke-width="3" opacity="0.36">
+      <path d="m145 404 74-64 62 33"/>
+      <path d="m858 313-60-49-53 26"/>
+      <path d="m876 596-43 58"/>
+    </g>
+
+    <!-- Modeling platform -->
+    <g filter="url(#softShadow)">
+      <path d="m209 754 303-151 303 151-303 151-303-151Z" fill="url(#platform)" stroke="#8DFFF0" stroke-width="5"/>
+      <path d="m209 754 303 151 303-151v35L512 941 209 789v-35Z" fill="#172B87" opacity="0.72"/>
+      <path d="m512 603 303 151-303 151L209 754l303-151Z" fill="none" stroke="#D0FFF8" stroke-width="3" opacity="0.55"/>
+      <g fill="#D5FFF9">
+        <circle cx="209" cy="754" r="8"/><circle cx="512" cy="603" r="8"/>
+        <circle cx="815" cy="754" r="8"/><circle cx="512" cy="905" r="8"/>
+      </g>
+    </g>
+
+    <!-- Low-poly alpaca -->
+    <g filter="url(#shadow)" stroke="#2C226D" stroke-width="5" stroke-linejoin="round">
+      <!-- Back legs -->
+      <path d="m603 697 85 15-12 112-72 1-23-95 22-33Z" fill="#B9BADF"/>
+      <path d="m339 713 75-17 20 34-24 95h-70l-12-84 11-28Z" fill="#EFEFFA"/>
+
+      <!-- Body facets -->
+      <path d="m309 610 67-83 132-24 136 37 82 105-38 111-176 64-178-62-25-148Z" fill="url(#woolFront)"/>
+      <path d="m508 503 136 37 82 105-117 22-101-164Z" fill="url(#woolSide)"/>
+      <path d="m609 667 117-22-38 111-176 64 97-153Z" fill="#979ACA"/>
+      <path d="m309 610 67-83 132-24-58 153-141-46Z" fill="#FFFFFF"/>
+      <path d="m309 610 141 46 62 164-178-62-25-148Z" fill="#D7D8F0"/>
+      <path d="m450 656 58-153 101 164-97 153-62-164Z" fill="#C2C3E5"/>
+
+      <!-- Neck facets -->
+      <path d="m385 318 92-65 121 40 60 113-56 195-94 54-105-78-46-171 28-88Z" fill="url(#woolFront)"/>
+      <path d="m477 253 121 40 60 113-92 5-89-158Z" fill="#C4C5E7"/>
+      <path d="m566 411 92-5-56 195-94 54 58-244Z" fill="#A8AAD7"/>
+      <path d="m357 406 120-153 89 158-209-5Z" fill="#F8F7FC"/>
+      <path d="m357 406 209 5-58 244-105-78-46-171Z" fill="#E2E2F4"/>
+
+      <!-- Ears -->
+      <path d="m398 304-70-118 119 52-49 66Z" fill="#E9D5C6"/>
+      <path d="m328 186 99 68-29 50-70-118Z" fill="#BC91A2"/>
+      <path d="m584 279 96-88-37 133-59-45Z" fill="#D3BDD1"/>
+      <path d="m680 191-19 113-77-25 96-88Z" fill="#A984A6"/>
+
+      <!-- Head and cheek facets -->
+      <path d="m377 307 83-76 124 48 59 92-43 146-101 53-111-62-51-128 40-73Z" fill="url(#face)"/>
+      <path d="m460 231 124 48 59 92-130 6-53-146Z" fill="#F0DEC7"/>
+      <path d="m513 377 130-6-43 146-89-44 2-96Z" fill="#D3AB91"/>
+      <path d="m337 380 123-149 53 146-176 3Z" fill="#FFF8E9"/>
+      <path d="m337 380 176-3-2 96-123 35-51-128Z" fill="#F2DFC8"/>
+      <path d="m388 508 123-35 89 44-101 53-111-62Z" fill="#DCB89D"/>
+
+      <!-- Muzzle -->
+      <path d="m418 439 91-35 92 40-14 87-82 35-86-48-1-79Z" fill="url(#muzzle)"/>
+      <path d="m509 404 92 40-96 26 4-66Z" fill="#E7B895"/>
+      <path d="m505 470 96-26-14 87-82-61Z" fill="#C98C73"/>
+      <path d="m418 439 91-35-4 66-87-31Z" fill="#FBE0BE"/>
+      <path d="m418 439 87 31v96l-86-48-1-79Z" fill="#E8B993"/>
+
+      <!-- Forehead tuft -->
+      <path d="m382 296 31-91 50 36 42-56 31 68 54-23-8 84-72-24-55 35-73-29Z" fill="#FFFDF6"/>
+      <path d="m463 241 42-56 5 105-55 35 8-84Z" fill="#E4E4F4"/>
+      <path d="m505 185 31 68 54-23-8 84-72-24-5-105Z" fill="#C1C3E4"/>
+    </g>
+
+    <!-- Face details stay crisp at small icon sizes -->
+    <g filter="url(#softShadow)">
+      <path d="M397 383c19-17 45-18 65-2-17 31-48 32-65 2Z" fill="#241B4E"/>
+      <circle cx="431" cy="380" r="8" fill="#FFFFFF"/>
+      <path d="M547 381c20-17 47-15 63 5-20 29-51 27-63-5Z" fill="#241B4E"/>
+      <circle cx="579" cy="381" r="8" fill="#FFFFFF"/>
+      <path d="m477 466 28-10 30 12-30 25-28-27Z" fill="#53324D"/>
+      <path d="M505 492v24m0 0c-14 0-25-5-32-15m32 15c15 0 26-5 33-15" fill="none" stroke="#68405B" stroke-width="7" stroke-linecap="round"/>
+    </g>
+
+    <!-- Three-axis gizmo: a quiet cue for a 3D creation tool -->
+    <g stroke-linecap="round" stroke-width="8" filter="url(#softShadow)">
+      <path d="M784 740v-75" stroke="#FF5D87"/>
+      <path d="m784 740 66 34" stroke="#61E6A5"/>
+      <path d="m784 740-55 46" stroke="#61C9FF"/>
+      <circle cx="784" cy="740" r="11" fill="#FFFFFF" stroke="none"/>
+    </g>
+  </g>
+
+  <!-- Inner highlight gives the tile a physical, machined edge. -->
+  <rect x="38" y="38" width="948" height="948" rx="212" fill="none" stroke="#FFFFFF" stroke-width="10" opacity="0.12"/>
+</svg>

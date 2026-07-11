@@ -38,6 +38,7 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - Sources
+      - Resources/Assets.xcassets
     dependencies:
       - package: Hy3DMLX
         product: Hy3DMLX
@@ -53,6 +54,7 @@ targets:
         INFOPLIST_KEY_NSHumanReadableCopyright: "Copyright © 2026 Zimeng"
         INFOPLIST_KEY_NSHighResolutionCapable: "YES"
         COMBINE_HIDPI_IMAGES: "YES"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
   # Pure-logic tests: the deterministic core compiles directly into the bundle
   # (no TEST_HOST), so `xcodebuild test` runs headless — no app launch, no GPU.
