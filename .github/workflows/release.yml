@@ -11,7 +11,8 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-14
+    # Swift 6 packages require Xcode 16 or newer.
+    runs-on: macos-15
 
     steps:
       - uses: actions/checkout@v4
