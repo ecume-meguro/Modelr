@@ -2,6 +2,8 @@
 
 native macos app for local image → 3d. both the shape and texture pipelines run in-process on [mlx swift](https://github.com/zimengxiong/hunyuan3d-swift) (no python, no pytorch, nothing leaves the machine) and render live in scenekit as they generate.
 
+https://github.com/user-attachments/assets/555b455d-5e79-429d-8f7f-b768ad8bf8da
+
 ## models
 
 modelr ships four models: one small and one large per stage. interested in integrating hunyuan3d into your app? checkout [hunyuan3d-swift](https://github.com/zimengxiong/hunyuan3d-swift)
