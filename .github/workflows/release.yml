@@ -17,11 +17,16 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: install xcodegen
-        # Hosted macOS images can contain an unrelated untrusted Homebrew tap.
-        # This only installs the core XcodeGen formula from homebrew/core.
-        env:
-          HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
-        run: brew install xcodegen
+        # 2.38 emits a project format that the macos-14 image's Xcode 15.4
+        # can build. Keep this pinned until the runner is upgraded.
+        run: |
+          mkdir -p "$RUNNER_TEMP/xcodegen"
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/xcodegen.zip" \
+            https://github.com/yonaskolb/XcodeGen/releases/download/2.38.0/xcodegen.zip
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP/xcodegen"
+          echo "$RUNNER_TEMP/xcodegen" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/xcodegen/xcodegen" --version
 
       - name: import apple development certificate
         env:
