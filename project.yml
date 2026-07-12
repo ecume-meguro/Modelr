@@ -29,7 +29,9 @@ settings:
       DEVELOPMENT_TEAM: ""
     release:
       DEVELOPMENT_TEAM: "W9C2P3N7Q2"
-      CODE_SIGN_IDENTITY: "FDD0A087336FAF382EAC9341D63AC269B4F29C99"
+      # This is intentionally an Apple Development certificate for the first
+      # release. GitHub Actions imports it from the release secrets.
+      CODE_SIGN_IDENTITY: "Apple Development"
 
 targets:
   Modelr:

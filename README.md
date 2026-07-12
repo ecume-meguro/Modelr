@@ -45,3 +45,20 @@ MainActor
 
 ## misc
 everything lives under `~/Library/Application Support/Modelr/`:
+
+## install
+
+modelr currently ships an apple-silicon build for macos 14 or later. download
+[`Modelr.zip`](https://github.com/ZimengXiong/Modelr/releases/latest/download/Modelr.zip),
+unzip it, and move `Modelr.app` to Applications.
+
+the first releases are signed with an apple development certificate, not a
+developer id certificate, so macos will quarantine them. after moving the app,
+run this once in Terminal:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Modelr.app
+```
+
+then open modelr normally. this requirement will go away once releases are
+signed and notarized with a developer id.

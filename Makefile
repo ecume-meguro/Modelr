@@ -1,8 +1,8 @@
 DERIVED    := .derived
 XCODEBUILD := xcodebuild -project Modelr.xcodeproj -scheme Modelr \
-              -derivedDataPath $(DERIVED) CODE_SIGNING_ALLOWED=NO
+              -derivedDataPath $(DERIVED)
 
-.PHONY: run build release test smoke gen clean
+.PHONY: run build release package test smoke gen clean
 
 # Build (Debug) and launch the app
 run: build
@@ -13,15 +13,23 @@ gen:
 	xcodegen generate
 
 build: gen
-	$(XCODEBUILD) -configuration Debug build
+	$(XCODEBUILD) -configuration Debug CODE_SIGNING_ALLOWED=NO build
 
 # Apple-silicon-only Release build (Float16 has no x86_64 slice)
 release: gen
-	$(XCODEBUILD) -configuration Release ARCHS=arm64 build
+	$(XCODEBUILD) -configuration Release ARCHS=arm64 CODE_SIGNING_ALLOWED=YES build
 	@echo "app: $(DERIVED)/Build/Products/Release/Modelr.app"
 
+# Zip a signed Release app for distribution. `ditto` preserves the app bundle's
+# metadata and resource forks, unlike a plain `zip` invocation.
+package: release
+	rm -rf dist
+	mkdir -p dist
+	ditto -c -k --sequesterRsrc --keepParent \
+		$(DERIVED)/Build/Products/Release/Modelr.app dist/Modelr.zip
+
 test: gen
-	$(XCODEBUILD) test
+	$(XCODEBUILD) CODE_SIGNING_ALLOWED=NO test
 
 # Headless self-drive: onboarding -> import -> generate -> paint -> export -> screenshots
 smoke: build
