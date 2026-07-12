@@ -11,8 +11,8 @@ permissions:
 
 jobs:
   release:
-    # Swift 6 packages require Xcode 16 or newer.
-    runs-on: macos-15
+    # Xcode 26 provides the macOS 26 SDK needed for Liquid Glass.
+    runs-on: macos-26
 
     steps:
       - uses: actions/checkout@v4
