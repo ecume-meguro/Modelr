@@ -25,8 +25,8 @@ jobs:
             --output "$RUNNER_TEMP/xcodegen.zip" \
             https://github.com/yonaskolb/XcodeGen/releases/download/2.38.0/xcodegen.zip
           unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP/xcodegen"
-          echo "$RUNNER_TEMP/xcodegen" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/xcodegen/xcodegen" --version
+          echo "$RUNNER_TEMP/xcodegen/xcodegen/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/xcodegen/xcodegen/bin/xcodegen" --version
 
       - name: import apple development certificate
         env:
