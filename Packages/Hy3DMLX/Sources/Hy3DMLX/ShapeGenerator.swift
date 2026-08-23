@@ -97,12 +97,40 @@ public final class ShapeGenerator {
                          isCancelled: () -> Bool = { false },
                          onPreview: ((Mesh) -> Void)? = nil,
                          onProgress: ((Progress) -> Void)? = nil) -> Mesh? {
-        guard let pix = Preprocess.dinoPixels(cgImage: image) else { return nil }
-        if isCancelled() { return nil }
-        onProgress?(.init(stage: "Conditioning image", fraction: 0.05))
+        generate(images: [image], steps: steps, guidance: guidance, seed: seed,
+                 resolution: resolution, octree: octree, isCancelled: isCancelled,
+                 onPreview: onPreview, onProgress: onProgress)
+    }
+
+    /// Multiview generation: one image per view, in the model's view order.
+    ///
+    /// The multiview checkpoint differs from the single-image one only in its conditioning — same
+    /// DiT dimensions, same VAE, same DINOv2. Each view is encoded separately, offset by its view
+    /// embedding, and the results concatenated into one long conditioning sequence. Passing a
+    /// single image reproduces the single-view behaviour exactly, since the view-0 embedding is
+    /// sin(0)=0, cos(0)=1 and would only be added when there is more than one view.
+    public func generate(images: [CGImage], steps: Int = 30, guidance: Float = 5.0,
+                         seed: UInt64 = 0, resolution: Int = 256, octree: Bool = true,
+                         isCancelled: () -> Bool = { false },
+                         onPreview: ((Mesh) -> Void)? = nil,
+                         onProgress: ((Progress) -> Void)? = nil) -> Mesh? {
+        guard !images.isEmpty else { return nil }
+        var embeds = [MLXArray]()
+        for image in images {
+            guard let pix = Preprocess.dinoPixels(cgImage: image) else { return nil }
+            if isCancelled() { return nil }
+            embeds.append(dino(pix))
+        }
+        onProgress?(.init(stage: images.count > 1 ? "Conditioning \(images.count) views"
+                                                  : "Conditioning image", fraction: 0.05))
+        var embed = embeds.count == 1 ? embeds[0] : concatenated(embeds, axis: 1)
+        if embeds.count > 1 {
+            embed = embed + DINOv2.viewEmbedding(views: embeds.count, tokens: embeds[0].dim(1),
+                                                 hidden: embed.dim(2))
+        }
         // Turbo/distilled models embed guidance and skip CFG → conditional embedding only.
-        let embed = dino(pix)
-        let cond = dit.guidanceEmbed ? embed : concatenated([embed, dino.unconditional(1)], axis: 0)
+        let uncond = dino.unconditional(1, tokens: embed.dim(1), hidden: embed.dim(2))
+        let cond = dit.guidanceEmbed ? embed : concatenated([embed, uncond], axis: 0)
         eval(cond)
         if isCancelled() { return nil }
 

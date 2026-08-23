@@ -6,6 +6,8 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "HunyuanPaintMLX", targets: ["HunyuanPaintMLX"]),
+        // Headless bake harness for sweeping bake parameters (Sources/mvbake).
+        .executable(name: "mvbake", targets: ["mvbake"]),
     ],
     dependencies: [
         .package(path: "../../vendor/mlx-swift"),
@@ -24,6 +26,10 @@ let package = Package(
                 .product(name: "MLXRandom", package: "mlx-swift"),
                 .product(name: "MLXFast", package: "mlx-swift"),
             ]
+        ),
+        .executableTarget(
+            name: "mvbake",
+            dependencies: ["HunyuanPaintMLX", .product(name: "MLX", package: "mlx-swift")]
         ),
     ]
 )

@@ -300,6 +300,70 @@ public enum ImageX {
         }
         return rgb
     }
+
+    /// Core of `loadViewSheet`: split a horizontal strip into `count` tiles at native size.
+    static func viewSheetFlat(_ path: String, count: Int) -> (tiles: [[Float]], h: Int, w: Int)? {
+        guard count > 0, let dec = decodeStraightRGBA(path) else { return nil }
+        let h = dec.height, stride = dec.width
+        guard stride % count == 0 else { return nil }
+        let w = stride / count
+        var tiles = [[Float]]()
+        tiles.reserveCapacity(count)
+        for v in 0 ..< count {
+            var rgb = [Float](repeating: 0.0, count: h * w * 3)
+            for y in 0 ..< h {
+                for x in 0 ..< w {
+                    let s = (y * stride + v * w + x) * 4
+                    var r = dec.rgba[s + 0]
+                    var g = dec.rgba[s + 1]
+                    var b = dec.rgba[s + 2]
+                    if dec.hasAlpha {
+                        // Composite over white, matching `prepRGBFlat`.
+                        let a = min(max(dec.rgba[s + 3], 0.0), 1.0)
+                        r = r * a + (1.0 - a)
+                        g = g * a + (1.0 - a)
+                        b = b * a + (1.0 - a)
+                    }
+                    let d = (y * w + x) * 3
+                    rgb[d + 0] = min(max(r, 0.0), 1.0)
+                    rgb[d + 1] = min(max(g, 0.0), 1.0)
+                    rgb[d + 2] = min(max(b, 0.0), 1.0)
+                }
+            }
+            tiles.append(rgb)
+        }
+        return (tiles, h, w)
+    }
+
+    /// Like `viewSheetFlat`, but keeps alpha instead of compositing it away: returns straight
+    /// (un-composited) RGB plus the alpha replicated to three channels, so the alpha can be
+    /// handed to `bakeMulti` as an ordinary view set and ride the same weight solve as colour.
+    /// A sheet with no alpha channel comes back fully opaque.
+    static func viewSheetRGBAFlat(_ path: String, count: Int)
+        -> (rgb: [[Float]], alpha: [[Float]], h: Int, w: Int)? {
+        guard count > 0, let dec = decodeStraightRGBA(path) else { return nil }
+        let h = dec.height, stride = dec.width
+        guard stride % count == 0 else { return nil }
+        let w = stride / count
+        var rgbTiles = [[Float]](), alphaTiles = [[Float]]()
+        for v in 0 ..< count {
+            var rgb = [Float](repeating: 0.0, count: h * w * 3)
+            var alpha = [Float](repeating: 1.0, count: h * w * 3)
+            for y in 0 ..< h {
+                for x in 0 ..< w {
+                    let s = (y * stride + v * w + x) * 4
+                    let d = (y * w + x) * 3
+                    for ch in 0 ..< 3 { rgb[d + ch] = min(max(dec.rgba[s + ch], 0.0), 1.0) }
+                    if dec.hasAlpha {
+                        let a = min(max(dec.rgba[s + 3], 0.0), 1.0)
+                        alpha[d] = a; alpha[d + 1] = a; alpha[d + 2] = a
+                    }
+                }
+            }
+            rgbTiles.append(rgb); alphaTiles.append(alpha)
+        }
+        return (rgbTiles, alphaTiles, h, w)
+    }
 }
 
 // MARK: - Public API
@@ -309,6 +373,60 @@ public enum ImageX {
 public func prepRGB(_ path: String, _ size: Int) -> MLXArray {
     let flat = ImageX.prepRGBFlat(path, size)
     return MLXArray(flat, [size, size, 3])
+}
+
+/// Load a horizontal view sheet (`count` equally-wide tiles) at its native resolution and
+/// return one `[H, W, 3]` float32 array in [0,1] per tile — the inverse of the
+/// `concatenated(views, axis: 1)` grid that paint writes out. Unlike `prepRGB` this does not
+/// resize, so an edited sheet bakes at whatever resolution it was exported at. Returns nil if
+/// the file can't be decoded or its width isn't divisible by `count`.
+public func loadViewSheet(_ path: String, count: Int) -> [MLXArray]? {
+    guard let (tiles, h, w) = ImageX.viewSheetFlat(path, count: count) else { return nil }
+    return tiles.map { MLXArray($0, [h, w, 3]) }
+}
+
+/// Load a view sheet preserving its alpha channel: `rgb` is straight (never composited over
+/// white) and `alpha` is the alpha replicated to `[H, W, 3]`, ready to pass to `bakeMulti` as
+/// an extra view set so it projects through exactly the same weights as colour. Paint alpha
+/// into the flat sheet and transparency lands in the atlas without touching UV islands.
+public func loadViewSheetAlpha(_ path: String, count: Int) -> (rgb: [MLXArray], alpha: [MLXArray])? {
+    guard let s = ImageX.viewSheetRGBAFlat(path, count: count) else { return nil }
+    return (s.rgb.map { MLXArray($0, [s.h, s.w, 3]) },
+            s.alpha.map { MLXArray($0, [s.h, s.w, 3]) })
+}
+
+/// Encode `[H,W,3]` colour plus a `[H,W,3]` alpha (any channel; the first is used) as an RGBA
+/// PNG. CoreGraphics wants premultiplied alpha here, so the colour is scaled on the way out.
+public func pngDataRGBA(_ rgb: MLXArray, _ alpha: MLXArray) -> Data? {
+    let shp = rgb.shape
+    precondition(shp.count == 3 && shp[2] == 3, "pngDataRGBA expects [H,W,3], got \(shp)")
+    let h = shp[0], w = shp[1]
+    let c = rgb.asType(.float32).asArray(Float.self)
+    let a = alpha.asType(.float32).asArray(Float.self)
+    var bytes = [UInt8](repeating: 255, count: h * w * 4)
+    for i in 0 ..< (h * w) {
+        let s = i * 3, d = i * 4
+        let av = min(max(a[s], 0.0), 1.0)
+        for ch in 0 ..< 3 {
+            let v = (min(max(c[s + ch], 0.0), 1.0) * av * 255.0).rounded()   // premultiplied
+            bytes[d + ch] = UInt8(min(max(v, 0.0), 255.0))
+        }
+        bytes[d + 3] = UInt8((av * 255.0).rounded())
+    }
+    let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+    guard let provider = CGDataProvider(data: Data(bytes) as CFData),
+          let cg = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32,
+                           bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                           bitmapInfo: bitmapInfo, provider: provider,
+                           decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+    else { return nil }
+    let data = NSMutableData()
+    guard let dest = CGImageDestinationCreateWithData(data as CFMutableData,
+                                                      UTType.png.identifier as CFString, 1, nil)
+    else { return nil }
+    CGImageDestinationAddImage(dest, cg, nil)
+    guard CGImageDestinationFinalize(dest) else { return nil }
+    return data as Data
 }
 
 /// ImageNet normalization broadcast over the last (channel) dimension: `(img - mean) / std`.

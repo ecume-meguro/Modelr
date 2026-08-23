@@ -21,6 +21,9 @@ struct PaintSettingsPopover: View {
                 }
 
                 Divider()
+                glassOpacity
+
+                Divider()
 
                 Toggle("Advanced mode", isOn: advancedBinding.animation(.snappy(duration: 0.2)))
                     .toggleStyle(.switch)
@@ -28,6 +31,29 @@ struct PaintSettingsPopover: View {
         }
         .padding(16)
         .frame(width: 320)
+    }
+
+    /// How see-through the windows are after Finish Glass.
+    ///
+    /// One value for every car rather than a per-car measurement: what the paint model puts in
+    /// the atlas varies for its own reasons, not the car's, and a single number is both
+    /// predictable and adjustable.
+    @AppStorage("glassOpacity") private var glassOpacityValue: Double = 0.45
+
+    @ViewBuilder
+    private var glassOpacity: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Glass opacity").fontWeight(.semibold)
+                Spacer()
+                Text(String(format: "%.02f", glassOpacityValue))
+                    .font(.caption).monospacedDigit().foregroundStyle(.tertiary)
+            }
+            Slider(value: $glassOpacityValue, in: 0.05...1.0)
+            Text("Applied when the glass is cut and cleaned. Existing cars keep the value they "
+                 + "were finished with until they are finished again.")
+                .font(.caption2).foregroundStyle(.tertiary)
+        }
     }
 
     /// Small = Color (RGB), Large = PBR (albedo + metallic-roughness), per §5.

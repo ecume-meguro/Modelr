@@ -15,14 +15,22 @@ gen:
 build: gen
 	$(XCODEBUILD) -configuration Debug CODE_SIGNING_ALLOWED=NO build
 
-# Apple-silicon-only Release build (Float16 has no x86_64 slice)
+# Apple-silicon-only Release build (Float16 has no x86_64 slice).
+# Ad-hoc signed like `build`, so a machine without the upstream team certificate can make an
+# optimised build to run locally. Use `make release-signed` for a distributable one.
 release: gen
+	$(XCODEBUILD) -configuration Release ARCHS=arm64 \
+		CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="-" build
+	@echo "app: $(DERIVED)/Build/Products/Release/Modelr.app"
+
+# Release build signed with the real team certificate (needed for `package`/distribution).
+release-signed: gen
 	$(XCODEBUILD) -configuration Release ARCHS=arm64 CODE_SIGNING_ALLOWED=YES build
 	@echo "app: $(DERIVED)/Build/Products/Release/Modelr.app"
 
 # Zip a signed Release app for distribution. `ditto` preserves the app bundle's
 # metadata and resource forks, unlike a plain `zip` invocation.
-package: release
+package: release-signed
 	rm -rf dist
 	mkdir -p dist
 	ditto -c -k --sequesterRsrc --keepParent \

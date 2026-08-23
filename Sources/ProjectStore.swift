@@ -11,6 +11,8 @@ import AppKit
 @Observable
 final class ProjectStore {
     private(set) var projects: [Project] = []
+    /// Bumped when a multiview slot's file changes, so views re-read it.
+    private(set) var multiviewTick: Int = 0
     var selection: Project.ID?
 
     /// Bumped whenever input.png is rewritten, so the preview reloads from disk.
@@ -36,7 +38,9 @@ final class ProjectStore {
 
     private var indexFile: URL { rootDir.appendingPathComponent("projects.json") }
     private var projectsDir: URL { rootDir.appendingPathComponent("projects", isDirectory: true) }
-    private func folder(for id: Project.ID) -> URL {
+    /// Internal rather than private: the re-bake path resolves sibling files (view sheets,
+    /// un-baked geometry) that have no entry in `Generation`.
+    func folder(for id: Project.ID) -> URL {
         projectsDir.appendingPathComponent(id.uuidString, isDirectory: true)
     }
 
@@ -47,6 +51,15 @@ final class ProjectStore {
     }
 
     func inputVersion(_ id: Project.ID) -> Int { inputVersions[id] ?? 0 }
+
+    /// The untouched image as imported, before background removal and processing.
+    /// `imageURL` returns the processed `input.png` the model is actually fed; this is what
+    /// the user dropped in, which is what they want back when exporting.
+    func sourceImageURL(for project: Project) -> URL? {
+        guard let name = project.sourceImageName else { return nil }
+        let url = folder(for: project.id).appendingPathComponent(name)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
 
     private func clearInputFiles(in folderURL: URL) {
         let fm = FileManager.default
@@ -240,6 +253,14 @@ final class ProjectStore {
         save()
     }
 
+    func setReferenceViews(_ views: [ReferenceView], for id: Project.ID) {
+        guard let i = projects.firstIndex(where: { $0.id == id }),
+              let gi = projects[i].generations.firstIndex(where: { $0.id == projects[i].currentGeneration?.id })
+        else { return }
+        projects[i].generations[gi].referenceViewsRaw = views.isEmpty ? nil : views
+        save()
+    }
+
     func setShapeModel(_ model: ShapeModel, for id: Project.ID) {
         guard let i = projects.firstIndex(where: { $0.id == id }) else { return }
         projects[i].shapeModel = model
@@ -340,6 +361,45 @@ final class ProjectStore {
     }
 
     // MARK: - image input
+
+    /// Where a multiview slot's photograph lives. Slot 0 is the project's own input image, so
+    /// the existing single-image flow keeps working unchanged and the first slot is not a
+    /// duplicate of it.
+    func multiviewImageURL(_ id: Project.ID, slot: Int) -> URL? {
+        if slot == 0 { return project(id).flatMap { imageURL(for: $0) } }
+        let u = folder(for: id).appendingPathComponent("mv_\(slot).png")
+        return FileManager.default.fileExists(atPath: u.path) ? u : nil
+    }
+
+    func setMultiviewImage(fromURL src: URL, for id: Project.ID, slot: Int) {
+        guard slot != 0 else { setImage(fromURL: src, for: id); return }
+        let dir = folder(for: id)
+        let dest = dir.appendingPathComponent("mv_\(slot).png")
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            guard let data = try? Data(contentsOf: src),
+                  let rep = NSBitmapImageRep(data: data) ?? NSImage(data: data)
+                      .flatMap({ $0.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)) }),
+                  let png = rep.representation(using: .png, properties: [:]) else {
+                importErrors[id] = "Unsupported image."; return
+            }
+            try? FileManager.default.removeItem(at: dest)
+            try png.write(to: dest)
+            objectChanged()
+        } catch {
+            importErrors[id] = "Couldn't import image: \(error.localizedDescription)"
+        }
+    }
+
+    func clearMultiviewImage(_ id: Project.ID, slot: Int) {
+        guard slot != 0 else { return }
+        try? FileManager.default.removeItem(
+            at: folder(for: id).appendingPathComponent("mv_\(slot).png"))
+        objectChanged()
+    }
+
+    /// Nudge observers when a file changed but no stored property did.
+    private func objectChanged() { multiviewTick &+= 1 }
 
     func setImage(fromURL src: URL, for id: Project.ID) {
         guard let i = projects.firstIndex(where: { $0.id == id }) else { return }
@@ -717,13 +777,26 @@ final class ProjectStore {
 
     private func load() {
         guard let data = try? Data(contentsOf: indexFile) else { return }   // first launch, no file
-        guard let decoded = try? JSONDecoder().decode([Project].self, from: data) else {
+        let decoded: [Project]
+        if let all = try? JSONDecoder().decode([Project].self, from: data) {
+            decoded = all
+        } else {
             // Don't silently wipe everything on a malformed file: preserve it for recovery
             // before the next save() overwrites projects.json.
             let backup = indexFile.deletingPathExtension()
                 .appendingPathExtension("corrupt-\(Int(Date().timeIntervalSince1970)).json")
             try? FileManager.default.copyItem(at: indexFile, to: backup)
-            return
+            // One undecodable project shouldn't cost the user every other one, so fall back to
+            // decoding element by element and keep whatever survives.
+            guard let elements = (try? JSONSerialization.jsonObject(with: data)) as? [Any]
+            else { return }
+            let salvaged = elements.compactMap { element -> Project? in
+                guard let blob = try? JSONSerialization.data(withJSONObject: element)
+                else { return nil }
+                return try? JSONDecoder().decode(Project.self, from: blob)
+            }
+            guard !salvaged.isEmpty else { return }
+            decoded = salvaged
         }
         projects = decoded.sorted { $0.createdAt > $1.createdAt }
         selection = projects.first?.id
@@ -785,8 +858,34 @@ final class ProjectStore {
                     referenced.insert(name)
                 }
             }
+            // The view sheets and un-baked geometry a PBR run leaves for re-baking are named
+            // off their painted mesh and have no Generation field of their own, so derive
+            // their names from what is referenced — otherwise this sweep eats them at launch.
+            for name in referenced where name.hasSuffix(".tmesh") {
+                let stem = (name as NSString).deletingPathExtension
+                referenced.formUnion(["\(stem)_sheet_albedo.png", "\(stem)_sheet_mr.png",
+                                      "\(stem)_unbaked.tmesh", "\(stem).precut.tmesh",
+                                      // the stencil taken off the sheet, and the opaque sheet
+                                      // the bake reads — both derived, both needed again
+                                      "\(stem)_sheet_albedo_glass.png",
+                                      "\(stem)_sheet_albedo_flat.png"])
+            }
+            // Likewise the bake's own by-products, which no Generation field names: the
+            // pre-re-bake snapshot behind Reset, and the coverage atlas the aligner shows.
+            for name in referenced where name.hasSuffix(".png") {
+                let stem = (name as NSString).deletingPathExtension
+                referenced.formUnion(["\(stem)_orig.png", "\(stem)_coverage.png",
+                                      "\(stem).preglass.png"])
+            }
+            // Only ever delete the kinds of file a generation actually produces. Sidecars —
+            // the glass selection and the erased-face mask — are hand-made edits that cannot be
+            // regenerated, and they are named off the mesh, so a prefix match would eat them.
+            // Whitelisting by extension means a sidecar added later is safe by default rather
+            // than safe only if someone remembers to list it here.
+            let sweepable: Set<String> = ["mesh", "tmesh", "png", "jpg", "jpeg", "glb", "usdz"]
             for item in items where (item.hasPrefix("gen_") || item.hasPrefix("painted_"))
-                && !referenced.contains(item) {
+                && !referenced.contains(item)
+                && sweepable.contains((item as NSString).pathExtension.lowercased()) {
                 try? fm.removeItem(at: dir.appendingPathComponent(item))
             }
         }

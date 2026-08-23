@@ -3,7 +3,7 @@ import Foundation
 /// The shape checkpoint to generate with (DESIGN.md §2): Small = 2mini (0.6B,
 /// 30-step CFG), Large = 2.0-turbo (1.1B distilled, 8-step consistency).
 enum ShapeModel: String, CaseIterable, Identifiable {
-    case small, large
+    case small, large, multiview
 
     var id: String { rawValue }
 
@@ -11,6 +11,7 @@ enum ShapeModel: String, CaseIterable, Identifiable {
         switch self {
         case .small: return "Small"
         case .large: return "Large"
+        case .multiview: return "Multiview"
         }
     }
 
@@ -18,6 +19,7 @@ enum ShapeModel: String, CaseIterable, Identifiable {
         switch self {
         case .small: return "2mini · 0.6B · fastest"
         case .large: return "2.0 turbo · 1.1B · best detail"
+        case .multiview: return "2mv · 1.1B · up to 4 photos"
         }
     }
 
@@ -25,6 +27,7 @@ enum ShapeModel: String, CaseIterable, Identifiable {
         switch self {
         case .small: return .shapeSmall
         case .large: return .shapeLarge
+        case .multiview: return .shapeMultiview
         }
     }
 
@@ -33,6 +36,7 @@ enum ShapeModel: String, CaseIterable, Identifiable {
         switch self {
         case .small: return 30
         case .large: return 8
+        case .multiview: return 30      // CFG schedule, same as the mini model
         }
     }
 
@@ -42,6 +46,7 @@ enum ShapeModel: String, CaseIterable, Identifiable {
         switch legacyRaw {
         case "small", "mini", "miniTurbo": self = .small
         case "large", "standard", "standardTurbo": self = .large
+        case "multiview": self = .multiview
         default: self = .small
         }
     }
@@ -137,7 +142,7 @@ enum QualityPreset: String, CaseIterable, Identifiable {
     func steps(for model: ShapeModel) -> Int {
         let index = Self.ordered.firstIndex(of: self) ?? 2
         switch model {
-        case .small: return [12, 20, 30, 40, 50][index]
+        case .small, .multiview: return [12, 20, 30, 40, 50][index]
         case .large: return [4, 6, 8, 10, 12][index]
         }
     }
@@ -245,6 +250,61 @@ struct PaintSettings {
 
 /// Whether a saved version is an untextured shape or a textured paint result.
 enum GenerationKind: String, Codable { case shape, paint }
+
+/// A photo (or completed render) registered to a camera pose by orbiting the model until it
+/// lines up. `elev`/`azim` are in the paint pipeline's convention, so they can be handed to
+/// the bake unchanged. `weight` is deliberately low by default: a reference view should win
+/// where nothing else covers the surface without overpowering the six canonical views where
+/// they already agree.
+struct ReferenceView: Codable, Hashable, Identifiable {
+    var id: UUID = UUID()
+    /// The square, fitted image the bake consumes.
+    var fileName: String
+    /// The untouched import, kept so the alignment can be re-opened and adjusted. Absent on
+    /// views registered before editing existed — those fall back to re-fitting `fileName`,
+    /// which is already square, so its baseline fit is simply scale 1 / no offset.
+    var originalFileName: String? = nil
+    var elev: Double
+    var azim: Double
+    var weight: Double = 0.5
+    var scale: Double = 1
+    var offsetX: Double = 0
+    var offsetY: Double = 0
+    /// In-plane rotation, degrees. Orbiting cannot produce roll, so without this a photo taken
+    /// with even a slightly tilted camera can never be made to line up.
+    var roll: Double = 0
+    /// Horizontal field of view for this photograph, degrees; 0 keeps the bake's orthographic
+    /// camera. A shot taken close to the subject cannot be matched by any orbit without it.
+    var fovDeg: Double = 0
+
+    init(id: UUID = UUID(), fileName: String, originalFileName: String? = nil,
+         elev: Double, azim: Double, weight: Double = 0.5,
+         scale: Double = 1, offsetX: Double = 0, offsetY: Double = 0, roll: Double = 0,
+         fovDeg: Double = 0) {
+        self.id = id; self.fileName = fileName; self.originalFileName = originalFileName
+        self.elev = elev; self.azim = azim; self.weight = weight
+        self.scale = scale; self.offsetX = offsetX; self.offsetY = offsetY; self.roll = roll
+        self.fovDeg = fovDeg
+    }
+
+    // Hand-written because the synthesized decoder treats a missing key as an error even when
+    // the property has a default — so adding the fit fields would make every project saved
+    // before them fail to decode, taking the whole index down with it.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        fileName = try c.decode(String.self, forKey: .fileName)
+        originalFileName = try c.decodeIfPresent(String.self, forKey: .originalFileName)
+        elev = try c.decode(Double.self, forKey: .elev)
+        azim = try c.decode(Double.self, forKey: .azim)
+        weight = try c.decodeIfPresent(Double.self, forKey: .weight) ?? 0.5
+        scale = try c.decodeIfPresent(Double.self, forKey: .scale) ?? 1
+        offsetX = try c.decodeIfPresent(Double.self, forKey: .offsetX) ?? 0
+        offsetY = try c.decodeIfPresent(Double.self, forKey: .offsetY) ?? 0
+        roll = try c.decodeIfPresent(Double.self, forKey: .roll) ?? 0
+        fovDeg = try c.decodeIfPresent(Double.self, forKey: .fovDeg) ?? 0
+    }
+}
 
 /// A single image → 3D shape project. Persisted as JSON; its files live in a
 /// per-project folder under Application Support.
@@ -428,6 +488,9 @@ struct Generation: Identifiable, Codable, Hashable {
     var paintFacesRaw: Int? = nil
     var paintSuperresRaw: Bool? = nil
     var paintSeedRaw: UInt64? = nil     // the seed this paint run actually used
+    /// Reference images the user aligned against this generation, baked as extra cameras.
+    /// Additive and optional, so older projects decode unchanged.
+    var referenceViewsRaw: [ReferenceView]? = nil
 
     var kind: GenerationKind { GenerationKind(rawValue: kindRaw ?? "shape") ?? .shape }
     var isPainted: Bool { kind == .paint }

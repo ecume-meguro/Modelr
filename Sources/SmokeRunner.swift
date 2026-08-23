@@ -201,7 +201,7 @@ enum SmokeRunner {
                                     format: .glb, to: dest)
         case .texturedMesh(let mesh, let tex):
             try MeshExporter.export(meshURL: mesh, texture: tex, format: .glb, to: dest)
-        case .mesh, .points:
+        case .mesh, .points, .coverageMesh:
             throw fail("viewer content is untextured after paint — expected a textured mesh")
         }
         let bytes = (try? dest.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0

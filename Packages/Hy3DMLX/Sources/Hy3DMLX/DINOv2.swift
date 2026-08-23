@@ -67,6 +67,33 @@ public struct DINOv2 {
         return ln(x, "layernorm")
     }
 
+    /// Per-view offset added to each view's tokens in the multiview model.
+    ///
+    /// Hunyuan3D-2mv conditions on several views at once by encoding each with this same DINOv2,
+    /// tagging each view's tokens with a sinusoidal embedding of its index, and concatenating the
+    /// lot into one long sequence. The embedding is computed rather than learned — it is built in
+    /// the reference implementation's `__init__` from `get_1d_sincos_pos_embed_from_grid` and is
+    /// not a checkpoint parameter — so it is reproduced here exactly:
+    ///
+    ///     omega_d = 1 / 10000^(d / (D/2)),  emb[v] = [sin(v * omega), cos(v * omega)]
+    ///
+    /// The same vector is repeated across every token of that view.
+    public static func viewEmbedding(views: Int, tokens: Int, hidden: Int = 1536) -> MLXArray {
+        let half = hidden / 2
+        var flat = [Float](repeating: 0, count: views * hidden)
+        for v in 0 ..< views {
+            for d in 0 ..< half {
+                let omega = 1.0 / pow(10_000.0, Double(d) / Double(half))
+                let a = Double(v) * omega
+                flat[v * hidden + d] = Float(sin(a))
+                flat[v * hidden + half + d] = Float(cos(a))
+            }
+        }
+        // [views, 1, hidden] -> repeated over tokens -> [1, views * tokens, hidden]
+        let e = MLXArray(flat, [views, 1, hidden])
+        return broadcast(e, to: [views, tokens, hidden]).reshaped([1, views * tokens, hidden])
+    }
+
     public func unconditional(_ batch: Int, tokens: Int = 1370, hidden: Int = 1536) -> MLXArray {
         MLXArray.zeros([batch, tokens, hidden])
     }

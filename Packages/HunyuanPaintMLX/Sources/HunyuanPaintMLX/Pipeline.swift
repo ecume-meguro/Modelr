@@ -42,6 +42,65 @@ public struct PBRPaintResult {
     public let uvs: [Float]                 // flat uv, viewer convention (v-flipped to top-left)
     public let albedoPNG: Data              // baked base-color texture as PNG bytes
     public let metallicRoughnessPNG: Data   // baked MR texture as PNG bytes (G=roughness, B=metallic)
+    /// The albedo with every texel no view has painted head-on made transparent — exactly the
+    /// surfaces a reference photograph is allowed to paint. Shown while aligning, with the photo
+    /// behind the model, so those surfaces read as the photo showing through.
+    public let coveragePNG: Data?
+}
+
+/// Output of the view-generation half of a PBR paint run, before anything is projected into the
+/// atlas. The two sheets are horizontal strips of `viewCount` tiles — flat, undistorted renders
+/// that can be exported, edited, and handed back to `bakePBR`.
+///
+/// `uvs` here are RAW (not v-flipped): `bakePBR` feeds them straight to `setUV(_:flipV: true)`.
+/// `PBRPaintResult.uvs` by contrast is v-flipped for the viewer. Keep them straight or the bake
+/// will land upside down.
+/// A reference image registered against a known camera pose, baked alongside the six
+/// canonical views. Either a photograph the user aligned by orbiting the model, or a
+/// generated completion — the bake cannot tell them apart and does not need to.
+public struct ExtraView {
+    public let imagePath: String
+    public let elev: Float
+    public let azim: Float
+    public let weight: Float
+    /// Horizontal field of view in degrees, or 0 for an orthographic projection like the
+    /// canonical views. A photograph taken close to the subject needs this to line up at all.
+    public let fovDeg: Float
+    public init(imagePath: String, elev: Float, azim: Float, weight: Float = 0.5,
+                fovDeg: Float = 0) {
+        self.imagePath = imagePath; self.elev = elev; self.azim = azim; self.weight = weight
+        self.fovDeg = fovDeg
+    }
+}
+
+public struct PaintViewsResult {
+    public let vertices: [Float]            // flat xyz, unwrapped geometry
+    public let faces: [UInt32]              // flat triangle indices
+    public let uvs: [Float]                 // flat uv, RAW (pre v-flip) — for bakePBR
+    public let albedoSheetPNG: Data         // [H, W*viewCount, 3] albedo strip
+    public let mrSheetPNG: Data             // [H, W*viewCount, 3] metallic-roughness strip
+    public let viewCount: Int
+
+    /// The same views still in memory, when this came straight from `paintViewsPBR`. Lets an
+    /// immediate bake skip a pointless PNG encode → temp file → decode round-trip; nil when
+    /// the result was rebuilt from disk, where the sheets are the only source.
+    public let albedoViews: [MLXArray]?
+    public let mrViews: [MLXArray]?
+
+    /// Explicit because the compiler-supplied memberwise init is internal — the app rebuilds
+    /// this from files on disk to bake a paint run it did not just produce.
+    public init(vertices: [Float], faces: [UInt32], uvs: [Float],
+                albedoSheetPNG: Data, mrSheetPNG: Data, viewCount: Int,
+                albedoViews: [MLXArray]? = nil, mrViews: [MLXArray]? = nil) {
+        self.vertices = vertices
+        self.faces = faces
+        self.uvs = uvs
+        self.albedoSheetPNG = albedoSheetPNG
+        self.mrSheetPNG = mrSheetPNG
+        self.viewCount = viewCount
+        self.albedoViews = albedoViews
+        self.mrViews = mrViews
+    }
 }
 
 /// Paint pipeline in Swift: mesh + image → textured geometry. Port of run_paint*.py.
@@ -185,7 +244,7 @@ public final class PaintPipeline {
         if isCancelled() { return nil }
 
         onProgress?("Baking texture", 0.93)
-        let (texs, covered) = R.bakeMulti([views], elevs, azims, textureSize: tex, weights: vw)
+        let (texs, covered, _, _) = R.bakeMulti([views], elevs, azims, textureSize: tex, weights: vw)
         let texC = MeshRender.inpaint(texs[0], covered); eval(texC)
         guard let albedoPNG = pngData(texC) else { return nil }
         var uvOut = uw.uvs
@@ -199,12 +258,313 @@ public final class PaintPipeline {
     /// nil if it fires), streams decoded albedo view grids via `onViews`, reports stages via
     /// `onProgress`. Debug artifacts are written only when `debugPathPrefix` is set (the CLI
     /// passes the output GLB path): `<prefix>.views.png` and `<prefix>.rendercheck.png`.
+    ///
+    /// This is now `paintViewsPBR` followed by `bakePBR`; split so the sheets can be exported
+    /// and edited in between. Behaviour when called end-to-end is unchanged.
     public func paintPBR(mesh: LoadedMesh, imagePath: String, guidance: Float = 3.0,
                          seed: UInt64 = 0,
                          debugPathPrefix: String? = nil,
                          onProgress: ((String, Float) -> Void)? = nil,
                          isCancelled: () -> Bool = { false },
                          onViews: ((Data) -> Void)? = nil) throws -> PBRPaintResult? {
+        guard let v = try paintViewsPBR(mesh: mesh, imagePath: imagePath, guidance: guidance,
+                                        seed: seed, debugPathPrefix: debugPathPrefix,
+                                        onProgress: onProgress, isCancelled: isCancelled,
+                                        onViews: onViews) else { return nil }
+        if isCancelled() { return nil }
+        return bakePBR(views: v, albedoSheetPath: nil, mrSheetPath: nil,
+                       weights: nil, debugPathPrefix: debugPathPrefix, onProgress: onProgress)
+    }
+
+    /// Bake half of a PBR run: project view sheets onto the atlas and inpaint the gaps. Needs no
+    /// model weights — just the rasterizer — so it runs in seconds and can be repeated cheaply.
+    ///
+    /// Pass `albedoSheetPath` / `mrSheetPath` to bake *edited* sheets instead of the ones the
+    /// model produced; each must be a horizontal strip of `views.viewCount` tiles (any
+    /// resolution, as long as the tiles are square-ish and equal width). Nil falls back to the
+    /// sheets carried in `views`. `weights` overrides the per-view blend weights — the defaults
+    /// weight top and bottom at 0.05 against the reference view's 1.0, so raise them here if
+    /// hand-painted roof or underside detail is getting washed out by `inpaint`.
+    public func bakePBR(views: PaintViewsResult,
+                        albedoSheetPath: String? = nil,
+                        mrSheetPath: String? = nil,
+                        weights: [Float]? = nil,
+                        extraViews: [ExtraView] = [],
+                        debugPathPrefix: String? = nil,
+                        onProgress: ((String, Float) -> Void)? = nil) -> PBRPaintResult? {
+        let n = views.viewCount
+        // Alpha is kept only for the albedo sheet: paint it transparent there and the glass
+        // comes through. The MR sheet is composited as before — roughness has no alpha.
+        func sheetRGBA(_ path: String?, _ fallback: Data) -> (rgb: [MLXArray], alpha: [MLXArray])? {
+            if let path, let edited = loadViewSheetAlpha(path, count: n) { return edited }
+            guard let tmp = try? writeTempPNG(fallback) else { return nil }
+            defer { try? FileManager.default.removeItem(at: tmp) }
+            return loadViewSheetAlpha(tmp.path, count: n)
+        }
+        func sheet(_ path: String?, _ fallback: Data) -> [MLXArray]? {
+            if let path, let edited = loadViewSheet(path, count: n) { return edited }
+            guard let tmp = try? writeTempPNG(fallback) else { return nil }
+            defer { try? FileManager.default.removeItem(at: tmp) }
+            return loadViewSheet(tmp.path, count: n)
+        }
+        // Straight from paintViewsPBR with no edited sheet to honour: use the arrays we
+        // already hold. Model output has no alpha, so the alpha pass is skipped outright.
+        let alb: [MLXArray], alpha: [MLXArray]?
+        let mrViews: [MLXArray]
+        if albedoSheetPath == nil, mrSheetPath == nil,
+           let a = views.albedoViews, let m = views.mrViews, a.count == n, m.count == n {
+            alb = a; mrViews = m; alpha = nil
+        } else {
+            guard let albRGBA = sheetRGBA(albedoSheetPath, views.albedoSheetPNG),
+                  let m = sheet(mrSheetPath, views.mrSheetPNG),
+                  albRGBA.rgb.count == n, m.count == n else { return nil }
+            alb = albRGBA.rgb; mrViews = m
+            // Only pay for the alpha pass when the sheet actually carries transparency.
+            alpha = albRGBA.alpha.contains { $0.min().item(Float.self) < 0.999 }
+                ? albRGBA.alpha : nil
+        }
+        let mr = mrViews
+        // MODELR_BAKE_ALPHA=0 bakes the windows opaque, ignoring any transparency painted into
+        // the view sheets. Carrying that alpha through splits the mesh into body and glass, and
+        // where the painted alpha region does not line up with the frame geometry the split
+        // tears the window surrounds apart — clean bodywork, shredded pillars. Opaque glass is
+        // the safe default for an asset that has no modelled interior behind the windows.
+        let hasAlpha = (alpha != nil)
+            && ProcessInfo.processInfo.environment["MODELR_BAKE_ALPHA"] != "0"
+
+        let R = MeshRender()
+        R.loadMesh(views.vertices, views.faces)
+        R.setUV(views.uvs, flipV: true)
+
+        onProgress?("Baking textures", 0.93)
+        let envB = ProcessInfo.processInfo.environment
+        // cos^6 is brutally peaky — a face 45° off-camera contributes ~0.09 — so anything not
+        // near-normal to a canonical axis is effectively unbaked and handed to the fill. cos^4
+        // still hides seams across six views while keeping far more of the sheet's real data.
+        let falloff = Float(envB["MODELR_BAKE_EXP"] ?? "") ?? 4
+        // The stock weights front-load heavily (side views 0.1 against the front's 1.0). That
+        // suits a convex blob whose best-conditioned view is the reference, but a car's doors,
+        // sills and wheels are seen almost only side-on, so grazing front/rear samples can win
+        // over good side ones. MODELR_VIEW_WEIGHTS="1,0.7,0.7,0.7,0.3,0.3" to rebalance.
+        let envWeights = envB["MODELR_VIEW_WEIGHTS"]?
+            .split(separator: ",").compactMap { Float($0.trimmingCharacters(in: .whitespaces)) }
+        let useWeights = weights ?? (envWeights?.count == elevs.count ? envWeights! : vw)
+        // Depth tolerance for "is this texel the surface the view actually saw". The stock
+        // 0.05 is loose against a model roughly one unit across, so an interior texel can
+        // match the body behind it and take its colour — dark flecks on lit surfaces.
+        let depthEps = Float(envB["MODELR_DEPTH_EPS"] ?? "") ?? 0.05
+        var albV = alb, mrV = mr
+        var poseElevs = elevs, poseAzims = azims
+
+        // An extra, non-canonical view: a render of the model from an angle that sees into
+        // occluded geometry (a cabin interior), completed by an image model. The six canonical
+        // views physically cannot reach those surfaces — they are occluded, not merely
+        // foreshortened — so this is the only way to give the bake real pixels there rather
+        // than a fill heuristic. Format: "<png>,<elev>,<azim>,<weight>".
+        // Several may be given, separated by ";" — one imagined view only reaches surfaces its
+        // own camera can see, so obliques from different azimuths each recover a different
+        // slice of the occluded geometry.
+        var extraWeights: [Float] = []
+        var extraFovs: [Float] = []
+        // Passed-in views first, then any from the environment (the CLI harness uses env).
+        var extras = extraViews
+        for spec in (envB["MODELR_EXTRA_VIEW"]?.split(separator: ";").map(String.init) ?? []) {
+            let f = spec.split(separator: ",").map(String.init)
+            if f.count >= 4, let e = Float(f[1]), let az = Float(f[2]), let w = Float(f[3]) {
+                extras.append(ExtraView(imagePath: f[0], elev: e, azim: az, weight: w,
+                                        fovDeg: f.count > 4 ? (Float(f[4]) ?? 0) : 0))
+            }
+        }
+        var refMasks: [MLXArray?] = Array(repeating: nil, count: elevs.count)
+        for ev in extras {
+            guard let img = loadViewSheet(ev.imagePath, count: 1)?.first else {
+                onProgress?("Reference view unreadable: \(ev.imagePath)", 0.93); continue
+            }
+            refMasks.append(PaintPipeline.backdropMask(img))
+            let e = ev.elev, az = ev.azim, w = ev.weight
+            albV.append(img)
+            // No MR for a generated view: a luminance-neutral stand-in so the extra camera
+            // cannot distort roughness/metallic.
+            mrV.append(MLX.zeros(img.shape) + 0.5)
+            poseElevs.append(e); poseAzims.append(az); extraWeights.append(w)
+            extraFovs.append(ev.fovDeg)
+        }
+        let extraWeight: Float? = extraWeights.isEmpty ? nil : extraWeights[0]
+        var alphaSet = alpha
+        if !extraWeights.isEmpty, var av = alphaSet {
+            while av.count < albV.count { av.append(MLX.ones(albV[0].shape)) }  // generated = opaque
+            alphaSet = av
+        }
+        let sets = alphaSet.map { [albV, mrV, $0] } ?? [albV, mrV]
+        let bakeWeights = useWeights + extraWeights
+        // Gate references to where the canonical views fall short. `MODELR_REF_GATE=0` restores
+        // the old behaviour of averaging them in everywhere, for comparison.
+        let gateOff = envB["MODELR_REF_GATE"] == "0"
+        let nCanon: Int? = (extraWeights.isEmpty || gateOff) ? nil : useWeights.count
+        // Canonical weight at which a reference is half suppressed. Everything the canonical
+        // pass actually painted sits orders of magnitude above it; everything it skipped is 0.
+        let rTau = Float(envB["MODELR_REF_TAU"] ?? "") ?? 1e-3
+        let rDeg = Float(envB["MODELR_REF_COS_DEG"] ?? "") ?? 65
+        let aDeg = Float(envB["MODELR_REF_ADEQ_DEG"] ?? "") ?? 65
+        let rMin = Float(envB["MODELR_REF_MIN_W"] ?? "") ?? 1e-4
+        let fovs: [Float?]? = extraFovs.contains(where: { $0 > 1 })
+            ? Array(repeating: nil, count: useWeights.count) + extraFovs.map { $0 > 1 ? $0 : nil }
+            : nil
+        var (texs, covered, adequate, faceOn) = R.bakeMulti(sets, poseElevs, poseAzims, textureSize: tex,
+                                          exp: falloff, weights: bakeWeights, eps: depthEps,
+                                          canonicalCount: nCanon, refTau: rTau, refCosThrDeg: rDeg,
+                                          adequacyDeg: aDeg, refMinWeight: rMin, viewFov: fovs,
+                                          // Set 2 is alpha — a mask, taken from the best view
+                                          // rather than blended across views.
+                                          winnerSets: alphaSet != nil ? [2] : [],
+                                          validMasks: nCanon == nil ? nil : refMasks)
+
+        // Second pass for texels the strict cutoff left empty — wheel arches and interiors are
+        // grazing in every canonical view, so they otherwise get no real data at all. Used only
+        // where the first pass found nothing, so it never dilutes a good sample.
+        if envB["MODELR_NO_RELAXED_PASS"] != "1" {
+            let anyEmpty = (covered.asType(.int32).sum().item(Int32.self)) < Int32(tex * tex)
+            if anyEmpty {
+                let relaxDeg = Float(envB["MODELR_RELAXED_DEG"] ?? "") ?? 88
+                // Canonical views only. The references already had their turn in the strict
+                // pass, and this pass exists to manufacture something for texels nothing saw —
+                // it must never end up competing with an actual photograph.
+                let nc = useWeights.count
+                let (rTexs, rCov, _, _) = R.bakeMulti(sets.map { Array($0.prefix(nc)) },
+                                                Array(poseElevs.prefix(nc)),
+                                                Array(poseAzims.prefix(nc)), textureSize: tex,
+                                                exp: falloff, weights: useWeights, eps: depthEps,
+                                                cosThrDeg: relaxDeg)
+                let use = rCov .&& (covered .!= true)                  // only where strict failed
+                let use3 = use.expandedDimensions(axis: -1)
+                for i in 0 ..< texs.count { texs[i] = MLX.where(use3, rTexs[i], texs[i]) }
+                covered = covered .|| use
+            }
+        }
+        // Un-covered texels are filled by a bounded dilation rather than the stock EDT flood,
+        // which is chart-blind and drags colour across the atlas from unrelated charts (see
+        // MeshRender.dilateFill). MODELR_FILL_LEGACY=1 restores the old behaviour for A/B;
+        // MODELR_FILL_DEBUG=1 paints the gaps magenta to show what the fill is inventing.
+        let env = ProcessInfo.processInfo.environment
+        let fillRadius = Int(env["MODELR_FILL_RADIUS"] ?? "") ?? 4
+        // One connected component per UV chart. Confines the fill so an interior pocket cannot
+        // take colour from the bodywork chart packed a couple of texels away.
+        let uvr = R.uvRasterize(tex)
+        let texPositions = uvr.0
+        let inside = uvr.2.reshaped([tex * tex]).asType(.int32).asArray(Int32.self).map { $0 != 0 }
+        let chartIDs: [Int32]? = env["MODELR_FILL_NO_CHARTS"] == "1"
+            ? nil : MeshRender.chartLabels(inside, H: tex, W: tex)
+        func fill(_ t: MLXArray) -> MLXArray {
+            if env["MODELR_FILL_DEBUG"] == "1" {
+                let mask = covered.expandedDimensions(axis: -1)              // [T,T,1]
+                let one = MLX.ones(t[0..., 0..., 0..<1].shape)
+                let magenta = concatenated([one, MLX.zeros(one.shape), one], axis: -1)
+                return MLX.where(mask, t, magenta)
+            }
+            if env["MODELR_FILL_LEGACY"] == "1" { return MeshRender.inpaint(t, covered) }
+            if env["MODELR_FILL_2D"] == "1" {
+                return MeshRender.dilateFill(t, covered, radius: fillRadius, charts: chartIDs)
+            }
+            // Default: nearest covered texel on the SURFACE, not in the atlas packing.
+            return MeshRender.surfaceFill(t, covered, positions: texPositions,
+                                          normals: env["MODELR_FILL_IGNORE_NORMALS"] == "1"
+                                                   ? nil : uvr.1,
+                                          inside: inside, gutterRadius: fillRadius,
+                                          minDot: Float(env["MODELR_FILL_MIN_DOT"] ?? "") ?? 0.2)
+        }
+        var texA = fill(texs[0]); let texM = fill(texs[1])
+        // Un-covered texels inpaint to *opaque*: a gap in coverage is missing data, not glass.
+        // Glass takes its colour from the single most face-on view instead of the blend. Two
+        // views of the same window disagree completely — one sees sky on the outside, the other
+        // sees the dashboard through it — and averaging them produces the shattered patchwork.
+        // Bodywork keeps the blend, which is what keeps it smooth.
+        let texAlpha = hasAlpha ? MeshRender.sharpenGlassAlpha(
+            MeshRender.inpaint(texs[2], covered), positions: texPositions) : nil
+        if let texAlpha {
+            // Order matters and cost a round: these have to be applied to the FILLED atlas, not
+            // to the pre-fill buffer, which nothing downstream reads any more.
+            //
+            // Glass takes its colour from the single most face-on view rather than the blend —
+            // two views of one window disagree completely, one seeing sky on the outside and the
+            // other the dashboard through it, and averaging them is the shattered patchwork.
+            let glass = (texAlpha[0..., 0..., 0] .< 0.995).expandedDimensions(axis: -1)
+            texA = MLX.where(glass, faceOn, texA)
+            texA = MeshRender.smoothGlassColour(texA, alpha: texAlpha)
+        }
+        eval(texA, texM)
+        if let p = debugPathPrefix {
+            // debug: render the texture back onto the mesh (bypasses GLB) at 3 angles
+            let dbg = [R.renderTextured(0, 20, 420, texA), R.renderTextured(0, 140, 420, texA), R.renderTextured(0, 260, 420, texA)]
+            saveRGB(concatenated(dbg, axis: 1), "\(p).rendercheck.png")
+        }
+        let albedoData = texAlpha.map { pngDataRGBA(texA, $0) } ?? pngData(texA)
+        guard let albedoPNG = albedoData, let mrPNG = pngData(texM) else { return nil }
+        // Holes, not paint: texels nothing has painted head-on are made fully transparent, so
+        // the aligner can show the reference photograph *through* the model. The user sees the
+        // photo occupying exactly the surfaces the re-bake will hand it, which is a preview of
+        // the result rather than a diagram of the gap.
+        // pngDataRGBA reads alpha from a [H,W,3] array (it uses channel 0), so match that.
+        let covA1 = adequate.expandedDimensions(axis: -1).asType(.float32)
+        // Blown-out texels count as unpainted even when a view did reach them. The paint model
+        // leaves flat near-white patches — wheel arches, sills, cabin edges — that carry no
+        // information; treating them as painted hides exactly the surfaces a reference is needed
+        // for. Only genuinely blown out values qualify (luma above 0.93, almost no saturation),
+        // Thresholds picked by measurement rather than taste: at luma 0.84 / saturation 0.12 the
+        // holes catch 88% of the flat white paint while the total hole area moves 40.7% -> 41.2%
+        // of the model, so the bodywork itself is not being eaten.
+        let cR: MLXArray = texA[0..., 0..., 0] * 0.2126
+        let cG: MLXArray = texA[0..., 0..., 1] * 0.7152
+        let cB: MLXArray = texA[0..., 0..., 2] * 0.0722
+        let cLum: MLXArray = cR + cG + cB
+        let cMax = texA.max(axis: 2), cMin = texA.min(axis: 2)
+        let cSat = (cMax - cMin) / clip(cMax, min: 1e-6, max: Float.greatestFiniteMagnitude)
+        let blown = (cLum .> (Float(envB["MODELR_COV_WHITE"] ?? "") ?? 0.84))
+            .&& (cSat .< (Float(envB["MODELR_COV_SAT"] ?? "") ?? 0.12))
+        var covA1b = MLX.where(blown.expandedDimensions(axis: -1),
+                               MLX.zeros(covA1.shape), covA1)
+        // Gutter texels belong to no triangle, so nothing ever "paints" them and they would all
+        // read as holes. Bilinear filtering samples them at every chart edge, which outlined all
+        // ~5,400 charts in magenta — every panel gap and wheel arch traced in colour. They are
+        // not surface, so they are opaque here.
+        let insideMask = uvr.2.reshaped([tex, tex, 1]).asType(.float32)
+        covA1b = MLX.where(insideMask .> 0.5, covA1b, MLX.ones(covA1b.shape))
+        let covAlpha = concatenated([covA1b, covA1b, covA1b], axis: -1)
+        // Holes are marked in the COLOUR channels, not only in alpha. SceneKit would not honour
+        // this atlas's alpha by any route tried — diffuse alpha, a `transparent` map, a texture
+        // bound to a shader argument, premultiplied or straight — so relying on it left the
+        // cabin rendering solid. Magenta is unmistakable and needs no transparency to survive.
+        let magenta = concatenated([MLX.ones(covA1b.shape), MLX.zeros(covA1b.shape),
+                                    MLX.ones(covA1b.shape)], axis: -1)
+        let covRGB = MLX.where(covAlpha .> 0.5, texA, magenta)
+        // Written opaque. pngDataRGBA premultiplies, so magenta in a zero-alpha texel would be
+        // multiplied straight back to black — the mask has to live in the colour alone.
+        let coveragePNG = pngData(covRGB)
+        var uvOut = views.uvs
+        for i in 0..<(uvOut.count / 2) { uvOut[i*2+1] = 1 - uvOut[i*2+1] }          // v-flip → viewer top-left
+        onProgress?("Done", 1.0)
+        return PBRPaintResult(vertices: views.vertices, faces: views.faces, uvs: uvOut,
+                              albedoPNG: albedoPNG, metallicRoughnessPNG: mrPNG,
+                              coveragePNG: coveragePNG)
+    }
+
+    private func writeTempPNG(_ data: Data) throws -> URL {
+        let u = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mvsheet-\(UUID().uuidString).png")
+        try data.write(to: u)
+        return u
+    }
+
+    /// View-generation half of a PBR run: everything up to and including super-resolution.
+    /// Stops before the atlas bake and hands back the flat view sheets plus the unwrapped
+    /// geometry they belong to. Feed the result to `bakePBR`, optionally swapping in edited
+    /// sheets. Splitting here is what makes a Shape → Paint → Bake flow possible: the expensive
+    /// diffusion happens once, and re-baking an edited sheet costs seconds.
+    public func paintViewsPBR(mesh: LoadedMesh, imagePath: String, guidance: Float = 3.0,
+                              seed: UInt64 = 0,
+                              debugPathPrefix: String? = nil,
+                              onProgress: ((String, Float) -> Void)? = nil,
+                              isCancelled: () -> Bool = { false },
+                              onViews: ((Data) -> Void)? = nil) throws -> PaintViewsResult? {
         onProgress?("Loading paint model", 0.02)
         let (vae, wrap, dino, srModel) = try loadPBR()
         if isCancelled() { return nil }
@@ -269,20 +629,90 @@ public final class PaintPipeline {
         }
         if isCancelled() { return nil }
 
-        onProgress?("Baking textures", 0.93)
-        let (texs, covered) = R.bakeMulti([alb, mr], elevs, azims, textureSize: tex, weights: vw)
-        let texA = MeshRender.inpaint(texs[0], covered), texM = MeshRender.inpaint(texs[1], covered)
-        eval(texA, texM)
-        if let p = debugPathPrefix {
-            // debug: render the texture back onto the mesh (bypasses GLB) at 3 angles
-            let dbg = [R.renderTextured(0, 20, 420, texA), R.renderTextured(0, 140, 420, texA), R.renderTextured(0, 260, 420, texA)]
-            saveRGB(concatenated(dbg, axis: 1), "\(p).rendercheck.png")
+        onProgress?("Encoding views", 0.92)
+        guard let albSheet = pngData(concatenated(alb, axis: 1)),
+              let mrSheet = pngData(concatenated(mr, axis: 1)) else { return nil }
+        return PaintViewsResult(vertices: V, faces: uw.indices, uvs: uw.uvs,
+                                albedoSheetPNG: albSheet, mrSheetPNG: mrSheet, viewCount: N,
+                                albedoViews: alb, mrViews: mr)
+    }
+}
+
+extension PaintPipeline {
+    /// 1 on the object, 0 on the backdrop, for a reference photograph.
+    ///
+    /// The backdrop is what is both border-coloured (or studio white) and connected to the
+    /// image border. That covers both things that must go — the photo's own
+    /// studio background and the flat canvas the import is letterboxed onto to square it —
+    /// without keying a colour. Keying mid grey by value, which is what this did first, deletes
+    /// the door cards, console and grey trim: exactly the surfaces a reference is added to
+    /// supply. Flooding from the border cannot, because those are not connected to it.
+    ///
+    /// Eroded slightly at the end: the object's edge pixels are anti-aliased against the
+    /// backdrop and carry its colour.
+    static func backdropMask(_ img: MLXArray, tol: Float = 0.06, erode: Int = 3) -> MLXArray {
+        let h = img.dim(0), w = img.dim(1)
+        let px = img.asType(.float32).asArray(Float.self)
+
+        // Median colour around the border: whatever the image is matted onto.
+        var edge = [[Float]](repeating: [], count: 3)
+        for x in stride(from: 0, to: w, by: 4) {
+            for y in [0, h - 1] { for c in 0..<3 { edge[c].append(px[(y*w + x)*3 + c]) } }
         }
-        guard let albedoPNG = pngData(texA), let mrPNG = pngData(texM) else { return nil }
-        var uvOut = uw.uvs
-        for i in 0..<(uvOut.count / 2) { uvOut[i*2+1] = 1 - uvOut[i*2+1] }          // v-flip → viewer top-left
-        onProgress?("Done", 1.0)
-        return PBRPaintResult(vertices: V, faces: uw.indices, uvs: uvOut,
-                              albedoPNG: albedoPNG, metallicRoughnessPNG: mrPNG)
+        for y in stride(from: 0, to: h, by: 4) {
+            for x in [0, w - 1] { for c in 0..<3 { edge[c].append(px[(y*w + x)*3 + c]) } }
+        }
+        let med = (0..<3).map { c -> Float in
+            let v = edge[c].sorted(); return v.isEmpty ? 1 : v[v.count / 2]
+        }
+
+        // A pixel may be backdrop if it matches that colour, or is near-white and unsaturated
+        // (a studio background). Both tests are against fixed values, never against the
+        // neighbour that reached them: a relative test walks up a gradient and consumes the
+        // whole car, which is what a first attempt at this did — it kept 0.7% of one photo.
+        func candidate(_ i: Int) -> Bool {
+            let r = px[i*3], g = px[i*3+1], b = px[i*3+2]
+            if abs(r - med[0]) <= tol && abs(g - med[1]) <= tol && abs(b - med[2]) <= tol {
+                return true
+            }
+            let luma = r * 0.2126 + g * 0.7152 + b * 0.0722
+            let mx = max(r, max(g, b)), mn = min(r, min(g, b))
+            return luma > 0.90 && (mx - mn) / max(mx, 1e-6) < 0.08
+        }
+
+        // Backdrop is what is BOTH a candidate and reachable from the border. Interior trim that
+        // happens to sit in the same colour range survives, because it is walled off by the car.
+        var bg = [Bool](repeating: false, count: h * w)
+        var queue = [Int](); queue.reserveCapacity(h * w / 4)
+        func seed(_ i: Int) { if !bg[i], candidate(i) { bg[i] = true; queue.append(i) } }
+        for x in 0..<w { seed(x); seed((h - 1) * w + x) }
+        for y in 0..<h { seed(y * w); seed(y * w + w - 1) }
+        var qi = 0
+        while qi < queue.count {
+            let i = queue[qi]; qi += 1
+            let y = i / w, x = i % w
+            for (dy, dx) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                let ny = y + dy, nx = x + dx
+                guard ny >= 0, ny < h, nx >= 0, nx < w else { continue }
+                let j = ny * w + nx
+                if !bg[j], candidate(j) { bg[j] = true; queue.append(j) }
+            }
+        }
+
+        var keep = bg.map { $0 ? Float(0) : Float(1) }
+        for _ in 0 ..< max(0, erode) {
+            var next = keep
+            for y in 0..<h {
+                for x in 0..<w where keep[y*w + x] > 0 {
+                    if (y > 0 && keep[(y-1)*w + x] == 0) || (y < h-1 && keep[(y+1)*w + x] == 0)
+                        || (x > 0 && keep[y*w + x-1] == 0) || (x < w-1 && keep[y*w + x+1] == 0) {
+                        next[y*w + x] = 0
+                    }
+                }
+            }
+            keep = next
+        }
+        let m = MLXArray(keep, [h, w, 1])
+        return concatenated([m, m, m], axis: 2)
     }
 }

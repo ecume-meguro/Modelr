@@ -38,7 +38,9 @@ final class ShapeEngine {
     /// Mirrors the old `GenerationService.run` contract: callbacks may arrive on a
     /// background queue; the caller hops to the main actor.
     @discardableResult
-    func generate(imageURL: URL, output: URL, weightsURL: URL, quantize: Int,
+    /// `extraImageURLs` are additional views for the multiview checkpoint, in view order after
+    /// the main image. Ignored by the single-image models, which condition on one view only.
+    func generate(imageURL: URL, extraImageURLs: [URL] = [], output: URL, weightsURL: URL, quantize: Int,
                   steps: Int, guidance: Float, resolution: Int, seed: UInt64,
                   onProgress: @escaping (String, String?, Double?) -> Void,
                   onPreview: @escaping (URL) -> Void,
@@ -50,6 +52,7 @@ final class ShapeEngine {
             guard let cg = Self.loadCGImage(imageURL) else {
                 onFinish(.failure("Couldn't read the input image.")); return
             }
+            let images = [cg] + extraImageURLs.compactMap { Self.loadCGImage($0) }
 
             // Reuse the resident model when the weights + quantization match.
             let key = "\(weightsURL.path)#\(quantize)"
@@ -73,7 +76,7 @@ final class ShapeEngine {
 
             let dir = output.deletingLastPathComponent()
             var previewIdx = 0
-            let mesh = gen.generate(image: cg, steps: steps, guidance: guidance, seed: seed,
+            let mesh = gen.generate(images: images, steps: steps, guidance: guidance, seed: seed,
                                     resolution: resolution, octree: true,
                                     isCancelled: { run.cancelled },
                                     onPreview: { m in

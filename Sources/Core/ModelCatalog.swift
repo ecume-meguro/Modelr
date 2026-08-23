@@ -4,6 +4,7 @@ import Foundation
 enum ModelID: String, CaseIterable, Codable, Hashable, Identifiable, Sendable {
     case shapeSmall = "shape-small"
     case shapeLarge = "shape-large"
+    case shapeMultiview = "shape-multiview"
     case paintSmall = "paint-small"
     case paintLarge = "paint-large"
 
@@ -14,7 +15,7 @@ enum ModelID: String, CaseIterable, Codable, Hashable, Identifiable, Sendable {
 
     var kind: EngineKind {
         switch self {
-        case .shapeSmall, .shapeLarge: return .shape
+        case .shapeSmall, .shapeLarge, .shapeMultiview: return .shape
         case .paintSmall, .paintLarge: return .paint
         }
     }
@@ -22,10 +23,16 @@ enum ModelID: String, CaseIterable, Codable, Hashable, Identifiable, Sendable {
 
 /// One file in a model's weight bundle. Download correctness = size + sha256 match.
 struct CatalogFile: Hashable, Sendable {
-    /// Path relative to both the HF repo root and the local install dir.
+    /// Path relative to the HF repo root.
     let path: String
     let bytes: Int64
     let sha256: String
+    /// Where the file lands locally, when that differs from its path in the repo. Tencent's
+    /// checkpoints sit in a versioned subfolder; the engine expects the checkpoint and its
+    /// config.yaml side by side at the install root.
+    var localPath: String? = nil
+
+    var installName: String { localPath ?? path }
 }
 
 struct CatalogModel: Sendable {
@@ -82,6 +89,24 @@ enum ModelCatalog {
                             sha256: "4712421fe32d57c678be3be2b608acdb8871985f0b81646a883d136abc63feb7"),
                 CatalogFile(path: "model.fp16.safetensors", bytes: 4_930_777_530,
                             sha256: "5ee5a81e4df08a1c65b79910bf5b145a90376e526794f4607a4d5d068d62f269"),
+            ]),
+        CatalogModel(
+            id: .shapeMultiview,
+            displayName: "Shape · Multiview",
+            detail: "Hunyuan3D 2mv · 1.1B · up to 4 views · best geometry",
+            // Tencent's own weights, not a re-upload: the checkpoint layout this engine expects
+            // (model. / vae. / conditioner.main_image_encoder.model.) is what they already ship,
+            // and the DiT dimensions match the single-image model exactly. Only the conditioning
+            // differs. Digests are the repo's LFS oids.
+            repo: "tencent/Hunyuan3D-2mv",
+            revision: nil,
+            files: [
+                CatalogFile(path: "hunyuan3d-dit-v2-mv/config.yaml", bytes: 1_608,
+                            sha256: "315fd5bf601d1d103130b9fda202f1bd28eda495e68ed1621bc823d5519c5e5b",
+                            localPath: "config.yaml"),
+                CatalogFile(path: "hunyuan3d-dit-v2-mv/model.fp16.safetensors", bytes: 4_928_151_562,
+                            sha256: "d36f5881bcdc56726b73e517cd444c13c60732431622da7268145355c8d38e9c",
+                            localPath: "model.fp16.safetensors"),
             ]),
         CatalogModel(
             id: .paintSmall,

@@ -80,6 +80,9 @@ struct ProjectDetailView: View {
 
     private var imagePane: some View {
         ZStack(alignment: .topTrailing) {
+            if project.shapeModel == .multiview {
+                MultiviewDropView(project: project)
+            } else {
             ImageDropView(imageURL: store.imageURL(for: project),
                           reloadKey: store.inputVersion(project.id)) { dropped in
                 switch dropped {
@@ -104,6 +107,7 @@ struct ProjectDetailView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
+            }
             if let importError = store.importErrors[project.id] {
                 VStack {
                     Spacer()
@@ -122,7 +126,53 @@ struct ProjectDetailView: View {
                 .frame(maxWidth: .infinity, alignment: .center)
             }
         }
+        .overlay(alignment: .topLeading) { sourceExportOverlay }
         .animation(.snappy(duration: 0.2), value: project.removeBackground)
+    }
+
+    /// Get the imported image back out. Offers both the original as dropped and the processed
+    /// version the model was actually fed — they differ once background removal has run, and
+    /// which one you want depends on whether you are re-importing or debugging the mask.
+    @ViewBuilder
+    private var sourceExportOverlay: some View {
+        if let source = store.sourceImageURL(for: project) ?? store.imageURL(for: project) {
+            Menu {
+                Button {
+                    saveImage(source, suggested: "\(project.name)-source.png")
+                } label: { Label("Export Original Image…", systemImage: "square.and.arrow.up") }
+                if let processed = store.imageURL(for: project), processed != source {
+                    Button {
+                        saveImage(processed, suggested: "\(project.name)-processed.png")
+                    } label: { Label("Export Processed Image…", systemImage: "person.crop.rectangle.badge.xmark") }
+                }
+                Divider()
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([source])
+                } label: { Label("Reveal in Finder", systemImage: "folder") }
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 28, height: 28)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .strokeBorder(.white.opacity(0.12)))
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Export the image this project was made from")
+            .padding(14)
+        }
+    }
+
+    private func saveImage(_ url: URL, suggested: String) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = suggested
+        panel.allowedContentTypes = [.png]
+        guard panel.runModal() == .OK, let dest = panel.url else { return }
+        try? FileManager.default.removeItem(at: dest)
+        try? FileManager.default.copyItem(at: url, to: dest)
     }
 
     /// The paint process: the streaming 6-view grid while generating, then the
@@ -138,11 +188,24 @@ struct ProjectDetailView: View {
                     PointCloud().frame(width: 130, height: 130)
                 }
             } else if let textured = texturedContent {
-                MeshViewer(content: textured)
+                // Keyed on rebakeTick: a re-bake overwrites the textures in place, so the
+                // URLs are unchanged and nothing else would tell SwiftUI to reload them.
+                MeshViewer(content: textured).id(runtime.rebakeTick)
             }
             paintStatusOverlay
             exportOverlay(meshURL: paintExportSource?.mesh, texture: paintExportSource?.texture,
                           metallicRoughness: paintExportSource?.mr)
+            sheetOverlay
+            referenceOverlay
+        }
+        .sheet(isPresented: $showEraser) {
+            MeshEraserView(project: project).environment(runtime).environment(store)
+        }
+        .sheet(isPresented: $showGlassEditor) {
+            GlassEditView(project: project).environment(runtime).environment(store)
+        }
+        .sheet(isPresented: $showingReferenceViews) {
+            ReferenceViewsView(project: project)
         }
     }
 
@@ -150,6 +213,122 @@ struct ProjectDetailView: View {
     private var texturedContent: ViewerContent? {
         guard project.currentGeneration?.kind == .paint else { return nil }
         return store.currentViewerContent(for: project)
+    }
+
+    /// Export / re-bake the flat six-view sheets this paint run left behind. Only shown for
+    /// PBR versions painted by a build that persists them — editing the albedo sheet and
+    /// re-baking is the way to fix surfaces the model had no reference for (roof, underside),
+    /// and it costs seconds because the bake loads no model weights.
+    @State private var showingReferenceViews = false
+    @State private var showGlassEditor = false
+    @State private var showEraser = false
+
+    /// Its own button rather than an item inside the sheets menu: adding your own photographs
+    /// applies to any painted generation, not just ones that happen to have view sheets, and
+    /// burying it two levels down made it undiscoverable.
+    @ViewBuilder
+    private var referenceOverlay: some View {
+        if !paintJob.isRunning, project.currentGeneration?.kind == .paint {
+            let count = runtime.referenceViews(for: project.id).count
+            VStack {
+                HStack {
+                    Spacer().frame(width: 40)      // clears the sheets menu button
+                    Button {
+                        showingReferenceViews = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "photo.on.rectangle.angled")
+                                .font(.system(size: 12, weight: .semibold))
+                            if count > 0 {
+                                Text("\(count)").font(.system(size: 11, weight: .semibold))
+                                    .monospacedDigit()
+                            }
+                        }
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, count > 0 ? 8 : 0)
+                        .frame(minWidth: 28, minHeight: 28)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .strokeBorder(.white.opacity(0.12)))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Reference views — add photos from other angles and align them")
+                    Spacer()
+                }
+                Spacer()
+            }
+            .padding(12)
+        }
+    }
+
+    @ViewBuilder
+    private var sheetOverlay: some View {
+        if !paintJob.isRunning, let sheets = runtime.sheetURLs(for: project.id) {
+            let state = runtime.rebakeStates[project.id] ?? .idle
+            VStack {
+                HStack {
+                    Menu {
+                        Button {
+                            NSWorkspace.shared.activateFileViewerSelecting([sheets.albedo])
+                        } label: { Label("Reveal View Sheets", systemImage: "folder") }
+                        Button {
+                            NSWorkspace.shared.open(sheets.albedo)
+                        } label: { Label("Open Albedo Sheet", systemImage: "photo") }
+                        Divider()
+                        // The whole finishing sequence, in the only order that works: bake,
+                        // cut the glass to the alpha it just wrote, then flatten it.
+                        Button {
+                            runtime.requestRebakeAndFinish(project.id)
+                        } label: {
+                            Label("Re-bake & Finish Glass", systemImage: "wand.and.stars")
+                        }
+                        Button {
+                            runtime.requestRebake(project.id)
+                        } label: { Label("Re-bake from Sheets", systemImage: "arrow.triangle.2.circlepath") }
+                        Button {
+                            // Top/bottom raised off 0.05 — helps where the top view competes
+                            // with a grazing side view (windscreen header, shoulder line).
+                            runtime.requestRebake(project.id, weights: [1, 0.1, 0.5, 0.1, 0.5, 0.5])
+                        } label: { Label("Re-bake, Favour Top & Bottom", systemImage: "arrow.up.square") }
+                        Divider()
+                        Button {
+                            runtime.finishGlass(project.id)
+                        } label: { Label("Finish Glass (no re-bake)", systemImage: "sparkles") }
+                        Button {
+                            showGlassEditor = true
+                        } label: { Label("Select Glass…", systemImage: "square.on.square.dashed") }
+                        Button {
+                            showEraser = true
+                        } label: { Label("Erase Geometry…", systemImage: "eraser") }
+                        if runtime.originalPaintURLs(project.id) != nil {
+                            Divider()
+                            Button {
+                                runtime.resetToOriginalPaint(project.id)
+                            } label: {
+                                Label("Reset to Original Paint",
+                                      systemImage: "arrow.uturn.backward")
+                            }
+                        }
+                    } label: {
+                        Image(systemName: state == .running ? "hourglass" : "square.grid.3x1.below.line.grid.1x2")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .frame(width: 28, height: 28)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .strokeBorder(.white.opacity(0.12)))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .disabled(state == .running)
+                    .help("View sheets — export to edit, then re-bake")
+                    Spacer()
+                }
+                Spacer()
+            }
+            .padding(12)
+        }
     }
 
     /// The textured mesh + maps to export from the paint viewport (nil while painting).

@@ -33,7 +33,7 @@ enum ModelStore {
     static func isInstalled(_ model: ModelID) -> Bool {
         let dir = installDir(for: model)
         return ModelCatalog.model(model).files.allSatisfy {
-            fileSize(dir.appendingPathComponent($0.path)) == $0.bytes
+            fileSize(dir.appendingPathComponent($0.installName)) == $0.bytes
         }
     }
 
@@ -41,7 +41,7 @@ enum ModelStore {
     static func bytesOnDisk(_ model: ModelID) -> Int64 {
         let dir = installDir(for: model)
         return ModelCatalog.model(model).files.reduce(0) {
-            $0 + (fileSize(dir.appendingPathComponent($1.path)) ?? 0)
+            $0 + (fileSize(dir.appendingPathComponent($1.installName)) ?? 0)
         }
     }
 

@@ -6,6 +6,9 @@ struct ContentView: View {
     @Environment(AppRuntime.self) private var runtime
     @Environment(ProjectStore.self) private var store
     @Environment(\.openSettings) private var openSettings
+    /// Project being renamed (drives the prompt); nil when no rename is in flight.
+    @State private var renaming: Project.ID?
+    @State private var renameDraft = ""
 
     var body: some View {
         @Bindable var store = store
@@ -15,6 +18,10 @@ struct ContentView: View {
                     ProjectRow(project: project)
                         .tag(project.id)
                         .contextMenu {
+                            Button("Rename…") {
+                                renameDraft = project.name
+                                renaming = project.id
+                            }
                             Button("Delete", role: .destructive) {
                                 runtime.deleteProject(project.id)
                             }
@@ -22,6 +29,17 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("Projects")
+            .alert("Rename Project", isPresented: Binding(
+                get: { renaming != nil },
+                set: { if !$0 { renaming = nil } }
+            )) {
+                TextField("Name", text: $renameDraft)
+                Button("Cancel", role: .cancel) { renaming = nil }
+                Button("Rename") {
+                    if let id = renaming { store.rename(id, to: renameDraft) }
+                    renaming = nil
+                }
+            }
             .navigationSplitViewColumnWidth(min: 180, ideal: 220)
             .toolbar {
                 ToolbarItem {

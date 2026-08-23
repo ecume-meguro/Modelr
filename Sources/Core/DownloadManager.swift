@@ -51,11 +51,11 @@ final class DownloadManager: @unchecked Sendable {
     }
 
     private func finalURL(_ model: ModelID, _ file: CatalogFile) -> URL {
-        installDir(for: model).appendingPathComponent(file.path)
+        installDir(for: model).appendingPathComponent(file.installName)
     }
 
     private func partialURL(_ model: ModelID, _ file: CatalogFile) -> URL {
-        installDir(for: model).appendingPathComponent(file.path + ".partial")
+        installDir(for: model).appendingPathComponent(file.installName + ".partial")
     }
 
     private static func fileSize(_ url: URL) -> Int64? {
@@ -318,7 +318,7 @@ final class DownloadManager: @unchecked Sendable {
             defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
 
             for file in cat.files {                        // size validation first
-                let src = folder.appendingPathComponent(file.path)
+                let src = folder.appendingPathComponent(file.installName)
                 guard Self.fileSize(src) == file.bytes else {
                     emit(.importWeightsFinished(
                         model, error: "\(file.path) is missing or has the wrong size."))
@@ -327,7 +327,7 @@ final class DownloadManager: @unchecked Sendable {
             }
             do {
                 for file in cat.files {
-                    let src = folder.appendingPathComponent(file.path)
+                    let src = folder.appendingPathComponent(file.installName)
                     let dst = finalURL(model, file)
                     try fm.createDirectory(at: dst.deletingLastPathComponent(),
                                            withIntermediateDirectories: true)
