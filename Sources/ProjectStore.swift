@@ -133,18 +133,26 @@ final class ProjectStore {
         let dir = folder(for: project.id)
         let mesh = dir.appendingPathComponent(gen.meshFileName)
         guard FileManager.default.fileExists(atPath: mesh.path) else { return nil }
-        if gen.kind == .paint, let texName = gen.paintedTextureFileName {
-            let tex = dir.appendingPathComponent(texName)
-            if FileManager.default.fileExists(atPath: tex.path) {
-                // PBR version: hand the viewer the albedo + metallic-roughness pair
-                // for physically-based lighting; Color versions stay flat-textured.
-                if let mrName = gen.paintedMRFileName {
-                    let mr = dir.appendingPathComponent(mrName)
-                    if FileManager.default.fileExists(atPath: mr.path) {
-                        return .pbrMesh(mesh, albedo: tex, metallicRoughness: mr)
+        if gen.kind == .paint {
+            let meshFile = gen.paintedMeshFileName ?? gen.meshFileName
+            let stem = meshFile.replacingOccurrences(of: ".tmesh", with: "")
+            let reskinMesh = dir.appendingPathComponent("\(stem)_reskin.tmesh")
+            let reskinTex = dir.appendingPathComponent("\(stem)_reskin_texture.png")
+            if FileManager.default.fileExists(atPath: reskinMesh.path),
+               FileManager.default.fileExists(atPath: reskinTex.path) {
+                return .texturedMesh(reskinMesh, reskinTex)
+            }
+            if let texName = gen.paintedTextureFileName {
+                let tex = dir.appendingPathComponent(texName)
+                if FileManager.default.fileExists(atPath: tex.path) {
+                    if let mrName = gen.paintedMRFileName {
+                        let mr = dir.appendingPathComponent(mrName)
+                        if FileManager.default.fileExists(atPath: mr.path) {
+                            return .pbrMesh(mesh, albedo: tex, metallicRoughness: mr)
+                        }
                     }
+                    return .texturedMesh(mesh, tex)
                 }
-                return .texturedMesh(mesh, tex)
             }
         }
         return .mesh(mesh)

@@ -1,9 +1,9 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
     name: "Hy3DMLX",
-    platforms: [.macOS(.v14), .iOS(.v17)],
+    platforms: [.macOS(.v26), .iOS(.v18)],
     products: [
         .library(name: "Hy3DMLX", targets: ["Hy3DMLX"]),
     ],

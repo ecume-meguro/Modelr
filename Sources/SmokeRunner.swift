@@ -310,18 +310,8 @@ enum SmokeRunner {
         }
         // CGWindowListCreateImageFromArray wants raw window IDs in the CFArray
         // (not boxed numbers); first element = topmost, so the sheet leads.
-        var rawIDs = windowIDs.reversed().map { UnsafeRawPointer(bitPattern: UInt($0)) }
-        let idArray = CFArrayCreate(kCFAllocatorDefault, &rawIDs, rawIDs.count, nil)
-        var cg = idArray.flatMap {
-            CGImage(windowListFromArrayScreenBounds: .null, windowArray: $0,
-                    imageOption: [.boundsIgnoreFraming, .bestResolution])
-        }
-        if cg == nil {
-            cg = CGWindowListCreateImage(.null, .optionIncludingWindow,
-                                         CGWindowID(window.windowNumber),
-                                         [.boundsIgnoreFraming, .bestResolution])
-        }
-        if cg == nil, let view = window.contentView,
+        var cg: CGImage? = nil
+        if let view = window.contentView,
            let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
             view.cacheDisplay(in: view.bounds, to: rep)
             cg = rep.cgImage

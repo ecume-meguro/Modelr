@@ -2,7 +2,7 @@ name: Modelr
 options:
   bundleIdPrefix: com.zimeng
   deploymentTarget:
-    macOS: "14.0"
+    macOS: "26.0"
   createIntermediateGroups: true
 
 packages:
@@ -37,7 +37,7 @@ targets:
   Modelr:
     type: application
     platform: macOS
-    deploymentTarget: "14.0"
+    deploymentTarget: "26.0"
     sources:
       - Sources
       - Resources/Assets.xcassets
@@ -63,7 +63,7 @@ targets:
   ModelrTests:
     type: bundle.unit-test
     platform: macOS
-    deploymentTarget: "14.0"
+    deploymentTarget: "26.0"
     sources:
       - Tests
       - Sources/Core

@@ -300,6 +300,14 @@ struct ProjectDetailView: View {
                         Button {
                             showEraser = true
                         } label: { Label("Erase Geometry…", systemImage: "eraser") }
+                        Divider()
+                        Button {
+                            runtime.reskinAndExport(project.id)
+                        } label: {
+                            Label("Reskin and Generate Windows from Alpha",
+                                  systemImage: "cube.transparent")
+                        }
+                        .disabled((runtime.reskinStates[project.id] ?? .idle) == .running)
                         if runtime.originalPaintURLs(project.id) != nil {
                             Divider()
                             Button {
@@ -310,7 +318,7 @@ struct ProjectDetailView: View {
                             }
                         }
                     } label: {
-                        Image(systemName: state == .running ? "hourglass" : "square.grid.3x1.below.line.grid.1x2")
+                        Image(systemName: (state == .running || (runtime.reskinStates[project.id] ?? .idle) == .running) ? "hourglass" : "square.grid.3x1.below.line.grid.1x2")
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(.primary)
                             .frame(width: 28, height: 28)

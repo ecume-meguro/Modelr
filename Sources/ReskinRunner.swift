@@ -48,7 +48,7 @@ enum ReskinRunner {
             }
         }
 
-        let res = Int(ProcessInfo.processInfo.environment["MODELR_RESKIN_RES"] ?? "") ?? 256
+        let res = Int(ProcessInfo.processInfo.environment["MODELR_RESKIN_RES"] ?? "") ?? 512
         print("\(project.name): wrapping at \(res)…")
         guard let skinRaw = Reskin.wrap(vertices: src.vertices, faces: src.faces, resolution: res)
         else { print("FAIL wrap"); return }
@@ -246,19 +246,60 @@ enum ReskinRunner {
                 .appendingPathComponent("\(safe.isEmpty ? "model" : safe).glb").path
         }
         if let glbPath, let texName = gen.paintedTextureFileName {
-            // Paint straight from the sheets: the sheet is the texture, and the UVs are just
-            // where each face lands in the view that owns it.
             let flat = GlassSheet.flatURL(forSheet: sheetURL)
+            let flatSheet = flat
+            let atlasSize = Int(ProcessInfo.processInfo.environment["MODELR_SKIN_ATLAS"] ?? "")
+                ?? 8192
+
+            // Chart-based UV unwrap: large connected charts with shared texels.
+            // This is the default path when sheets exist — no shimmer, proper mip filtering.
+            let useCharts = ProcessInfo.processInfo.environment["MODELR_SKIN_BAKE"] != "1"
+            if useCharts, let texName = gen.paintedTextureFileName {
+                print("  chart unwrap at \(atlasSize)px…")
+                if let unwrapped = ChartUnwrap.unwrap(vertices: out.vertices, normals: out.normals,
+                                                      faces: out.faces, atlas: atlasSize) {
+                    print(String(format: "  %d charts, %d faces -> %d verts",
+                                 unwrapped.charts, unwrapped.faces.count / 3,
+                                 unwrapped.vertices.count / 3))
+                    let atlasURL = outDir.appendingPathComponent("skin_chart_atlas.png")
+                    let baked: URL? = SkinBake.bakeChartsFromOriginal(
+                            vertices: unwrapped.vertices, normals: unwrapped.normals,
+                            uvs: unwrapped.uvs, faces: unwrapped.faces,
+                            original: (src.vertices, src.normals, src.uvs, src.faces),
+                            originalTexture: dir.appendingPathComponent(texName),
+                            atlas: atlasSize, to: atlasURL)
+                    if let baked {
+                        var cglass = [Bool](repeating: false, count: unwrapped.faces.count / 3)
+                        for f in 0 ..< cglass.count {
+                            let orig = unwrapped.parent[f]
+                            if orig < glass.count { cglass[f] = glass[orig] }
+                        }
+                        let url = outDir.appendingPathComponent("skin_chart.tmesh")
+                        _ = MeshCut.save(vertices: unwrapped.vertices, normals: unwrapped.normals,
+                                         uvs: unwrapped.uvs, faces: unwrapped.faces, to: url)
+                        GlassSelection(mask: cglass).save(forMesh: url)
+                        GlassClean.Opacity.save(colour: GlassClean.defaultTint,
+                                                alpha: GlassClean.opacity, forMesh: url)
+                        do {
+                            try MeshExporter.export(meshURL: url, texture: baked,
+                                                    metallicRoughness: nil, format: .glb,
+                                                    to: URL(fileURLWithPath: glbPath))
+                            let size = (try? FileManager.default
+                                .attributesOfItem(atPath: glbPath)[.size]) as? Int ?? 0
+                            print(String(format: "  chart-baked %dx%d atlas, %d charts, "
+                                                 + "exported %.1f MB -> %@",
+                                         atlasSize, atlasSize, unwrapped.charts,
+                                         Double(size) / 1_048_576, glbPath))
+                        } catch { print("  chart export FAILED — \(error)") }
+                        return
+                    } else { print("  chart bake failed, falling through…") }
+                } else { print("  chart unwrap failed (atlas too small?), falling through…") }
+            }
+
+            // Legacy per-triangle bake path (MODELR_SKIN_BAKE=1).
             let sheetTex = ProcessInfo.processInfo.environment["MODELR_SHEET_PAINT"] == "1"
                 && FileManager.default.fileExists(atPath: flat.path)
                 ? flat : dir.appendingPathComponent(texName)
-            // Use the properly baked atlas, transferred one chart per triangle.
-            //
-            // The sheet-projection trick paints from six renders and shows every seam where the
-            // owning view changes. The baked atlas has none of that — it is what the pipeline
-            // produces normally — and the only reason transferring it failed before was that a
-            // per-vertex transfer let a triangle straddle two charts. Per triangle it cannot.
-            // A real atlas for this mesh, filled from the existing paint.
             if ProcessInfo.processInfo.environment["MODELR_SKIN_BAKE"] == "1" {
                 // Split vertices per face first: each triangle owns its own cell in the atlas,
                 // so it cannot share a vertex — and therefore a UV — with its neighbours.
@@ -276,10 +317,30 @@ enum ReskinRunner {
                     sglass.append(f < glass.count && glass[f])
                 }
                 let atlasURL = outDir.appendingPathComponent("skin_atlas.png")
-                let atlasSize = Int(ProcessInfo.processInfo.environment["MODELR_SKIN_ATLAS"] ?? "")
-                    ?? 4096
                 let cellSize = Int(ProcessInfo.processInfo.environment["MODELR_SKIN_CELL"] ?? "")
                     ?? 8
+                let fromSheets = ProcessInfo.processInfo.environment["MODELR_BAKE_SHEETS"] == "1"
+                if fromSheets, FileManager.default.fileExists(atPath: flatSheet.path),
+                   let baked = SkinBake.bakeFromSheets(vertices: sv, normals: sn, faces: sf,
+                                                       sheet: flatSheet, to: atlasURL,
+                                                       atlas: atlasSize, cell: cellSize) {
+                    let url = outDir.appendingPathComponent("skin_baked.tmesh")
+                    _ = MeshCut.save(vertices: sv, normals: sn, uvs: baked.uvs, faces: sf, to: url)
+                    GlassSelection(mask: sglass).save(forMesh: url)
+                    GlassClean.Opacity.save(colour: GlassClean.defaultTint,
+                                            alpha: GlassClean.opacity, forMesh: url)
+                    do {
+                        try MeshExporter.export(meshURL: url, texture: baked.texture,
+                                                metallicRoughness: nil, format: .glb,
+                                                to: URL(fileURLWithPath: glbPath))
+                        let size = (try? FileManager.default
+                            .attributesOfItem(atPath: glbPath)[.size]) as? Int ?? 0
+                        print(String(format: "  baked from sheets: %dx%d atlas (%d px/tri), "
+                                             + "%.1f MB -> %@", baked.size, baked.size,
+                                     baked.cell * baked.cell, Double(size) / 1_048_576, glbPath))
+                    } catch { print("  export FAILED — \(error)") }
+                    return
+                }
                 if let baked = SkinBake.bake(vertices: sv, faces: sf,
                                              original: (src.vertices, src.normals, src.uvs, src.faces),
                                              originalTexture: dir.appendingPathComponent(texName),

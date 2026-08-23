@@ -359,6 +359,218 @@ final class AppRuntime {
         requestRebake(id, weights: weights)
     }
 
+    private(set) var reskinStates: [Project.ID: RebakeState] = [:]
+
+    private var reskinAfterRebake: Set<Project.ID> = []
+
+    func reskinAndExport(_ id: Project.ID) {
+        guard reskinStates[id] != .running else { return }
+        guard let project = store.project(id),
+              let gen = project.generations.last(where: { $0.kind == .paint }) else { return }
+        let dir = store.folder(for: id)
+        let meshFile = gen.paintedMeshFileName ?? gen.meshFileName
+        let stem = meshFile.replacingOccurrences(of: ".tmesh", with: "")
+        let fm = FileManager.default
+        for ext in ["_reskin.tmesh", "_reskin_texture.png", "_reskin_glass.bin", "_reskin_glass.opacity"] {
+            try? fm.removeItem(at: dir.appendingPathComponent(stem + ext))
+        }
+        rebakeTick += 1
+        guard let sheets = sheetURLs(for: id) else {
+            reskinStates[id] = .idle
+            return
+        }
+        if let r = GlassSheet.prepare(sheet: sheets.albedo) {
+            reskinAfterRebake.insert(id)
+            requestRebake(id, albedoOverride: r.flat)
+        } else {
+            reskinAfterRebake.insert(id)
+            requestRebake(id)
+        }
+    }
+
+    func continueReskin(_ id: Project.ID) {
+        guard let project = store.project(id),
+              let gen = project.generations.last(where: { $0.kind == .paint }),
+              let texName = gen.paintedTextureFileName else {
+            reskinStates[id] = .idle
+            return
+        }
+        let dir = store.folder(for: id)
+        let meshFile = gen.paintedMeshFileName ?? gen.meshFileName
+        let meshURL = dir.appendingPathComponent(meshFile)
+        let stem = meshFile.replacingOccurrences(of: ".tmesh", with: "")
+        let sheetURL = dir.appendingPathComponent("\(stem)_sheet_albedo.png")
+        let origTex = dir.appendingPathComponent(texName)
+        let reskinMesh = dir.appendingPathComponent("\(stem)_reskin.tmesh")
+        let reskinTex = dir.appendingPathComponent("\(stem)_reskin_texture.png")
+        Task.detached {
+            let result = Self.runReskin(meshURL: meshURL, sheetURL: sheetURL,
+                                       origTex: origTex)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                if let (mesh, tex) = result {
+                    let fm = FileManager.default
+                    try? fm.removeItem(at: reskinMesh)
+                    try? fm.copyItem(at: mesh, to: reskinMesh)
+                    try? fm.removeItem(at: reskinTex)
+                    try? fm.copyItem(at: tex, to: reskinTex)
+                    let srcGlass = GlassSelection.url(forMesh: mesh)
+                    let dstGlass = GlassSelection.url(forMesh: reskinMesh)
+                    try? fm.removeItem(at: dstGlass)
+                    try? fm.copyItem(at: srcGlass, to: dstGlass)
+                    let srcOpacity = GlassClean.Opacity.url(forMesh: mesh)
+                    let dstOpacity = GlassClean.Opacity.url(forMesh: reskinMesh)
+                    try? fm.removeItem(at: dstOpacity)
+                    try? fm.copyItem(at: srcOpacity, to: dstOpacity)
+                }
+                self.reskinStates[id] = .idle
+                self.rebakeTick += 1
+            }
+        }
+    }
+
+    private nonisolated static func runReskin(meshURL: URL, sheetURL: URL,
+                                              origTex: URL) -> (mesh: URL, texture: URL)? {
+        let fm = FileManager.default
+        let debugDir = meshURL.deletingLastPathComponent()
+            .appendingPathComponent("reskin_debug", isDirectory: true)
+        try? fm.removeItem(at: debugDir)
+        try? fm.createDirectory(at: debugDir, withIntermediateDirectories: true)
+        func debugCopy(_ src: URL, as name: String) {
+            try? fm.copyItem(at: src, to: debugDir.appendingPathComponent(name))
+        }
+        func debugLog(_ msg: String) {
+            let line = "\(msg)\n"
+            let logURL = debugDir.appendingPathComponent("log.txt")
+            if let h = try? FileHandle(forWritingTo: logURL) {
+                h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
+            } else {
+                try? Data(line.utf8).write(to: logURL)
+            }
+            print("[reskin] \(msg)")
+        }
+
+        debugLog("meshURL: \(meshURL.path)")
+        debugLog("sheetURL: \(sheetURL.path)")
+        debugLog("origTex: \(origTex.path)")
+        debugCopy(meshURL, as: "01_input_mesh.tmesh")
+        debugCopy(origTex, as: "02_input_texture.png")
+        debugCopy(sheetURL, as: "03_input_sheet.png")
+
+        guard let src = MeshCut.loadFull(meshURL) else {
+            debugLog("FAIL: could not load mesh")
+            return nil
+        }
+        debugLog("src mesh: \(src.vertices.count/3) verts, \(src.faces.count/3) faces, \(src.uvs.count/2) uvs")
+
+        if fm.fileExists(atPath: sheetURL.path) {
+            _ = GlassSheet.prepare(sheet: sheetURL)
+        }
+        let stencilPath = GlassSheet.stencilURL(forSheet: sheetURL)
+        debugLog("stencil: \(stencilPath.path) exists=\(fm.fileExists(atPath: stencilPath.path))")
+        if fm.fileExists(atPath: stencilPath.path) {
+            debugCopy(stencilPath, as: "04_stencil.png")
+        }
+
+        let res = 512
+        guard let skinRaw = Reskin.wrap(vertices: src.vertices, faces: src.faces,
+                                        resolution: res) else {
+            debugLog("FAIL: wrap failed")
+            return nil
+        }
+        debugLog("wrap: \(skinRaw.vertices.count/3) verts, \(skinRaw.faces.count/3) faces")
+        var skin = skinRaw
+        do {
+            func sphere(_ v: [Float]) -> (SIMD3<Float>, Float) {
+                var lo = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+                var hi = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
+                for i in 0 ..< (v.count / 3) {
+                    let p = SIMD3(v[i*3], v[i*3+1], v[i*3+2])
+                    lo = simd_min(lo, p); hi = simd_max(hi, p)
+                }
+                let c = (lo + hi) / 2
+                var r: Float = 0
+                for i in 0 ..< (v.count / 3) {
+                    r = max(r, simd_length(SIMD3(v[i*3], v[i*3+1], v[i*3+2]) - c))
+                }
+                return (c, r)
+            }
+            let (oc, orr) = sphere(src.vertices)
+            let (sc, sr) = sphere(skin.vertices)
+            let k = sr > 1e-9 ? orr / sr : 1
+            debugLog("rescale: orig center=\(oc) r=\(orr), skin center=\(sc) r=\(sr), k=\(k)")
+            for i in 0 ..< (skin.vertices.count / 3) {
+                let q = oc + (SIMD3(skin.vertices[i*3], skin.vertices[i*3+1],
+                                    skin.vertices[i*3+2]) - sc) * k
+                skin.vertices[i*3] = q.x; skin.vertices[i*3+1] = q.y; skin.vertices[i*3+2] = q.z
+            }
+        }
+
+        var out = skin
+        var glass = [Bool](repeating: false, count: skin.faces.count / 3)
+        let uvs = [Float](repeating: 0, count: skin.vertices.count * 2 / 3)
+        if fm.fileExists(atPath: stencilPath.path),
+           let field = SheetStencil.field(stencil: stencilPath, vertices: skin.vertices,
+                                          normals: skin.normals, faces: skin.faces),
+           let cut = MeshCut.cut(vertices: skin.vertices, normals: skin.normals, uvs: uvs,
+                                 faces: skin.faces,
+                                 inside: [Bool](repeating: false, count: skin.faces.count / 3),
+                                 smoothing: 0, field: field, preserveArea: false) {
+            out = Reskin.Mesh(vertices: cut.vertices, normals: cut.normals, faces: cut.faces)
+            glass = cut.inside
+            let nGlass = glass.filter { $0 }.count
+            debugLog("glass cut: \(cut.vertices.count/3) verts, \(cut.faces.count/3) faces, \(nGlass) glass faces")
+        } else {
+            debugLog("glass cut: SKIPPED (no stencil or field failed)")
+        }
+
+        let atlasSize = 8192
+        guard let unwrapped = ChartUnwrap.unwrap(vertices: out.vertices, normals: out.normals,
+                                                  faces: out.faces, atlas: atlasSize) else {
+            debugLog("FAIL: chart unwrap failed")
+            return nil
+        }
+        debugLog("chart unwrap: \(unwrapped.vertices.count/3) verts, \(unwrapped.faces.count/3) faces, \(unwrapped.charts) charts")
+
+        let tmp = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+        let atlasURL = tmp.appendingPathComponent("atlas.png")
+
+        debugCopy(origTex, as: "04b_rebaked_atlas.png")
+        debugLog("baking from original atlas via closest-point sampling")
+        guard let baked = SkinBake.bakeChartsFromOriginal(
+            vertices: unwrapped.vertices, normals: unwrapped.normals,
+            uvs: unwrapped.uvs, faces: unwrapped.faces,
+            original: (vertices: src.vertices, normals: src.normals,
+                       uvs: src.uvs, faces: src.faces),
+            originalTexture: origTex, atlas: atlasSize, to: atlasURL) else {
+            debugLog("FAIL: bakeChartsFromOriginal failed")
+            return nil
+        }
+        debugLog("baked atlas: \(baked.path)")
+        debugCopy(baked, as: "05_baked_atlas.png")
+
+        var cglass = [Bool](repeating: false, count: unwrapped.faces.count / 3)
+        for f in 0 ..< cglass.count {
+            let orig = unwrapped.parent[f]
+            if orig < glass.count { cglass[f] = glass[orig] }
+        }
+        let nCGlass = cglass.filter { $0 }.count
+        debugLog("chart glass: \(nCGlass) of \(cglass.count) faces")
+
+        let outMesh = tmp.appendingPathComponent("reskin.tmesh")
+        _ = MeshCut.save(vertices: unwrapped.vertices, normals: unwrapped.normals,
+                         uvs: unwrapped.uvs, faces: unwrapped.faces, to: outMesh)
+        GlassSelection(mask: cglass).save(forMesh: outMesh)
+        GlassClean.Opacity.save(colour: GlassClean.defaultTint,
+                                alpha: GlassClean.opacity, forMesh: outMesh)
+        debugCopy(outMesh, as: "06_reskin_mesh.tmesh")
+        debugCopy(GlassSelection.url(forMesh: outMesh), as: "07_glass_selection.bin")
+
+        debugLog("DONE")
+        return (outMesh, baked)
+    }
+
     /// Projects whose re-bake should be followed by the cut and the clean.
     private var finishAfterRebake: Set<Project.ID> = []
 
@@ -767,6 +979,9 @@ final class AppRuntime {
                             let note = self.finishGlass(id)
                             self.finishStates[id] = .idle
                             self.lastFinishNote[id] = note
+                        }
+                        if self.reskinAfterRebake.remove(id) != nil {
+                            self.continueReskin(id)
                         }
                         self.rebakeStates[id] = .idle
                         self.rebakeTick += 1

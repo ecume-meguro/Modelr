@@ -57,23 +57,22 @@ public struct PBRWrapper {
         precondition(c == 3)
         let gh = H / gridRes, gw = Wd / gridRes
         let thres = (gh * gw) / 16
-        let scale = Float16(voxelRes - 1)
+        let scale = Float(voxelRes - 1)
         let p32 = position.asType(.float32).asArray(Float.self)
-        let p16 = p32.map { Float16($0) }
         var out = [Int32](repeating: 0, count: b * n * gridRes * gridRes * 3)
         for bi in 0 ..< b {
             for ni in 0 ..< n {
                 let imgBase = (bi * n + ni) * H * Wd * 3
                 for g1 in 0 ..< gridRes {
                     for g2 in 0 ..< gridRes {
-                        var acc: (Float16, Float16, Float16) = (0, 0, 0)
+                        var acc: (Float, Float, Float) = (0, 0, 0)
                         var count = 0
-                        for hh in 0 ..< gh {                       // numpy reduce order: rows then cols
+                        for hh in 0 ..< gh {
                             let row = imgBase + ((g1 * gh + hh) * Wd + g2 * gw) * 3
                             for ww in 0 ..< gw {
                                 let p = row + ww * 3
-                                let x = p16[p], y = p16[p + 1], z = p16[p + 2]
-                                if x != 1, y != 1, z != 1 {        // valid: all channels != 1 (fp16)
+                                let x = p32[p], y = p32[p + 1], z = p32[p + 2]
+                                if x != 1, y != 1, z != 1 {
                                     acc.0 += x; acc.1 += y; acc.2 += z
                                     count += 1
                                 }
@@ -83,8 +82,8 @@ public struct PBRWrapper {
                         if count < thres {
                             out[o] = 0; out[o + 1] = 0; out[o + 2] = 0
                         } else {
-                            let denom = Float16(max(count, 1))
-                            @inline(__always) func q(_ s: Float16) -> Int32 {
+                            let denom = Float(max(count, 1))
+                            @inline(__always) func q(_ s: Float) -> Int32 {
                                 let gp = min(max(s / denom, 0), 1)
                                 return Int32((gp * scale).rounded(.toNearestOrEven))
                             }

@@ -58,6 +58,64 @@ enum GlassSheet {
         guard write(Bitmap(px: stencil, width: img.width, height: img.height), to: sURL)
         else { return nil }
 
+        // Erase the dark window frame that hugs every erased window before baking.
+        //
+        // The glass the user cut out is transparent; the black gasket/frame drawn AROUND it is
+        // opaque, so it is not glass and `mask` never claims it. Left in, the reskin projects
+        // that thin dark band onto the near-horizontal cowl at the base of the windshield and it
+        // smears into wiper-shaped marks. Here we find the dark pixels within a short reach of
+        // the glass and repaint them with the surrounding body colour, so the bake sees clean
+        // bodywork there and nothing frame-shaped survives. The STENCIL above is untouched, so
+        // the glass cut is exactly where it was.
+        let frameReach = Int(ProcessInfo.processInfo.environment["MODELR_GLASS_FRAME_REACH"] ?? "")
+            ?? 22
+        let frameDark = UInt8(ProcessInfo.processInfo.environment["MODELR_GLASS_FRAME_DARK"] ?? "")
+            ?? 70
+        if frameReach > 0 {
+            let near = Self.dilate(mask, width: img.width, height: img.height, radius: frameReach)
+            // Frame = near the glass, not glass itself, and dark (the gasket) — never the red body
+            // or the grey backdrop.
+            var frame = [Bool](repeating: false, count: n)
+            for i in 0 ..< n where near[i] && !mask[i] {
+                let r = img.px[i*4], g = img.px[i*4+1], b = img.px[i*4+2]
+                if r < frameDark && g < frameDark && b < frameDark { frame[i] = true }
+            }
+            // Repaint each frame pixel from its non-frame, non-glass (i.e. body) neighbours,
+            // growing that colour inward until the band is gone.
+            let w = img.width, h = img.height
+            var remaining = frame.reduce(0) { $0 + ($1 ? 1 : 0) }
+            var guardPass = 0
+            while remaining > 0 && guardPass < frameReach + 4 {
+                guardPass += 1
+                var filledThisPass = [(Int, UInt8, UInt8, UInt8)]()
+                for y in 0 ..< h {
+                    for x in 0 ..< w {
+                        let i = y * w + x
+                        guard frame[i] else { continue }
+                        var sr = 0, sg = 0, sb = 0, cnt = 0
+                        for (dx, dy) in [(1,0), (-1,0), (0,1), (0,-1)] {
+                            let nx = x + dx, ny = y + dy
+                            guard nx >= 0, nx < w, ny >= 0, ny < h else { continue }
+                            let j = ny * w + nx
+                            if !frame[j] && !mask[j] {     // a settled body pixel
+                                sr += Int(img.px[j*4]); sg += Int(img.px[j*4+1]); sb += Int(img.px[j*4+2])
+                                cnt += 1
+                            }
+                        }
+                        if cnt > 0 {
+                            filledThisPass.append((i, UInt8(sr / cnt), UInt8(sg / cnt), UInt8(sb / cnt)))
+                        }
+                    }
+                }
+                if filledThisPass.isEmpty { break }
+                for (i, r, g, b) in filledThisPass {
+                    img.px[i*4] = r; img.px[i*4+1] = g; img.px[i*4+2] = b
+                    frame[i] = false
+                }
+                remaining -= filledThisPass.count
+            }
+        }
+
         for i in 0 ..< n {
             if mask[i] {
                 img.px[i*4] = tint.0; img.px[i*4+1] = tint.1; img.px[i*4+2] = tint.2
@@ -67,6 +125,40 @@ enum GlassSheet {
         let fURL = flatURL(forSheet: sheet)
         guard write(img, to: fURL) else { return nil }
         return (sURL, fURL, Double(count) / Double(n))
+    }
+
+    /// Chebyshev (square) dilation of a boolean mask by `radius`, done separably (a horizontal
+    /// pass then a vertical pass) so it is O(n) rather than O(n·r²).
+    static func dilate(_ mask: [Bool], width: Int, height: Int, radius: Int) -> [Bool] {
+        guard radius > 0 else { return mask }
+        var horiz = [Bool](repeating: false, count: mask.count)
+        for y in 0 ..< height {
+            let row = y * width
+            var lastOn = -radius - 1
+            for x in 0 ..< width {
+                if mask[row + x] { lastOn = x }
+                if x - lastOn <= radius { horiz[row + x] = true }
+            }
+            var nextOn = width + radius + 1
+            for x in stride(from: width - 1, through: 0, by: -1) {
+                if mask[row + x] { nextOn = x }
+                if nextOn - x <= radius { horiz[row + x] = true }
+            }
+        }
+        var out = [Bool](repeating: false, count: mask.count)
+        for x in 0 ..< width {
+            var lastOn = -radius - 1
+            for y in 0 ..< height {
+                if horiz[y * width + x] { lastOn = y }
+                if y - lastOn <= radius { out[y * width + x] = true }
+            }
+            var nextOn = height + radius + 1
+            for y in stride(from: height - 1, through: 0, by: -1) {
+                if horiz[y * width + x] { nextOn = y }
+                if nextOn - y <= radius { out[y * width + x] = true }
+            }
+        }
+        return out
     }
 
     /// The stencil split into one signed distance field per view.
