@@ -19,6 +19,8 @@ struct ModelrApp: App {
                     MeshCutRunner.runIfRequested(store: runtime.store)
                     RenderRunner.runIfRequested(store: runtime.store)
                     ReskinRunner.runIfRequested(runtime: runtime, store: runtime.store)
+                    RebakeRunner.runIfRequested(runtime: runtime, store: runtime.store)
+                    ReskinButtonRunner.runIfRequested(runtime: runtime, store: runtime.store)
                     MeshCutRunner.checkIfRequested(store: runtime.store)
                     GlassCleanRunner.finishIfRequested(runtime: runtime, store: runtime.store)
                     GlassCleanRunner.rebakeFinishIfRequested(runtime: runtime, store: runtime.store)

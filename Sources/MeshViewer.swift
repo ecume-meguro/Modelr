@@ -892,28 +892,21 @@ struct MeshViewer: NSViewRepresentable {
                 glassMat.transparency = 1
                 glassMat.lightingModel = .constant
             }
-            // A stored opacity means the glass boundary lives in the geometry, so the material
-            // carries the transparency whole rather than reading it per texel.
-            //
-            // Applied in the shader rather than through `transparency`: under .physicallyBased
-            // SceneKit takes its alpha from the diffuse texture, and the atlas is now fully
-            // opaque by design, so the property alone left the glass solid. Scaling the whole
-            // output colour is the premultiplied form of the same thing.
             if Self.markColorNow == nil, Self.glassOverride == nil, !Self.tintGlassNow,
                let glass = GlassClean.Opacity.load(forMesh: url) {
-                // A flat colour, not the atlas. The glass is one colour everywhere by now, so
-                // sampling the texture can only go wrong — and it did: glass faces whose UVs sit
-                // near a chart edge picked up streaks of bodywork. A colour with alpha is also
-                // the one transparency route SceneKit honours under .physicallyBased without
-                // argument, where `transparency` over an opaque texture is simply ignored.
                 glassMat.diffuse.contents = NSColor(red: CGFloat(glass.r), green: CGFloat(glass.g),
-                                                    blue: CGFloat(glass.b), alpha: CGFloat(glass.a))
+                                                    blue: CGFloat(glass.b), alpha: 1.0)
                 glassMat.blendMode = .alpha
                 glassMat.writesToDepthBuffer = false
                 glassMat.metalness.contents = 0.0
                 glassMat.roughness.contents = 0.05
+                glassMat.shaderModifiers = [.fragment: String(format: """
+                    #pragma body
+                    _output.color.a = %.4f;
+                    """, glass.a)]
+            } else {
+                glassMat.writesToDepthBuffer = true
             }
-            glassMat.writesToDepthBuffer = true
             glassMat.readsFromDepthBuffer = true
             // Single-sided. Double-sided glass draws the *back* face of every boundary triangle as
         // well, and along the window's rim that back face faces away from the light and renders

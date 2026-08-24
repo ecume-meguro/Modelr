@@ -612,9 +612,15 @@ enum MeshExporter {
                     glassPBR["baseColorFactor"] = [1.0, 1.0, 1.0, 1.0]
                     if hasMR { glassPBR["metallicRoughnessTexture"] = ["index": 1] }
                 }
+                // Single-sided by default, matching the live viewer (MeshViewer.swift):
+                // double-sided glass draws the *back* face of every boundary triangle too, and
+                // along the window's rim that back face faces away from the light and renders as
+                // a dark, torn-looking patch — worse, and far more visible, than the occasional
+                // hole a hollow shell shows single-sided from an unusual angle.
+                // MODELR_GLASS_2SIDED=1 restores the old always-double-sided export.
                 materials.append([
                     "name": "Glass",
-                    "doubleSided": true,          // hollow shell: single-sided reads as a hole
+                    "doubleSided": ProcessInfo.processInfo.environment["MODELR_GLASS_2SIDED"] == "1",
                     "alphaMode": "BLEND",
                     "pbrMetallicRoughness": glassPBR,
                 ])

@@ -24,17 +24,17 @@ enum SheetStencil {
     /// side view sees the same handle squarely and is not confused for a moment. So the overhead
     /// views are excluded from the stencil entirely; they still contribute colour to the bake,
     /// where being edge-on costs nothing.
+    ///
+    /// Top was briefly let back in for sunroofs, but looking straight down also looks straight
+    /// through the windscreen opening into the cabin — the mirror mount and dash sit close enough
+    /// behind the glass plane that the depth gate did not reject them, and they got pulled inside
+    /// the stencil as glass. Sunroof detection is not worth that trade.
     static var stencilViews: [Int] {
         if let v = ProcessInfo.processInfo.environment["MODELR_STENCIL_VIEWS"] {
             let parsed = v.split(separator: ",").compactMap { Int($0) }
             if !parsed.isEmpty { return parsed }
         }
-        // Top included, bottom not. The overhead view is only dangerous when it carries the
-        // paint model's own alpha — that is what put a window strip over the door handles. Where
-        // the cutouts are hand-drawn the view is as trustworthy as any other, and it is the only
-        // one that describes a roof or a sunroof at all. The seeding veto still protects against
-        // a face being claimed by a view that a better-facing view says is not glass.
-        return [0, 1, 2, 3, 4]
+        return [0, 1, 2, 3]
     }
 
     /// The canonical six, in sheet order.

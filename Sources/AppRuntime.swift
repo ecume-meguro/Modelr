@@ -536,15 +536,19 @@ final class AppRuntime {
         try? fm.createDirectory(at: tmp, withIntermediateDirectories: true)
         let atlasURL = tmp.appendingPathComponent("atlas.png")
 
-        debugCopy(origTex, as: "04b_rebaked_atlas.png")
-        debugLog("baking from original atlas via closest-point sampling")
-        guard let baked = SkinBake.bakeChartsFromOriginal(
+        debugCopy(origTex, as: "04b_original_atlas_for_reference.png")
+        debugLog("baking from the sheet directly onto the wrapper mesh's own chart UVs")
+        // All six views, unlike this function's other caller: a reskin's chart atlas covers
+        // the whole body, including the roof and rear deck, which the front/side/rear/bottom
+        // ring cannot see face-on at all (their cameras are all near-horizontal). Sorting
+        // picks the most face-on view regardless of list order, so adding the top view back
+        // only wins on genuinely up-facing texels — it does not reintroduce the window-border
+        // speckle the ring-only default exists to avoid.
+        guard let baked = SkinBake.bakeChartsFromSheetOwner(
             vertices: unwrapped.vertices, normals: unwrapped.normals,
             uvs: unwrapped.uvs, faces: unwrapped.faces,
-            original: (vertices: src.vertices, normals: src.normals,
-                       uvs: src.uvs, faces: src.faces),
-            originalTexture: origTex, atlas: atlasSize, to: atlasURL) else {
-            debugLog("FAIL: bakeChartsFromOriginal failed")
+            sheet: sheetURL, atlas: atlasSize, to: atlasURL, views: [0, 1, 2, 3, 4, 5]) else {
+            debugLog("FAIL: bakeChartsFromSheetOwner failed")
             return nil
         }
         debugLog("baked atlas: \(baked.path)")
