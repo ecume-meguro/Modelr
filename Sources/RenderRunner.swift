@@ -25,11 +25,39 @@ enum RenderRunner {
     @MainActor static func run(store: ProjectStore, which: String, out: URL) {
         // A bare mesh path renders untextured, so nothing is drawn over the edge being judged.
         if let path = ProcessInfo.processInfo.environment["MODELR_RENDER_MESH"] {
-            // With a texture, render it painted; without, plain grey.
-            let content: ViewerContent =
-                ProcessInfo.processInfo.environment["MODELR_RENDER_TEX"].map {
-                    .texturedMesh(URL(fileURLWithPath: path), URL(fileURLWithPath: $0))
-                } ?? .mesh(URL(fileURLWithPath: path))
+            // With a texture, render it painted; without, plain grey. MODELR_RENDER_MR adds a
+            // metallic-roughness map, matching currentViewerContent's real choice of .pbrMesh
+            // (physicallyBased lighting) whenever a generation actually has one — .texturedMesh
+            // alone (.blinn lighting) is a different material path and was silently the only one
+            // this harness ever exercised.
+            let content: ViewerContent
+            if let texPath = ProcessInfo.processInfo.environment["MODELR_RENDER_TEX"] {
+                if let mrPath = ProcessInfo.processInfo.environment["MODELR_RENDER_MR"] {
+                    content = .pbrMesh(URL(fileURLWithPath: path), albedo: URL(fileURLWithPath: texPath),
+                                       metallicRoughness: URL(fileURLWithPath: mrPath))
+                } else {
+                    content = .texturedMesh(URL(fileURLWithPath: path), URL(fileURLWithPath: texPath))
+                }
+            } else {
+                content = .mesh(URL(fileURLWithPath: path))
+            }
+            // MODELR_RENDER_BG=1: build the geometry/material off the main thread, exactly like
+            // the live viewer's updateNSView does, for comparing main-thread vs. background-thread
+            // rendering when a live/harness discrepancy is suspected of being threading-related.
+            if ProcessInfo.processInfo.environment["MODELR_RENDER_BG"] == "1" {
+                let sem = DispatchSemaphore(value: 0)
+                var loadedBG: (node: SCNNode, center: SCNVector3, radius: CGFloat)?
+                DispatchQueue.global(qos: .userInitiated).async {
+                    loadedBG = MeshViewer.debugLoad(content)
+                    sem.signal()
+                }
+                sem.wait()
+                guard let loaded = loadedBG else {
+                    print("FAIL  cannot load \(path) (bg)"); return
+                }
+                draw(loaded, out: out, label: path)
+                return
+            }
             guard let loaded = MeshViewer.debugLoad(content) else {
                 print("FAIL  cannot load \(path)"); return
             }

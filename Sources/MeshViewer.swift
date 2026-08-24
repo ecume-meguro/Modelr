@@ -746,6 +746,10 @@ struct MeshViewer: NSViewRepresentable {
             : (stored?.count == m ? stored
                : Self.glassFaces(indexData: fData, uvData: uvData,
                                  faceCount: m, textureURL: texture))
+        if ProcessInfo.processInfo.environment["MODELR_ALPHA_DEBUG"] == "1" {
+            FileHandle.standardError.write(
+                "MODELR_ALPHA_DEBUG glassMask=\(glassMask == nil ? "nil" : "\(glassMask!.filter{$0}.count) of \(m)") stored=\(stored == nil ? "nil" : "\(stored!.count)") coverage=\(coverage) noSplit=\(noSplit) hasMR=\(metallicRoughness != nil)\n".data(using: .utf8)!)
+        }
         var elements: [SCNGeometryElement] = []
         if let glassMask {
             var body = [UInt32](), glass = [UInt32]()
@@ -870,7 +874,13 @@ struct MeshViewer: NSViewRepresentable {
 
             let glassMat = SCNMaterial()
             glassMat.name = "Glass"
-            glassMat.lightingModel = material.lightingModel
+            // Always .blinn, never inherited from the body. Confirmed by direct pixel
+            // comparison: under .physicallyBased, neither transparencyMode NOR a fragment
+            // shader modifier's own `_output.color.a` write survives — PBR pushes the material
+            // back to opaque regardless (32,32,36 for a texel that should have blended almost
+            // to white). .blinn respects both correctly, and glass has no PBR reflectance model
+            // of its own to lose — roughness/metalness are set by hand below either way.
+            glassMat.lightingModel = .blinn
             // Opacity comes from the RGBA diffuse atlas, the same alpha the single-material
             // path used. Do NOT set transparencyMode/.transparent: under .physicallyBased that
             // redirects SceneKit away from the diffuse alpha and the glass renders solid.
@@ -913,6 +923,11 @@ struct MeshViewer: NSViewRepresentable {
                 // so without this the atlas's real holes render as solid, whatever colour
                 // happened to be under the erasure (paint-model sky/highlight, usually pale).
                 glassMat.blendMode = .alpha
+                // Same flat values as the stored-opacity branch, not the body's MR-derived
+                // channel images assigned above — isolating whether those (rather than
+                // .physicallyBased itself) were the reason forcing .blinn alone didn't help.
+                glassMat.metalness.contents = 0.0
+                glassMat.roughness.contents = 0.05
                 glassMat.shaderModifiers = [.fragment: """
                     #pragma body
                     _output.color.a = _surface.diffuse.a;
@@ -1000,18 +1015,25 @@ struct MeshViewer: NSViewRepresentable {
     /// swallows the feather and tears the frames; cutting at 0.6 excludes the glass itself.
     private static func glassFaces(indexData: Data, uvData: Data, faceCount: Int,
                                    textureURL: URL, threshold: Float? = nil) -> [Bool]? {
-        guard let cg = loadCGImage(textureURL), cg.alphaInfo != .none,
-              cg.alphaInfo != .noneSkipLast, cg.alphaInfo != .noneSkipFirst else { return nil }
-        let w = cg.width, h = cg.height
-        var px = [UInt8](repeating: 0, count: w * h * 4)
-        guard let ctx = CGContext(data: &px, width: w, height: h, bitsPerComponent: 8,
-                                  bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-        else { return nil }
-        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        // Raw provider bytes, not CGContext.draw() into an RGBA context: for this atlas
+        // (straight, non-premultiplied alpha written by the paint bake) drawing through a
+        // context silently flattens every pixel to alpha=255 — no error, no crash, just an
+        // atlas that reads as fully opaque no matter what it actually contains. Confirmed by
+        // instrumenting this exact function: alphaMin/alphaMax both came back 255 against a
+        // file independently verified (PIL) to have alpha ranging genuinely down to 0. Reading
+        // the provider's own bytes sidesteps whatever CoreGraphics does in that conversion.
+        guard let px = Self.rawRGBA(textureURL) else { return nil }
+        let w = px.w, h = px.h
 
         // Same measurement the exporter makes, so the preview and the GLB agree.
-        let threshold = threshold ?? MeshExporter.glassAlphaCut(px, count: w * h)
+        let threshold = threshold ?? MeshExporter.glassAlphaCut(px.bytes, count: w * h)
+        if ProcessInfo.processInfo.environment["MODELR_ALPHA_DEBUG"] == "1" {
+            let lowAlpha = stride(from: 3, to: px.bytes.count, by: 4).lazy.filter { px.bytes[$0] < 128 }.count
+            let alphaMin = stride(from: 3, to: px.bytes.count, by: 4).map { px.bytes[$0] }.min() ?? 255
+            let alphaMax = stride(from: 3, to: px.bytes.count, by: 4).map { px.bytes[$0] }.max() ?? 0
+            FileHandle.standardError.write(
+                "MODELR_ALPHA_DEBUG glassFaces: threshold=\(threshold) faceCount=\(faceCount) lowAlphaPixels=\(lowAlpha) of \(w*h) alphaMin=\(alphaMin) alphaMax=\(alphaMax)\n".data(using: .utf8)!)
+        }
         var mask = [Bool](repeating: false, count: faceCount)
         var any = false
         indexData.withUnsafeBytes { idx in
@@ -1022,7 +1044,7 @@ struct MeshViewer: NSViewRepresentable {
                 func alphaAt(_ u: Float, _ v: Float) -> Float {
                     let x = min(max(Int(u * Float(w - 1)), 0), w - 1)
                     let y = min(max(Int(v * Float(h - 1)), 0), h - 1)
-                    return Float(px[(y * w + x) * 4 + 3]) / 255
+                    return Float(px.bytes[(y * w + x) * 4 + 3]) / 255
                 }
                 for f in 0 ..< faceCount {
                     var us = [Float](repeating: 0, count: 3), vs = us
@@ -1057,6 +1079,59 @@ struct MeshViewer: NSViewRepresentable {
         guard let data = try? Data(contentsOf: url),
               let src = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         return CGImageSourceCreateImageAtIndex(src, 0, nil)
+    }
+
+    /// Straight (un-premultiplied) RGBA, 8 bits/component, read from the image's own provider
+    /// bytes — see the comment on `glassFaces` for why this exists instead of `CGContext.draw()`.
+    /// Handles the layouts this app actually writes (8-bit, alpha first or last, straight or
+    /// premultiplied); anything else (16-bit, grayscale, no alpha) returns nil rather than guess.
+    private static func rawRGBA(_ url: URL) -> (w: Int, h: Int, bytes: [UInt8])? {
+        let dbg = ProcessInfo.processInfo.environment["MODELR_ALPHA_DEBUG"] == "1"
+        guard let cg = loadCGImage(url) else {
+            if dbg { FileHandle.standardError.write("MODELR_ALPHA_DEBUG rawRGBA: loadCGImage failed\n".data(using: .utf8)!) }
+            return nil
+        }
+        if dbg {
+            FileHandle.standardError.write("MODELR_ALPHA_DEBUG rawRGBA: bpc=\(cg.bitsPerComponent) bpp=\(cg.bitsPerPixel) alphaInfo=\(cg.alphaInfo.rawValue) bytesPerRow=\(cg.bytesPerRow) hasProvider=\(cg.dataProvider != nil)\n".data(using: .utf8)!)
+        }
+        guard cg.bitsPerComponent == 8, cg.bitsPerPixel == 32,
+              let provider = cg.dataProvider, let data = provider.data,
+              let base = CFDataGetBytePtr(data)
+        else {
+            if dbg { FileHandle.standardError.write("MODELR_ALPHA_DEBUG rawRGBA: bpc/bpp/provider guard failed\n".data(using: .utf8)!) }
+            return nil
+        }
+        let alphaInfo = cg.alphaInfo
+        guard alphaInfo != .none, alphaInfo != .noneSkipLast, alphaInfo != .noneSkipFirst
+        else {
+            if dbg { FileHandle.standardError.write("MODELR_ALPHA_DEBUG rawRGBA: alphaInfo guard failed\n".data(using: .utf8)!) }
+            return nil
+        }
+        let alphaFirst = alphaInfo == .premultipliedFirst || alphaInfo == .first
+        let premultiplied = alphaInfo == .premultipliedFirst || alphaInfo == .premultipliedLast
+        let w = cg.width, h = cg.height, bytesPerRow = cg.bytesPerRow
+        var out = [UInt8](repeating: 0, count: w * h * 4)
+        let dataLen = CFDataGetLength(data)
+        for y in 0 ..< h {
+            let rowOffset = y * bytesPerRow
+            guard rowOffset + w * 4 <= dataLen else { break }
+            let row = base.advanced(by: rowOffset)
+            for x in 0 ..< w {
+                let s = x * 4, d = (y * w + x) * 4
+                let a = row[s + (alphaFirst ? 0 : 3)]
+                if premultiplied, a > 0, a < 255 {
+                    let inv = 255.0 / Double(a)
+                    for c in 0 ..< 3 {
+                        let v = Double(row[s + (alphaFirst ? c + 1 : c)]) * inv
+                        out[d + c] = UInt8(min(max(v, 0), 255))
+                    }
+                } else {
+                    for c in 0 ..< 3 { out[d + c] = row[s + (alphaFirst ? c + 1 : c)] }
+                }
+                out[d + 3] = a
+            }
+        }
+        return (w, h, out)
     }
 
     /// Extract one 8-bit channel (0=R, 1=G, 2=B) of an RGBA image into a grayscale
