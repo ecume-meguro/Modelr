@@ -978,6 +978,18 @@ final class AppRuntime {
                     guard let self else { return }
                     switch outcome {
                     case .success:
+                        let stem = (gen.paintedMeshFileName ?? gen.meshFileName)
+                            .replacingOccurrences(of: ".tmesh", with: "")
+                        let fm = FileManager.default
+                        // A cut/tint from a *previous* finish-glass still matches this mesh's
+                        // face count — rebaking the atlas never changes topology — so it would
+                        // otherwise keep overriding fresh auto-detection with a stale window
+                        // outline and a stale opacity, no matter how the sheet was just edited.
+                        // finishGlass (below) overwrites both with correct ones when it runs
+                        // right after; clearing first is harmless either way.
+                        for ext in ["_glass.bin", "_glass.opacity"] {
+                            try? fm.removeItem(at: dir.appendingPathComponent(stem + ext))
+                        }
                         if self.finishAfterRebake.remove(id) != nil {
                             self.finishStates[id] = .running
                             let note = self.finishGlass(id)
@@ -993,9 +1005,6 @@ final class AppRuntime {
                             // over the plain mesh — leaving the old one in place would make this
                             // rebake invisible, the mesh updated but the viewer still showing
                             // yesterday's reskin.
-                            let stem = (gen.paintedMeshFileName ?? gen.meshFileName)
-                                .replacingOccurrences(of: ".tmesh", with: "")
-                            let fm = FileManager.default
                             for ext in ["_reskin.tmesh", "_reskin_texture.png",
                                        "_reskin_glass.bin", "_reskin_glass.opacity"] {
                                 try? fm.removeItem(at: dir.appendingPathComponent(stem + ext))
