@@ -209,6 +209,10 @@ enum SkinBake {
                 guard xi >= 0, xi < tile, yi >= 0, yi < tile else { continue }
                 guard simd_dot(d, fwd[vi]) >= depths[vi][yi * tile + xi] - 0.03 else { continue }
                 let si = ((yi * src.w) + views[vi] * tile + xi) * 4
+                // Erased here — the user's way to veto a view that's fighting a better one for
+                // the same surface (e.g. top vs. front over the hood). Defer to the next view
+                // in facing order instead of returning the erasure's own (premultiplied) black.
+                guard src.px[si + 3] > 8 else { continue }
                 return SIMD3(Float(src.px[si]), Float(src.px[si+1]), Float(src.px[si+2]))
             }
             return nil

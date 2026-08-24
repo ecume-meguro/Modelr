@@ -478,8 +478,28 @@ public final class PaintPipeline {
         // views of the same window disagree completely — one sees sky on the outside, the other
         // sees the dashboard through it — and averaging them produces the shattered patchwork.
         // Bodywork keeps the blend, which is what keeps it smooth.
+        if ProcessInfo.processInfo.environment["MODELR_ALPHA_DEBUG"] == "1" {
+            FileHandle.standardError.write("MODELR_ALPHA_DEBUG hasAlpha=\(hasAlpha)\n".data(using: .utf8)!)
+            if hasAlpha {
+                let rawMin = texs[2].min().item(Float.self)
+                let rawMean = texs[2].mean().item(Float.self)
+                let inpainted = MeshRender.inpaint(texs[2], covered)
+                let inMin = inpainted.min().item(Float.self)
+                let inMean = inpainted.mean().item(Float.self)
+                FileHandle.standardError.write(
+                    "MODELR_ALPHA_DEBUG texs[2] raw min=\(rawMin) mean=\(rawMean) | after inpaint min=\(inMin) mean=\(inMean)\n"
+                        .data(using: .utf8)!)
+            }
+        }
         let texAlpha = hasAlpha ? MeshRender.sharpenGlassAlpha(
             MeshRender.inpaint(texs[2], covered), positions: texPositions) : nil
+        if ProcessInfo.processInfo.environment["MODELR_ALPHA_DEBUG"] == "1", let texAlpha {
+            let outMin = texAlpha.min().item(Float.self)
+            let outMean = texAlpha.mean().item(Float.self)
+            FileHandle.standardError.write(
+                "MODELR_ALPHA_DEBUG texAlpha (post-sharpen) min=\(outMin) mean=\(outMean)\n"
+                    .data(using: .utf8)!)
+        }
         if let texAlpha {
             // Order matters and cost a round: these have to be applied to the FILLED atlas, not
             // to the pre-fill buffer, which nothing downstream reads any more.

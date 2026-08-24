@@ -906,6 +906,17 @@ struct MeshViewer: NSViewRepresentable {
                     """, glass.a)]
             } else {
                 glassMat.writesToDepthBuffer = true
+                // No stored opacity: the atlas's own per-texel alpha is the transparency —
+                // holes the rebake left where the albedo sheet was erased. Same root cause as
+                // the stored-opacity case above: SceneKit's PBR/blinn lighting model samples
+                // the diffuse texture but does not carry its alpha into the blend on its own,
+                // so without this the atlas's real holes render as solid, whatever colour
+                // happened to be under the erasure (paint-model sky/highlight, usually pale).
+                glassMat.blendMode = .alpha
+                glassMat.shaderModifiers = [.fragment: """
+                    #pragma body
+                    _output.color.a = _surface.diffuse.a;
+                    """]
             }
             glassMat.readsFromDepthBuffer = true
             // Single-sided. Double-sided glass draws the *back* face of every boundary triangle as
