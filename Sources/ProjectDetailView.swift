@@ -14,6 +14,9 @@ struct ProjectDetailView: View {
     @State private var showHistory = false
     @State private var showPaintSettings = false
     @State private var editorInputs: MaskEditorInputs?
+    /// Hides the shape/import panels once painting has started, so the paint viewer
+    /// gets the full width — that's the pane doing all the work at that point.
+    @State private var showInputPanels = true
 
     // Touch-up editor state (controls live in the top toolbar while editing).
     @State private var tool: MaskTool = .brush
@@ -38,13 +41,17 @@ struct ProjectDetailView: View {
             ZStack {
                 if paintMode {
                     mainAxis {
-                        VStack(spacing: 0) {
-                            imagePane.frame(maxWidth: .infinity, maxHeight: .infinity)
+                        if showInputPanels {
+                            VStack(spacing: 0) {
+                                imagePane.frame(maxWidth: .infinity, maxHeight: .infinity)
+                                Divider()
+                                outputPane.frame(maxWidth: .infinity, maxHeight: .infinity)
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                             Divider()
-                            outputPane.frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            collapsedInputStrip
                         }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        Divider()
                         paintPane.frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 } else {
@@ -63,6 +70,7 @@ struct ProjectDetailView: View {
             }
             .animation(.easeInOut(duration: 0.2), value: editorInputs?.id)
             .animation(.easeInOut(duration: 0.25), value: paintMode)
+            .animation(.easeInOut(duration: 0.2), value: showInputPanels)
         }
         .navigationTitle(project.name)
         .toolbar {
@@ -173,6 +181,30 @@ struct ProjectDetailView: View {
         guard panel.runModal() == .OK, let dest = panel.url else { return }
         try? FileManager.default.removeItem(at: dest)
         try? FileManager.default.copyItem(at: url, to: dest)
+    }
+
+    /// Stands in for the shape/import panels when they're hidden — just enough to click
+    /// back into them, without spending any width on content nobody's looking at.
+    private var collapsedInputStrip: some View {
+        VStack {
+            Button {
+                showInputPanels = true
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 22)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 12)
+            Spacer()
+        }
+        .frame(width: 28)
+        .frame(maxHeight: .infinity)
+        .background(Color(nsColor: .separatorColor).opacity(0.06))
+        .overlay(alignment: .trailing) { Divider() }
+        .help("Show shape & import panels")
     }
 
     /// The paint process: the streaming 6-view grid while generating, then the
@@ -415,6 +447,21 @@ struct ProjectDetailView: View {
 
     @ToolbarContentBuilder
     private var normalToolbar: some ToolbarContent {
+        // Island 0 — hide the shape/import panels once there's a paint version to look at
+        // instead, so the paint viewer can take the full width.
+        if paintMode {
+            ToolbarItem(placement: .primaryAction) {
+                Button { showInputPanels.toggle() } label: {
+                    Image(systemName: "sidebar.left")
+                }
+                .help(showInputPanels ? "Hide shape & import panels"
+                                      : "Show shape & import panels")
+            }
+            if #available(macOS 26.0, *) {
+                ToolbarSpacer(.fixed, placement: .primaryAction)
+            }
+        }
+
         // Island 1 — version history
         if !project.generations.isEmpty {
             ToolbarItem(placement: .primaryAction) {
