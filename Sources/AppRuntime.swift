@@ -986,6 +986,20 @@ final class AppRuntime {
                         }
                         if self.reskinAfterRebake.remove(id) != nil {
                             self.continueReskin(id)
+                        } else {
+                            // Not on the way to a fresh reskin: any reskin already sitting next
+                            // to this mesh was built from the atlas this bake just overwrote, so
+                            // it's stale now. currentViewerContent prefers a reskin unconditionally
+                            // over the plain mesh — leaving the old one in place would make this
+                            // rebake invisible, the mesh updated but the viewer still showing
+                            // yesterday's reskin.
+                            let stem = (gen.paintedMeshFileName ?? gen.meshFileName)
+                                .replacingOccurrences(of: ".tmesh", with: "")
+                            let fm = FileManager.default
+                            for ext in ["_reskin.tmesh", "_reskin_texture.png",
+                                       "_reskin_glass.bin", "_reskin_glass.opacity"] {
+                                try? fm.removeItem(at: dir.appendingPathComponent(stem + ext))
+                            }
                         }
                         self.rebakeStates[id] = .idle
                         self.rebakeTick += 1
