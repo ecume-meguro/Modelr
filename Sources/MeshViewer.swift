@@ -910,10 +910,19 @@ struct MeshViewer: NSViewRepresentable {
                 glassMat.writesToDepthBuffer = false
                 glassMat.metalness.contents = 0.0
                 glassMat.roughness.contents = 0.05
-                glassMat.shaderModifiers = [.fragment: String(format: """
-                    #pragma body
-                    _output.color.a = %.4f;
-                    """, glass.a)]
+                glassMat.lightingModel = .constant
+                // material.transparency, not diffuse alpha or a shader modifier forcing
+                // _output.color.a directly. Both of those bypass SceneKit's own blend and
+                // produce results that don't match the stored value at all: diffuse alpha
+                // measured 0.5 as an effective ~0.02 (washed out, nearly invisible), a shader
+                // modifier measured it as an effective ~0.96 (nearly opaque). transparency is
+                // the one path that blends correctly — verified against the sRGB gamma curve
+                // exactly: nominal 0.05/0.50/0.95 rendered as 249/188/65, matching the
+                // predicted linear-light blend of this tint against white to within rounding
+                // at all three points. The stored value is genuinely a physically-blended
+                // opacity, not a flat sRGB mix — 0.5 looking closer to light grey than mid
+                // grey against a near-black tint is what correct blending looks like.
+                glassMat.transparency = CGFloat(glass.a)
             } else {
                 glassMat.writesToDepthBuffer = true
                 // No stored opacity: the atlas's own per-texel alpha is the transparency —
