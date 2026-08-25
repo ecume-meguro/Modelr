@@ -10,12 +10,21 @@ import Foundation
 /// it fails fast rather than downloading, since a network caller shouldn't block on a multi-GB
 /// fetch it didn't ask for.
 ///
+/// Always runs the large shape model + the 2.1 PBR paint pipeline (albedo + metallic-roughness)
+/// — the small/RGB pair isn't offered here, this entrypoint is for the quality tier callers
+/// actually want.
+///
 /// Environment:
 ///   MODELR_INPUT=<path>    source image (required)
 ///   MODELR_OUTPUT=<path>   destination file; extension picks the format unless MODELR_FORMAT
 ///                          is set (required)
 ///   MODELR_FORMAT=glb|usdz|obj|stl|ply   overrides the extension-derived format
-///   MODELR_MODEL=small|large             shape+paint pair (default small)
+///   MODELR_QUALITY=fastest|fast|balanced|high|max   shape+paint quality (default: the app's
+///                          own default preset, currently "fast"). "fastest" has no paint
+///                          equivalent and maps to paint's "fast".
+///   MODELR_REMOVE_BG=0     skip background removal (on by default, same as a fresh project)
+///   MODELR_WINDOWED=1      keep the normal Dock icon/window instead of running as an
+///                          accessory (background) app with no Dock presence
 ///   MODELR_KEEP_PROJECT=1   skip deleting the scratch project after the run (debugging)
 ///
 /// Exit 0 on success (after printing the destination path), exit 1 on any failure (message on
@@ -31,6 +40,12 @@ enum Model3DRunner {
 
     static func runIfRequested(runtime: AppRuntime) {
         guard isRequested else { return }
+        // A network endpoint invokes this per-request; a Dock icon grabbing focus (or even
+        // bouncing) every time some other machine asks for a model is not something the person
+        // sitting at this Mac should have to see. No Dock tile, no menu bar, windows never key.
+        if env["MODELR_WINDOWED"] != "1" {
+            NSApp.setActivationPolicy(.accessory)
+        }
         Task { @MainActor in
             let started = Date()
             do {
@@ -69,12 +84,18 @@ enum Model3DRunner {
         guard let format = MeshExportFormat(rawValue: ext) else {
             throw fail("unrecognised format '\(ext)' (want one of: \(MeshExportFormat.allCases.map(\.rawValue).joined(separator: ", ")))")
         }
-        let modelChoice = env["MODELR_MODEL"] ?? "small"
-        guard modelChoice == "small" || modelChoice == "large" else {
-            throw fail("MODELR_MODEL must be small or large (got \(modelChoice))")
+        let shapeModel: ShapeModel = .large
+        let paintModel: PaintModel = .large
+        var shapeQuality: QualityPreset?
+        var paintQuality: PaintQuality?
+        if let raw = env["MODELR_QUALITY"] {
+            guard let q = QualityPreset(rawValue: raw) else {
+                throw fail("MODELR_QUALITY must be one of: \(QualityPreset.ordered.map(\.rawValue).joined(separator: ", ")) (got \(raw))")
+            }
+            shapeQuality = q
+            // PaintQuality has no "fastest" tier; every other name matches QualityPreset's.
+            paintQuality = raw == QualityPreset.fastest.rawValue ? .fast : PaintQuality(rawValue: raw)
         }
-        let shapeModel: ShapeModel = modelChoice == "large" ? .large : .small
-        let paintModel: PaintModel = modelChoice == "large" ? .large : .small
 
         try await waitUntil("boot", 30) {
             runtime.state.phase == .onboarding || runtime.state.phase == .ready
@@ -100,6 +121,9 @@ enum Model3DRunner {
         do {
             store.setShapeModel(shapeModel, for: project.id)
             store.setPaintModel(paintModel, for: project.id)
+            if let shapeQuality { store.setQuality(shapeQuality, for: project.id) }
+            if let paintQuality { store.setPaintQuality(paintQuality, for: project.id) }
+            if env["MODELR_REMOVE_BG"] == "0" { store.setRemoveBackground(false, for: project.id) }
             store.setImage(fromURL: URL(fileURLWithPath: inputPath), for: project.id)
             if let importError = store.importErrors[project.id] {
                 throw fail("image import failed: \(importError)")
@@ -147,6 +171,11 @@ enum Model3DRunner {
                 throw fail("no paint generation was committed")
             }
             log("stage 2/3 paint: committed in \(String(format: "%.1f", paintGen.durationSeconds ?? -1))s")
+            // The commit flips paintState to .idle a beat before its own trailing writes (stream
+            // file cleanup, project index save) land — SmokeRunner settles the same way after a
+            // commit. Exporting or deleting the project before that lands raced once and left an
+            // orphaned index entry with no folder behind it.
+            await settle()
 
             // 3. Export.
             log("stage 3/3 export: \(format.rawValue)")
@@ -192,6 +221,12 @@ enum Model3DRunner {
     }
 
     private static var lastFailure: String?
+
+    /// Give the reducer a couple of runloop turns after a commit so any trailing async work
+    /// (stream-file cleanup, the project index save) actually lands before we act on it.
+    private static func settle() async {
+        for _ in 0..<3 { try? await Task.sleep(nanoseconds: 150_000_000) }
+    }
 
     private static func waitUntil(_ what: String, _ timeout: TimeInterval,
                                   _ condition: () -> Bool) async throws {

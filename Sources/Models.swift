@@ -343,7 +343,7 @@ struct Project: Identifiable, Codable, Hashable {
     }
 
     var removeBackground: Bool {
-        get { removeBackgroundRaw ?? false }
+        get { removeBackgroundRaw ?? true }
         set { removeBackgroundRaw = newValue }
     }
 
