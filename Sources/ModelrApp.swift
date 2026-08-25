@@ -26,6 +26,7 @@ struct ModelrApp: App {
                     GlassCleanRunner.rebakeFinishIfRequested(runtime: runtime, store: runtime.store)
                     runtime.bootIfNeeded()
                     SmokeRunner.startIfRequested(runtime: runtime)
+                    Model3DRunner.runIfRequested(runtime: runtime)
                 }
         }
         .defaultSize(width: 1180, height: 760)
