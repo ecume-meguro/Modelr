@@ -235,7 +235,9 @@ final class AppRuntime {
                                       views.first { $0.id == eid }?.weight } ?? 0.5,
                                   scale: scale,
                                   offsetX: Double(offset.width), offsetY: Double(offset.height),
-                                  roll: roll, fovDeg: fovDeg)
+                                  roll: roll, fovDeg: fovDeg,
+                                  overrides: existing.flatMap { eid in
+                                      views.first { $0.id == eid }?.overrides } ?? false)
         if let eid = existing, let i = views.firstIndex(where: { $0.id == eid }) {
             // Replace in place so the list order and weight survive an edit.
             for f in [views[i].fileName, views[i].originalFileName].compactMap({ $0 }) {
@@ -289,13 +291,23 @@ final class AppRuntime {
         var views = referenceViews(for: id)
         views.removeAll { $0.id == viewID }
         store.setReferenceViews(views, for: id)
-        rebakeTick += 1
+        // No rebakeTick bump: that forces the aligner's MeshViewer to rebuild (it's keyed on
+        // the tick to reload after an actual re-bake changes texture files on disk), which
+        // resets the live camera orbit — deleting an unrelated reference doesn't touch those
+        // files, so it was zeroing out whatever pose the user was still lining up.
     }
 
     func setReferenceWeight(_ id: Project.ID, viewID: UUID, weight: Double) {
         var views = referenceViews(for: id)
         guard let i = views.firstIndex(where: { $0.id == viewID }) else { return }
         views[i].weight = weight
+        store.setReferenceViews(views, for: id)
+    }
+
+    func setReferenceOverride(_ id: Project.ID, viewID: UUID, overrides: Bool) {
+        var views = referenceViews(for: id)
+        guard let i = views.firstIndex(where: { $0.id == viewID }) else { return }
+        views[i].overrides = overrides
         store.setReferenceViews(views, for: id)
     }
 
@@ -970,7 +982,7 @@ final class AppRuntime {
             extraViews: (gen.referenceViewsRaw ?? []).map {
                 ExtraView(imagePath: dir.appendingPathComponent($0.fileName).path,
                           elev: Float($0.elev), azim: Float($0.azim), weight: Float($0.weight),
-                          fovDeg: Float($0.fovDeg))
+                          fovDeg: Float($0.fovDeg), overrides: $0.overrides)
             },
             onProgress: { _, _ in },
             onFinish: { [weak self] outcome in

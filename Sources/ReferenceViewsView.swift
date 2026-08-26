@@ -1,5 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import ImageIO
+import SceneKit
 
 /// Register real photographs against the model so the bake can use them as extra cameras.
 ///
@@ -26,8 +28,6 @@ struct ReferenceViewsView: View {
     @State private var fov: Double = 0
     /// Show the coverage atlas instead of the paint, so gaps are obvious while aligning.
     @State private var showCoverage = true
-    @State private var snapping = false
-    @State private var snapScore: PoseSnap.Result?
     @State private var offset: CGSize = .zero
     @State private var dragStart: CGSize = .zero
     /// Blink the photo off entirely. Displacement between two flashed frames is far easier to
@@ -39,6 +39,13 @@ struct ReferenceViewsView: View {
     /// Orbit the model, or move the photo? The overlay fills the pane, so a drag can only ever
     /// belong to one of them — with the photo always winning, the model became unreachable.
     @State private var movingPhoto = false
+    /// `capture()` used to fail silently on a bad pose read — nothing written, nothing said, so
+    /// "I clicked Capture and nothing happened" was indistinguishable from "I never clicked it."
+    @State private var captureError: String?
+    /// True when the loaded overlay's filename carried a pose tag that was actually applied —
+    /// otherwise there's no visible difference between "this auto-aligned" and "the parser
+    /// silently gave up," which is exactly the class of bug that shipped once already.
+    @State private var autoAligned = false
 
     private var views: [ReferenceView] { runtime.referenceViews(for: project.id) }
 
@@ -60,21 +67,19 @@ struct ReferenceViewsView: View {
         return false
     }
 
-    private var meshURL: URL? {
-        switch store.currentViewerContent(for: project) {
-        case .pbrMesh(let m, _, _)?:   return m
-        case .texturedMesh(let m, _)?: return m
-        case .mesh(let m)?:            return m
-        default:                       return nil
-        }
-    }
-
     var body: some View {
         HSplitView {
             sidebar.frame(minWidth: 240, idealWidth: 280)
             aligner.frame(minWidth: 420)
         }
         .frame(minWidth: 820, minHeight: 520)
+        .alert("Couldn't capture this view", isPresented: Binding(
+            get: { captureError != nil }, set: { if !$0 { captureError = nil } }
+        )) {
+            Button("OK") { captureError = nil }
+        } message: {
+            Text(captureError ?? "")
+        }
         .onReceive(Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()) { _ in
             probe.sampleForJump()
         }
@@ -124,14 +129,35 @@ struct ReferenceViewsView: View {
                             Text(String(format: "elev %.0f°  azim %.0f°", v.elev, v.azim))
                                 .font(.caption).monospacedDigit()
                             // Low by default: a reference should win where nothing else
-                            // reaches, without overriding views that already agree.
+                            // reaches, without overriding views that already agree. Ignored
+                            // entirely once Override is on — see the toggle below.
                             Slider(value: Binding(
                                 get: { v.weight },
                                 set: { runtime.setReferenceWeight(project.id, viewID: v.id, weight: $0) }
                             ), in: 0.05...1.0)
-                            Text(String(format: "weight %.2f", v.weight))
+                            .disabled(v.overrides)
+                            Text(v.overrides ? "overrides canonical"
+                                             : String(format: "weight %.2f", v.weight))
                                 .font(.caption2).foregroundStyle(.tertiary).monospacedDigit()
                         }
+                        Button {
+                            runtime.setReferenceOverride(project.id, viewID: v.id, overrides: !v.overrides)
+                        } label: { Image(systemName: v.overrides ? "checkmark.seal.fill" : "checkmark.seal") }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(v.overrides ? Color.accentColor : .secondary)
+                            .help(v.overrides
+                                  ? "Overriding — wins outright wherever it sees the surface, "
+                                    + "even over canonical paint. Click to go back to filling "
+                                    + "gaps only."
+                                  : "Fills gaps only, at low priority. Click to make this view "
+                                    + "override canonical paint wherever it disagrees.")
+                        Button {
+                            jumpToPose(v)
+                        } label: { Image(systemName: "camera.viewfinder") }
+                            .buttonStyle(.borderless)
+                            .help("Move the viewer's camera to exactly this view's pose, without "
+                                  + "loading it for editing — for a fresh take of the same angle, "
+                                  + "e.g. to export and touch up something else visible from here.")
                         Button {
                             runtime.removeReferenceView(project.id, viewID: v.id)
                         } label: { Image(systemName: "trash") }
@@ -166,8 +192,167 @@ struct ReferenceViewsView: View {
                       || runtime.rebakeStates[project.id] == .running)
             .help("Discard every re-bake and restore the texture the paint run produced. "
                   + "Reference views are kept.")
+            .padding(.horizontal, 12).padding(.bottom, 4)
+            Divider().padding(.horizontal, 12)
+            HStack(spacing: 8) {
+                Button {
+                    exportTexture()
+                } label: {
+                    Label("Export Texture", systemImage: "square.and.arrow.up")
+                        .frame(maxWidth: .infinity)
+                }
+                .disabled(albedoTextureURL == nil)
+                .help("Save the raw albedo texture exactly as the model uses it — no camera, "
+                      + "no lighting, no reprojection. Edit it directly in its own UV layout.")
+                Button {
+                    importTexture()
+                } label: {
+                    Label("Import Texture", systemImage: "square.and.arrow.down")
+                        .frame(maxWidth: .infinity)
+                }
+                .disabled(albedoTextureURL == nil)
+                .help("Replace the model's texture with an edited version of the same file. "
+                      + "Must be the same pixel dimensions as the export.")
+            }
             .padding(.horizontal, 12).padding(.bottom, 12)
         }
+    }
+
+    /// The exact file the viewer is currently reading colour from — same for the aligner, the
+    /// export, and a direct-edit round trip, so there's never a question of which texture "the
+    /// model" means.
+    private var albedoTextureURL: URL? {
+        switch store.currentViewerContent(for: project) {
+        case .pbrMesh(_, let albedo, _)?: return albedo
+        case .texturedMesh(_, let tex)?:  return tex
+        default:                          return nil
+        }
+    }
+
+    /// A straight copy of the texture file on disk — not a render of it. Whatever's wrong in the
+    /// texture (the ghost eye, the hair-bleed patches) is wrong in exactly these pixels, at
+    /// exactly this UV layout; no camera pose, no lighting, no reprojection to go wrong.
+    private func exportTexture() {
+        guard let src = albedoTextureURL else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(project.name) texture.\(src.pathExtension)"
+        panel.allowedContentTypes = [.png]
+        panel.message = "Save the model's actual texture — edit it directly, then Import Texture "
+            + "to put it back"
+        guard panel.runModal() == .OK, let dest = panel.url else { return }
+        try? FileManager.default.removeItem(at: dest)
+        try? FileManager.default.copyItem(at: src, to: dest)
+    }
+
+    /// NSImage.size is point-based (and can differ from the file's real pixel grid); the atlas
+    /// mapping cares about actual pixels, so read those straight from the file like
+    /// BackgroundRemover does rather than trust NSImage's notion of size.
+    private static func pixelDimensions(_ url: URL) -> (w: Int, h: Int)? {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+              let w = props[kCGImagePropertyPixelWidth] as? Int,
+              let h = props[kCGImagePropertyPixelHeight] as? Int
+        else { return nil }
+        return (w, h)
+    }
+
+    private static func loadCGImage(_ url: URL) -> CGImage? {
+        guard let data = try? Data(contentsOf: url),
+              let src = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(src, 0, nil)
+    }
+
+    /// Straight (un-premultiplied) RGBA read from the image's own provider bytes — never
+    /// `CGContext.draw()`, which silently flattens alpha to 255 for some PNG encodings this app
+    /// writes. Same technique as `MeshViewer.rawRGBA`, duplicated locally since that one's
+    /// private to its own file.
+    private static func rawRGBA(_ url: URL) -> (w: Int, h: Int, bytes: [UInt8])? {
+        guard let cg = loadCGImage(url), cg.bitsPerComponent == 8, cg.bitsPerPixel == 32,
+              let provider = cg.dataProvider, let data = provider.data,
+              let base = CFDataGetBytePtr(data)
+        else { return nil }
+        let alphaInfo = cg.alphaInfo
+        guard alphaInfo != .none, alphaInfo != .noneSkipLast, alphaInfo != .noneSkipFirst
+        else { return nil }
+        let alphaFirst = alphaInfo == .premultipliedFirst || alphaInfo == .first
+        let premultiplied = alphaInfo == .premultipliedFirst || alphaInfo == .premultipliedLast
+        let w = cg.width, h = cg.height, bytesPerRow = cg.bytesPerRow
+        var out = [UInt8](repeating: 0, count: w * h * 4)
+        let dataLen = CFDataGetLength(data)
+        for y in 0 ..< h {
+            let rowOffset = y * bytesPerRow
+            guard rowOffset + w * 4 <= dataLen else { break }
+            let row = base.advanced(by: rowOffset)
+            for x in 0 ..< w {
+                let s = x * 4, d = (y * w + x) * 4
+                let a = row[s + (alphaFirst ? 0 : 3)]
+                if premultiplied, a > 0, a < 255 {
+                    let inv = 255.0 / Double(a)
+                    for c in 0 ..< 3 {
+                        let v = Double(row[s + (alphaFirst ? c + 1 : c)]) * inv
+                        out[d + c] = UInt8(min(max(v, 0), 255))
+                    }
+                } else {
+                    for c in 0 ..< 3 { out[d + c] = row[s + (alphaFirst ? c + 1 : c)] }
+                }
+                out[d + 3] = a
+            }
+        }
+        return (w, h, out)
+    }
+
+    private static func writeRGBA(_ px: [UInt8], _ w: Int, _ h: Int, to url: URL) -> Bool {
+        guard let provider = CGDataProvider(data: Data(px) as CFData),
+              let cg = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32,
+                               bytesPerRow: w * 4,
+                               space: CGColorSpaceCreateDeviceRGB(),
+                               bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
+                               provider: provider, decode: nil, shouldInterpolate: false,
+                               intent: .defaultIntent)
+        else { return false }
+        guard let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil)
+        else { return false }
+        CGImageDestinationAddImage(dest, cg, nil)
+        return CGImageDestinationFinalize(dest)
+    }
+
+    /// Composite the edited file over the existing texture using its own alpha as the mask —
+    /// alpha 0 keeps canonical exactly as it was, alpha 255 is a full replacement, values between
+    /// blend. A straight file swap (what this used to do) would have made every alpha-0 pixel the
+    /// edited file's garbage/black instead of "leave this alone," which defeats the entire point
+    /// of only touching the specific area that was wrong.
+    private func importTexture() {
+        guard let dst = albedoTextureURL, let original = Self.pixelDimensions(dst) else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.png]
+        panel.message = "Pick the edited texture — must match the original's pixel dimensions. "
+            + "Alpha 0 keeps the existing texture there; only opaque pixels replace it."
+        guard panel.runModal() == .OK, let picked = panel.urls.first else { return }
+        guard let new = Self.pixelDimensions(picked), new.w == original.w, new.h == original.h else {
+            captureError = "That image doesn't match the texture's pixel dimensions "
+                + "(\(original.w)×\(original.h)) — it has to be an edited copy of the exported "
+                + "file, not a different size."
+            return
+        }
+        guard let base = Self.rawRGBA(dst), let edit = Self.rawRGBA(picked) else {
+            captureError = "Couldn't read one of those images."
+            return
+        }
+        var out = base.bytes
+        for i in stride(from: 0, to: out.count, by: 4) {
+            let a = Float(edit.bytes[i + 3]) / 255
+            guard a > 0 else { continue }
+            for c in 0 ..< 3 {
+                out[i + c] = UInt8(Float(edit.bytes[i + c]) * a + Float(base.bytes[i + c]) * (1 - a))
+            }
+            out[i + 3] = 255   // the texture itself has no meaningful alpha channel of its own
+        }
+        guard Self.writeRGBA(out, base.w, base.h, to: dst) else {
+            captureError = "Couldn't write the composited texture back."
+            return
+        }
+        runtime.rebakeTick += 1
     }
 
     @ViewBuilder
@@ -210,6 +395,19 @@ struct ReferenceViewsView: View {
                 if overlay == nil {
                     Text("Add a photo, or click a view to re-align it")
                         .foregroundStyle(.secondary)
+                } else if autoAligned {
+                    // Otherwise there is no way to tell "this matched its exported pose exactly"
+                    // from "the filename tag failed to parse and it's sitting at the default" —
+                    // both look identical: a photo, loaded, camera somewhere.
+                    VStack {
+                        Spacer()
+                        Text("Auto-aligned from its exported pose — capture to keep it")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .padding(6)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                            .padding(.bottom, 8)
+                    }
+                    .allowsHitTesting(false)
                 }
             }
             .aspectRatio(1, contentMode: .fit)
@@ -227,6 +425,11 @@ struct ReferenceViewsView: View {
                 .disabled(runtime.coverageTextureURL(project.id) == nil)
                 .help("Show which surfaces no view has painted head-on — the only places a "
                       + "reference is allowed to paint")
+                Button {
+                    exportCurrentView()
+                } label: { Image(systemName: "square.and.arrow.up") }
+                    .help("Export this exact view as an image — rotate to a gap, save it, touch "
+                          + "it up in an image editor, then add it back with + as a reference")
                 if overlay != nil {
                     Picker("", selection: $movingPhoto) {
                         Image(systemName: "rotate.3d").tag(false)
@@ -266,28 +469,6 @@ struct ReferenceViewsView: View {
                             .font(.caption).foregroundStyle(.secondary)
                             .fixedSize()
                     }
-                    if let s = snapScore {
-                        // Residual is the mean gap between the outlines, as a fraction of the
-                        // frame. Shown because a generated mesh differs from the real car by a
-                        // few percent, so a perfect fit often does not exist and the user needs
-                        // to see whether what they got is as good as it gets.
-                        Text(String(format: "%.0f%%", s.iou * 100))
-                            .font(.caption).monospacedDigit()
-                            .foregroundStyle(s.iou > 0.9 ? .green : (s.iou > 0.75 ? .orange : .red))
-                            .help(String(format: "Silhouette overlap %.1f%%, mean edge gap %.2f%% "
-                                         + "of frame", s.iou * 100, s.residual * 100))
-                            .fixedSize()
-                    }
-                    Button {
-                        snap()
-                    } label: {
-                        if snapping { ProgressView().controlSize(.small) }
-                        else { Image(systemName: "wand.and.stars") }
-                    }
-                    .disabled(snapping || meshURL == nil)
-                    .help("Snap — solve this photo's camera by matching silhouettes, starting "
-                          + "from where you have placed it")
-                    .fixedSize()
                 } else {
                     Spacer()
                 }
@@ -315,27 +496,6 @@ struct ReferenceViewsView: View {
             }
             }
             .padding(10)
-        }
-    }
-
-    /// Solve from the user's rough placement. Seeding is not just a speed trick: a car's
-    /// silhouette from the front three-quarter and the rear three-quarter are alike enough that
-    /// an unseeded search settles on the wrong end of the car.
-    private func snap() {
-        guard let url = overlayURL, let mesh = meshURL,
-              let pose = probe.currentPose() else { return }
-        snapping = true
-        PoseSnap.fit(meshURL: mesh, imageURL: url, seedElev: pose.elev, seedAzim: pose.azim) { r in
-            snapping = false
-            guard let r else { snapScore = nil; return }
-            snapScore = r
-            scale = r.scale
-            offset = r.offset
-            dragStart = r.offset
-            fov = r.fovDeg
-            probe.fovDeg = r.fovDeg
-            probe.applyBakeFraming()
-            probe.setPose(elev: r.elev, azim: r.azim)
         }
     }
 
@@ -375,11 +535,27 @@ struct ReferenceViewsView: View {
     }
 
     private func capture() {
-        guard let url = overlayURL, let pose = probe.currentPose() else { return }
+        guard let url = overlayURL else {
+            captureError = "No photo loaded to capture."
+            return
+        }
+        guard let pose = probe.currentPose() else {
+            captureError = "Couldn't read the camera's current pose — try nudging the model "
+                + "(drag to orbit it slightly) and capture again."
+            return
+        }
+        captureError = nil
         runtime.addReferenceView(project.id, imageURL: url, elev: pose.elev, azim: pose.azim,
                                  scale: scale, offset: offset, fovDeg: fov,
                                  replacing: editingID)
-        nextPending()
+        if pendingQueue.isEmpty {
+            // Nothing queued next: stay exactly where the user just aligned things. Only
+            // "Skip"/"Cancel" (which call nextPending() directly) should clear the overlay and
+            // reframe the camera — capturing successfully is not the same as abandoning this view.
+            editingID = nil
+        } else {
+            nextPending()
+        }
     }
 
     /// Re-open a registered view: its own image, its stored fit, and the camera put back where
@@ -393,7 +569,7 @@ struct ReferenceViewsView: View {
         guard let img = NSImage(contentsOf: url) else { return }
         let hasOriginal = url != dir.appendingPathComponent(v.fileName)
         editingID = v.id
-        snapScore = nil
+        autoAligned = false
         overlayURL = url
         overlay = img
         scale = hasOriginal ? v.scale : 1
@@ -405,14 +581,108 @@ struct ReferenceViewsView: View {
         probe.setPose(elev: v.elev, azim: v.azim)
     }
 
-    private func nextPending() {
-        overlay = nil; overlayURL = nil; editingID = nil; snapScore = nil; photoHidden = false
+    /// Move the camera to a registered view's exact pose, without loading its photo for editing
+    /// — for exporting a fresh take of the same angle rather than replacing that view.
+    private func jumpToPose(_ v: ReferenceView) {
+        overlay = nil; overlayURL = nil; editingID = nil; autoAligned = false
         scale = 1; offset = .zero; dragStart = .zero
-        fov = 0; probe.fovDeg = 0; probe.applyBakeFraming()
+        fov = v.fovDeg
+        probe.fovDeg = v.fovDeg
+        probe.applyBakeFraming()
+        probe.setPose(elev: v.elev, azim: v.azim)
+    }
+
+    private func nextPending() {
+        overlay = nil; overlayURL = nil; editingID = nil; photoHidden = false
+        scale = 1; offset = .zero; dragStart = .zero
+        fov = 0; probe.fovDeg = 0; probe.applyBakeFraming(); autoAligned = false
         guard !pendingQueue.isEmpty else { return }
         let next = pendingQueue.removeFirst()
         overlayURL = next
         overlay = NSImage(contentsOf: next)
+        // A touched-up re-import of an exported view carries its exact camera in the filename —
+        // it was rendered pixel-for-pixel at that pose, so scale/offset need no adjustment, only
+        // the camera has to go back where it was.
+        if let pose = Self.exportedPose(from: next) {
+            fov = pose.fov
+            probe.fovDeg = pose.fov
+            probe.applyBakeFraming()
+            probe.setPose(elev: pose.elev, azim: pose.azim)
+            autoAligned = true
+        }
+        // An ordinary photo, not a pose-tagged re-import, leaves the orbit exactly where it
+        // was — the user's own manual control over the camera, not a guessed default.
+    }
+
+    private static let poseTag = "__pose_"
+
+    private static func poseFilenameSuffix(elev: Double, azim: Double, fov: Double) -> String {
+        String(format: "\(poseTag)e%.2f_a%.2f_f%.2f", elev, azim, fov)
+    }
+
+    /// Recover the pose `exportCurrentView` stamped into a filename, if this is a re-import of
+    /// one of its exports rather than an unrelated photo.
+    private static func exportedPose(from url: URL) -> (elev: Double, azim: Double, fov: Double)? {
+        let name = url.deletingPathExtension().lastPathComponent
+        guard let r = name.range(of: poseTag) else { return nil }
+        // At least 3 tokens, not exactly 3: an image editor's "don't overwrite" save appends its
+        // own suffix after the tag ("..._f0.00_2.png", "..._f0.00 copy.png") — the pose is still
+        // the first three, whatever trails it is the editor's, not ours.
+        let tokens = name[r.upperBound...].split(separator: "_")
+        guard tokens.count >= 3,
+              tokens[0].hasPrefix("e"), tokens[1].hasPrefix("a"), tokens[2].hasPrefix("f"),
+              let elev = Double(tokens[0].dropFirst()),
+              let azim = Double(tokens[1].dropFirst()),
+              // The fov token itself can carry a glued-on, space-separated suffix ("f0.00 copy")
+              // when the editor didn't use an underscore — take only its leading number.
+              let fov = Double(tokens[2].dropFirst().prefix { $0.isNumber || $0 == "." || $0 == "-" })
+        else { return nil }
+        return (elev, azim, fov)
+    }
+
+    /// Save exactly what the aligner is showing right now — the live model at whatever angle
+    /// it's been rotated to, magenta gaps included when coverage is on. The magenta itself is a
+    /// SwiftUI layer behind the model, not part of the scene, so `SCNView.snapshot()` alone
+    /// would come back with transparent holes instead — composited back in here so the exported
+    /// file matches the screen, ready to touch up externally and re-add as a reference.
+    private func exportCurrentView() {
+        guard let scnView = probe.view, let pose = probe.currentPose() else { return }
+        // Snapshot with flat, unlit shading. `.snapshot()` otherwise captures the live PBR
+        // render — ambient light plus SceneKit's automatic headlight — which bakes shading,
+        // shadow and specular into the file. Anything exported here is meant to come back as
+        // raw paint data (a reference view, or the texture itself); lit pixels reimported as
+        // paint come back visibly darker/brighter than the real albedo wherever the live camera
+        // angle happened to be shaded, which is not a color correction, it's a lighting one.
+        var savedMaterials: [(SCNMaterial, SCNMaterial.LightingModel)] = []
+        func collectMaterials(_ node: SCNNode) {
+            for m in node.geometry?.materials ?? [] { savedMaterials.append((m, m.lightingModel)) }
+            for child in node.childNodes { collectMaterials(child) }
+        }
+        if let root = scnView.scene?.rootNode { collectMaterials(root) }
+        for (m, _) in savedMaterials { m.lightingModel = .constant }
+        let shot = scnView.snapshot()
+        for (m, original) in savedMaterials { m.lightingModel = original }
+        let size = shot.size
+        let composited = NSImage(size: size)
+        composited.lockFocus()
+        if showingThrough {
+            NSColor(red: 1, green: 0, blue: 1, alpha: 1).setFill()
+            NSRect(origin: .zero, size: size).fill()
+        }
+        shot.draw(in: NSRect(origin: .zero, size: size))
+        composited.unlockFocus()
+        guard let tiff = composited.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return }
+        let panel = NSSavePanel()
+        let suffix = Self.poseFilenameSuffix(elev: pose.elev, azim: pose.azim, fov: fov)
+        panel.nameFieldStringValue = "\(project.name) view \(suffix).png"
+        panel.allowedContentTypes = [.png]
+        panel.message = "Save this view — touch it up and add it back with + to re-align at "
+            + "this exact angle automatically (keep the \"\(suffix)\" part of the name)"
+        guard panel.runModal() == .OK, let dest = panel.url else { return }
+        try? png.write(to: dest)
+        NSWorkspace.shared.activateFileViewerSelecting([dest])
     }
 
     private func pickImages() {

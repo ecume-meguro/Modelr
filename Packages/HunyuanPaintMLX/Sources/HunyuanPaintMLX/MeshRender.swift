@@ -294,7 +294,8 @@ public final class MeshRender {
                           adequacyDeg: Float = 65, refMinWeight: Float = 1e-4,
                           viewFov: [Float?]? = nil,
                           winnerSets: Set<Int> = [],
-                          validMasks: [MLXArray?]? = nil)
+                          validMasks: [MLXArray?]? = nil,
+                          overrideViews: Set<Int> = [])
         -> (textures: [MLXArray], covered: MLXArray, adequate: MLXArray, faceOn: MLXArray) {
         let w = weights ?? [Float](repeating: 1, count: elevs.count)
         let T = textureSize
@@ -305,6 +306,11 @@ public final class MeshRender {
         let nsets = viewSets.count
         var accs = (0..<nsets).map { _ in MLX.zeros([K, 3]) }
         var wsum = MLX.zeros([K, 1])
+        // A correction the user deliberately supplied to override what canonical painted wrong,
+        // not just fill what it missed — accumulated separately so it can win outright at the
+        // end rather than being diluted into the same blend as everything else.
+        var overrideAccs = (0..<nsets).map { _ in MLX.zeros([K, 3]) }
+        var overrideWsum = MLX.zeros([K, 1])
         // Mask bookkeeping: the most transparent value any face-on view reports. Taking the
         // single best view loses the mask when that view did not paint it; blending smears it
         // onto whatever is behind. The minimum over views that actually face the surface keeps
@@ -330,9 +336,9 @@ public final class MeshRender {
         var refW = MLX.zeros([K, 1])
         let refCosThr = cos(refCosThrDeg * Float.pi / 180)
         let adeqThr = cos(adequacyDeg * Float.pi / 180)
-        func accumulate(_ range: Range<Int>, _ accs: inout [MLXArray],
-                        _ wsum: inout MLXArray, gated: Bool = false) {
-            for vi in range {
+        func accumulate(_ indices: [Int], _ accs: inout [MLXArray],
+                        _ wsum: inout MLXArray, gated: Bool = false, override: Bool = false) {
+            for vi in indices {
                 let H = viewSets[0][vi].dim(0), Wd = viewSets[0][vi].dim(1)
                 // The rasteriser is square (it takes one edge length), so a non-square view would
                 // make the reshape below mismatch and trap inside MLX. Canonical sheet tiles are
@@ -401,7 +407,12 @@ public final class MeshRender {
                 if let vm = validMasks?[vi] {
                     wgt = wgt * MeshRender.bilinear(vm, rfc, cfc)[0..., 0].reshaped([K, 1])
                 }
-                if gated {
+                if override {
+                    // No damping against canonical weight — the whole point is to win where
+                    // canonical is present but wrong, not just where it is absent. Still counts
+                    // toward `refW` so `adequate` reports the texel as defended.
+                    refW = refW + wgt
+                } else if gated {
                     wgt = wgt * (refTau / (refTau + canonW))
                     wgt = MLX.where(wgt .< refMinWeight, MLXArray(Float(0)), wgt)
                     refW = refW + wgt
@@ -415,6 +426,9 @@ public final class MeshRender {
                 for si in 0..<nsets {
                     let sample = MeshRender.bilinear(viewSets[si][vi], rfc, cfc)
                     accs[si] = accs[si] + sample * wgt
+                    // An override's own weight has no relation to the base blend's winner-take-
+                    // all/glass bookkeeping — it is combined separately, after the loop.
+                    if override { continue }
                     if si == 0 { bestColour = MLX.where(wgt .> bestWeight, sample, bestColour) }
                     if si == nsets - 1 { bestWeight = maximum(bestWeight, wgt) }
                     if winnerSets.contains(si), abs(elevs[vi]) <= 45 {
@@ -434,18 +448,32 @@ public final class MeshRender {
         }
 
         let nCanon = min(canonicalCount ?? elevs.count, elevs.count)
-        accumulate(0..<nCanon, &accs, &wsum)
+        accumulate(Array(0..<nCanon), &accs, &wsum)
         if nCanon < elevs.count {
             canonW = adeqW
-            accumulate(nCanon..<elevs.count, &accs, &wsum, gated: true)
+            let refIndices = (nCanon..<elevs.count).filter { !overrideViews.contains($0) }
+            let overrideIndices = (nCanon..<elevs.count).filter { overrideViews.contains($0) }
+            if !refIndices.isEmpty { accumulate(refIndices, &accs, &wsum, gated: true) }
+            if !overrideIndices.isEmpty {
+                accumulate(overrideIndices, &overrideAccs, &overrideWsum, gated: true, override: true)
+            }
         }
         for si in winnerSets where si < nsets {
             accs[si] = bestVal[si] * wsum          // divided back out below
         }
         // Hand the face-on colour back so the caller can use it where the surface is glass.
         let wsafe = clip(wsum, min: 1e-8, max: Float.greatestFiniteMagnitude)
-        let covered = (wsum[0..., 0] .> 1e-8).reshaped([T, T])
-        let texs = accs.map { ($0 / wsafe).reshaped([T, T, 3]) }
+        let overrideCovered = (overrideWsum[0..., 0] .> 1e-8).reshaped([K, 1])
+        let overrideSafe = clip(overrideWsum, min: 1e-8, max: Float.greatestFiniteMagnitude)
+        let covered = ((wsum[0..., 0] .> 1e-8) .|| overrideCovered[0..., 0]).reshaped([T, T])
+        // Wherever an override actually painted, its own blend replaces the base blend outright
+        // rather than joining it — two overrides of the same spot still blend with each other,
+        // but neither has to out-shout canonical to be seen at all.
+        let texs = (0..<nsets).map { si -> MLXArray in
+            let base = accs[si] / wsafe
+            let overridden = overrideAccs[si] / overrideSafe
+            return MLX.where(overrideCovered, overridden, base).reshaped([T, T, 3])
+        }
         // `adequate` is the gate itself, surfaced so the UI can show which surfaces a reference
         // is allowed to touch: true where a canonical view painted this texel head-on enough to
         // defend it, false where the paint is a grazing streak or nothing at all.

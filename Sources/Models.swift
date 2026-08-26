@@ -276,15 +276,20 @@ struct ReferenceView: Codable, Hashable, Identifiable {
     /// Horizontal field of view for this photograph, degrees; 0 keeps the bake's orthographic
     /// camera. A shot taken close to the subject cannot be matched by any orbit without it.
     var fovDeg: Double = 0
+    /// Win outright wherever this view sees the surface, instead of only filling texels no
+    /// canonical view reached. The normal (false) behaviour damps a reference toward zero
+    /// wherever canonical coverage already exists — right for filling gaps, wrong for a
+    /// deliberate correction to something canonical painted incorrectly.
+    var overrides: Bool = false
 
     init(id: UUID = UUID(), fileName: String, originalFileName: String? = nil,
          elev: Double, azim: Double, weight: Double = 0.5,
          scale: Double = 1, offsetX: Double = 0, offsetY: Double = 0, roll: Double = 0,
-         fovDeg: Double = 0) {
+         fovDeg: Double = 0, overrides: Bool = false) {
         self.id = id; self.fileName = fileName; self.originalFileName = originalFileName
         self.elev = elev; self.azim = azim; self.weight = weight
         self.scale = scale; self.offsetX = offsetX; self.offsetY = offsetY; self.roll = roll
-        self.fovDeg = fovDeg
+        self.fovDeg = fovDeg; self.overrides = overrides
     }
 
     // Hand-written because the synthesized decoder treats a missing key as an error even when

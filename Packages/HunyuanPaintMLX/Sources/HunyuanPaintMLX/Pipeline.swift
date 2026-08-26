@@ -66,10 +66,13 @@ public struct ExtraView {
     /// Horizontal field of view in degrees, or 0 for an orthographic projection like the
     /// canonical views. A photograph taken close to the subject needs this to line up at all.
     public let fovDeg: Float
+    /// Win outright wherever this view sees the surface, rather than being damped toward zero
+    /// anywhere canonical coverage already exists. See `bakeMulti`'s `overrideViews`.
+    public let overrides: Bool
     public init(imagePath: String, elev: Float, azim: Float, weight: Float = 0.5,
-                fovDeg: Float = 0) {
+                fovDeg: Float = 0, overrides: Bool = false) {
         self.imagePath = imagePath; self.elev = elev; self.azim = azim; self.weight = weight
-        self.fovDeg = fovDeg
+        self.fovDeg = fovDeg; self.overrides = overrides
     }
 }
 
@@ -372,10 +375,14 @@ public final class PaintPipeline {
             let f = spec.split(separator: ",").map(String.init)
             if f.count >= 4, let e = Float(f[1]), let az = Float(f[2]), let w = Float(f[3]) {
                 extras.append(ExtraView(imagePath: f[0], elev: e, azim: az, weight: w,
-                                        fovDeg: f.count > 4 ? (Float(f[4]) ?? 0) : 0))
+                                        fovDeg: f.count > 4 ? (Float(f[4]) ?? 0) : 0,
+                                        overrides: f.count > 5 && f[5] == "1"))
             }
         }
         var refMasks: [MLXArray?] = Array(repeating: nil, count: elevs.count)
+        // Indices into the combined (canonical + extra) pose arrays that should win outright
+        // rather than be gated/damped against canonical coverage — see `bakeMulti`.
+        var overrideIndices: Set<Int> = []
         for ev in extras {
             guard let img = loadViewSheet(ev.imagePath, count: 1)?.first else {
                 onProgress?("Reference view unreadable: \(ev.imagePath)", 0.93); continue
@@ -388,6 +395,7 @@ public final class PaintPipeline {
             mrV.append(MLX.zeros(img.shape) + 0.5)
             poseElevs.append(e); poseAzims.append(az); extraWeights.append(w)
             extraFovs.append(ev.fovDeg)
+            if ev.overrides { overrideIndices.insert(poseElevs.count - 1) }
         }
         let extraWeight: Float? = extraWeights.isEmpty ? nil : extraWeights[0]
         var alphaSet = alpha
@@ -417,7 +425,8 @@ public final class PaintPipeline {
                                           // Set 2 is alpha — a mask, taken from the best view
                                           // rather than blended across views.
                                           winnerSets: alphaSet != nil ? [2] : [],
-                                          validMasks: nCanon == nil ? nil : refMasks)
+                                          validMasks: nCanon == nil ? nil : refMasks,
+                                          overrideViews: overrideIndices)
 
         // Second pass for texels the strict cutoff left empty — wheel arches and interiors are
         // grazing in every canonical view, so they otherwise get no real data at all. Used only
